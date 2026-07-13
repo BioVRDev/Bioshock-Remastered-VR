@@ -29,3 +29,6 @@ packages/
 
 # Machine-specific
 Local.props
+
+# Machine-local deploy script (contains my game path)
+deploy.bat

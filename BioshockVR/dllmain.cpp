@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdint>
+#include "Hooks.h"
 
 #include <MinHook.h>
 
@@ -64,7 +65,6 @@ static DWORD WINAPI InitThread(LPVOID)
 {
     Log("=== BioshockVR ===");
 
-    // Confirm which process we were injected into, and that we're 32-bit.
     char exe[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
     const char* exeName = strrchr(exe, '\\');
@@ -76,8 +76,15 @@ static DWORD WINAPI InitThread(LPVOID)
 
     MH_STATUS s = MH_Initialize();
     Log("MH_Initialize -> %d  (0 == MH_OK)", (int)s);
+    if (s != MH_OK) { Log("!!! MinHook dead. Stopping."); return 0; }
 
-    Log("Phase 1 complete. Idle.");
+    if (!Hooks_Install())
+    {
+        Log("!!! Hooks_Install FAILED. No hook installed. Game will run clean.");
+        return 0;
+    }
+
+    Log("Phase 2 init done. Hook armed.");
     return 0;
 }
 
