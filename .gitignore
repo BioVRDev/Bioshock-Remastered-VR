@@ -1,0 +1,31 @@
+# Build output
+[Dd]ebug/
+[Rr]elease/
+x86/
+x64/
+Win32/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.tlog
+*.idb
+*.iobj
+*.ipdb
+
+# Visual Studio local state
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# NuGet
+packages/
+*.nupkg
+
+# Runtime
+*.log
+
+# Machine-specific
+Local.props
