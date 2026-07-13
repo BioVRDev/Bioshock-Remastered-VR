@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <cstdint>
 
 #include <MinHook.h>
 
@@ -62,12 +63,21 @@ static void Log(const char* fmt, ...)
 static DWORD WINAPI InitThread(LPVOID)
 {
     Log("=== BioshockVR ===");
-    Log("DLL attached and init thread running.");
+
+    // Confirm which process we were injected into, and that we're 32-bit.
+    char exe[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const char* exeName = strrchr(exe, '\\');
+    exeName = exeName ? exeName + 1 : exe;
+
+    Log("host process : %s", exeName);
+    Log("pointer size : %u bytes  (4 == x86, correct)", (unsigned)sizeof(void*));
+    Log("dll base     : 0x%08X", (unsigned)(uintptr_t)g_hSelf);
 
     MH_STATUS s = MH_Initialize();
     Log("MH_Initialize -> %d  (0 == MH_OK)", (int)s);
 
-    Log("Phase 0/1 complete. Idle.");
+    Log("Phase 1 complete. Idle.");
     return 0;
 }
 
