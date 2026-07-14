@@ -166,9 +166,10 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             LARGE_INTEGER x0, x1;
             QueryPerformanceCounter(&x0);
 
-            if (g_cfgXRMode == 1) XR_SubmitMono(bb);      // Phase 5 mono
-            else if (g_cfgXRMode == 2) XR_SubmitEye(bb, eye);  // §4 every-2nd (regression)
-            else                       XR_SubmitAER(bb, eye);  // AER every Present
+            if (g_cfgXRMode == 1) XR_SubmitMono(bb);            // Phase 5 mono
+            else if (g_cfgXRMode == 2) XR_SubmitEye(bb, eye);        // §4 every-2nd (regression)
+            else if (g_cfgXRMode == 4) XR_SubmitAERStable(bb, eye);  // AER, stable pairing
+            else                       XR_SubmitAER(bb, eye);        // AER, flipping pairing
 
             QueryPerformanceCounter(&x1);
             g_msXr += (double)(x1.QuadPart - x0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;

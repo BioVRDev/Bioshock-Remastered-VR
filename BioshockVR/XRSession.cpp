@@ -42,10 +42,16 @@ static ID3D11Device* g_dev = nullptr;
 static ID3D11DeviceContext* g_ctx = nullptr;
 static unsigned g_w = 0, g_h = 0;
 
-// ONE PERSISTENT TEXTURE PER EYE. The backbuffer only ever holds ONE eye's
-// image, so the other eye's most recent image has to live somewhere. Here.
+// g_stage[0]/[1] = the PUBLISHED pair currently being shown (left, right).
 static ID3D11Texture2D* g_stage[2] = { nullptr, nullptr };
 static bool             g_stageValid[2] = { false, false };
+
+// XRMode=4 only: the left image captured on the most recent left Present, held
+// back until its right partner arrives. Swapped into g_stage[0] as a pointer,
+// never copied.
+static ID3D11Texture2D* g_pendL = nullptr;
+static bool             g_pendValid = false;
+static bool             g_pairReady = false;
 
 static XrViewConfigurationView g_viewCfg[2] = {};
 
@@ -284,6 +290,29 @@ static bool EnsureStage(int i, ID3D11Texture2D* like)
     return true;
 }
 
+static bool EnsurePend(ID3D11Texture2D* like)
+{
+    if (g_pendL) return true;
+    if (!g_dev || !like) return false;
+
+    D3D11_TEXTURE2D_DESC d = {};
+    like->GetDesc(&d);
+    d.Usage = D3D11_USAGE_DEFAULT;
+    d.CPUAccessFlags = 0;
+    d.MiscFlags = 0;
+
+    HRESULT hr = g_dev->CreateTexture2D(&d, nullptr, &g_pendL);
+    if (FAILED(hr) || !g_pendL)
+    {
+        g_pendL = nullptr;
+        Log(">>> XR: !!! pendL CreateTexture2D FAILED hr=0x%08X", (unsigned)hr);
+        return false;
+    }
+    Log(">>> XR: pendL %ux%u DXGI %d created (stable-pair holding buffer)",
+        d.Width, d.Height, (int)d.Format);
+    return true;
+}
+
 // ONE full XR frame cycle. Every OpenXR call individually timed.
 static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 {
@@ -451,6 +480,59 @@ void XR_SubmitAER(ID3D11Texture2D* image, int eye)
     SubmitPair(L, R);
 }
 
+// XRMode=4. Stable eye pairing -- R is ALWAYS one Present newer than L.
+void XR_SubmitAERStable(ID3D11Texture2D* image, int eye)
+{
+    if (!g_init) return;
+    PumpEvents();
+    if (!g_running || !image) return;
+    if (eye < 0 || eye > 1) return;
+
+    if (!EnsureStage(0, image)) return;
+    if (!EnsureStage(1, image)) return;
+    if (!EnsurePend(image))     return;
+
+    LARGE_INTEGER a, b;
+
+    if (eye == 0)
+    {
+        // A new LEFT image. HOLD it -- it is not published until its RIGHT
+        // partner arrives on the very next Present. Meanwhile we re-submit the
+        // existing pair with a FRESH pose, so the compositor still gets 118
+        // layers/sec and timewarp stays smooth.
+        QPC(a);
+        g_ctx->CopyResource(g_pendL, image);
+        QPC(b);
+        g_tb.copy += MS(a, b);
+        g_pendValid = true;
+    }
+    else
+    {
+        // The RIGHT partner. Publish the pair: left from the PREVIOUS Present,
+        // right from THIS one. Pointer swap, no copy.
+        QPC(a);
+        g_ctx->CopyResource(g_stage[1], image);
+        QPC(b);
+        g_tb.copy += MS(a, b);
+        g_stageValid[1] = true;
+
+        if (g_pendValid)
+        {
+            ID3D11Texture2D* tmp = g_stage[0];
+            g_stage[0] = g_pendL;      // published left = the held one
+            g_pendL = tmp;             // recycle the old buffer for the next hold
+            g_stageValid[0] = true;
+            g_pendValid = false;
+            g_pairReady = true;
+        }
+    }
+
+    // Until a full L+R pair exists, show the live frame to both eyes (mono).
+    if (!g_pairReady) { SubmitPair(image, image); return; }
+
+    SubmitPair(g_stage[0], g_stage[1]);
+}
+
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state)
 {
     if (frames)    *frames = g_xrFrames;
@@ -470,6 +552,9 @@ void XR_Shutdown()
         if (g_stage[i]) { g_stage[i]->Release(); g_stage[i] = nullptr; }
         g_stageValid[i] = false;
     }
+    if (g_pendL) { g_pendL->Release(); g_pendL = nullptr; }
+    g_pendValid = false;
+    g_pairReady = false;
 
     for (int eye = 0; eye < 2; ++eye)
         if (g_sc[eye]) { xrDestroySwapchain(g_sc[eye]); g_sc[eye] = XR_NULL_HANDLE; }

@@ -138,12 +138,13 @@ static void LoadConfig()
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
 
     g_cfgXRMode = GetPrivateProfileIntA("VR", "XRMode", 3, g_iniPath);
-    if (g_cfgXRMode < 0 || g_cfgXRMode > 3) { Log("config: XRMode out of range. Forcing 3."); g_cfgXRMode = 3; }
+    if (g_cfgXRMode < 0 || g_cfgXRMode > 4) { Log("config: XRMode out of range. Forcing 3."); g_cfgXRMode = 3; }
     Log("config: XRMode            = %d   %s", g_cfgXRMode,
-        g_cfgXRMode == 0 ? "(NO XR -- flat, measuring the game under VD load)" :
-        g_cfgXRMode == 1 ? "(PHASE 5 mono, submit every Present -- KNOWN GOOD)" :
+        g_cfgXRMode == 0 ? "(NO XR -- flat)" :
+        g_cfgXRMode == 1 ? "(PHASE 5 mono -- KNOWN GOOD)" :
         g_cfgXRMode == 2 ? "(submit every 2nd Present -- THE REGRESSION)" :
-        "(AER, submit every Present -- THE FIX)");
+        g_cfgXRMode == 3 ? "(AER, flipping eye pairing -- WORKS, shimmers on turns)" :
+        "(AER, STABLE eye pairing -- no shimmer)");
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to

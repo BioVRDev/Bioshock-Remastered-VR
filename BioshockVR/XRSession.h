@@ -26,6 +26,13 @@ void XR_SubmitEye(ID3D11Texture2D* image, int eye);
 // compositor; §4 conflated "alternate the camera" with "submit half as often".
 void XR_SubmitAER(ID3D11Texture2D* image, int eye);
 
+// XRMode=4. AER with a STABLE eye pairing. XRMode=3 alternates which eye is
+// stale, so the inter-eye time offset flips sign 118x/sec -- during a turn that
+// reads as the world shimmering in and out of depth. Here the pair is always
+// (L from Present N, R from Present N+1) and is held for both frames of the
+// cycle, so R is ALWAYS 8.4ms newer than L. Constant sign, no shimmer.
+void XR_SubmitAERStable(ID3D11Texture2D* image, int eye);
+
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state);
 
 // Milliseconds inside each individual OpenXR call, accumulated since start.
