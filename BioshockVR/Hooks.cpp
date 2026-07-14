@@ -4,6 +4,7 @@
 
 #include "Hooks.h"
 #include "XRSession.h"
+#include "CameraHook.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -18,6 +19,7 @@
 
 extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;          // from dllmain.cpp, read out of BioshockVR.ini
+extern bool  g_cfgCameraHook;      // ini kill switch, in case the hook crashes
 
 static void Log(const char* fmt, ...)
 {
@@ -42,6 +44,7 @@ static DWORD     g_lastTick = 0;
 
 static bool g_xrTried = false;
 static bool g_xrDead = false;
+static bool g_camTried = false;
 
 static void DescribeOnce(IDXGISwapChain* sc)
 {
@@ -103,6 +106,16 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         else
         {
             XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+        }
+        // Camera hook: install once, on the render thread, at the first frame.
+        // NOT at DllMain -- the exe may still be packed/encrypted that early.
+        if (!g_camTried)
+        {
+            g_camTried = true;
+            if (g_cfgCameraHook)
+                CameraHook_Install();
+            else
+                Log("camera: DISABLED by BioshockVR.ini (EnableCameraHook=0)");
         }
     }
 

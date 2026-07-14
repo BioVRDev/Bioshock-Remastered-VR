@@ -22,6 +22,10 @@ static char              g_iniPath[MAX_PATH] = {};
 // be read from memory, so the user declares it. Stock is 100 horizontal.
 float g_cfgFovDeg = 100.0f;
 
+// Kill switch. If the camera hook crashes the game, set EnableCameraHook=0
+// in BioshockVR.ini and you're playable again with NO rebuild.
+bool g_cfgCameraHook = true;
+
 // Resolve "<folder containing this DLL>\BioshockVR.log" and ".ini" at runtime.
 // Never hardcode a path -- a hardcoded path both breaks on other machines
 // and ships your username inside the binary.
@@ -76,18 +80,18 @@ static void LoadConfig()
     char buf[64] = {};
     GetPrivateProfileStringA("VR", "GameFovDegrees", "", buf, sizeof(buf), g_iniPath);
 
+    bool got = false;
     if (buf[0])
     {
         double v = atof(buf);
-        if (v > 30.0 && v < 170.0)
-        {
-            g_cfgFovDeg = (float)v;
-            Log("config: GameFovDegrees = %.1f   (from BioshockVR.ini)", g_cfgFovDeg);
-            return;
-        }
-        Log("config: GameFovDegrees '%s' is out of range. Ignoring.", buf);
+        if (v > 30.0 && v < 170.0) { g_cfgFovDeg = (float)v; got = true; }
+        else Log("config: GameFovDegrees '%s' is out of range. Ignoring.", buf);
     }
-    Log("config: GameFovDegrees = %.1f   (DEFAULT - no BioshockVR.ini found)", g_cfgFovDeg);
+    Log("config: GameFovDegrees  = %.1f   (%s)", g_cfgFovDeg,
+        got ? "from BioshockVR.ini" : "DEFAULT");
+
+    g_cfgCameraHook = (GetPrivateProfileIntA("VR", "EnableCameraHook", 1, g_iniPath) != 0);
+    Log("config: EnableCameraHook = %d", (int)g_cfgCameraHook);
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to

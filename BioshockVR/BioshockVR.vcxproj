@@ -142,11 +142,13 @@
     <ClCompile Include="..\third_party\minhook\src\hde\hde64.c" />
     <ClCompile Include="..\third_party\minhook\src\hook.c" />
     <ClCompile Include="..\third_party\minhook\src\trampoline.c" />
+    <ClCompile Include="CameraHook.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Hooks.cpp" />
     <ClCompile Include="XRSession.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CameraHook.h" />
     <ClInclude Include="Hooks.h" />
     <ClInclude Include="XRSession.h" />
   </ItemGroup>

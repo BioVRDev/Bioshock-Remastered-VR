@@ -42,12 +42,18 @@
     <ClCompile Include="Hooks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CameraHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="XRSession.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Hooks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="CameraHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
