@@ -7,6 +7,7 @@
 #include <d3d11.h>
 #include <cstdio>
 #include <cstdarg>
+#include <cmath>
 #include <vector>
 
 #include <openxr/openxr.h>
@@ -47,8 +48,35 @@ static XrViewConfigurationView g_viewCfg[2] = {};
 static unsigned long long g_xrFrames = 0;
 static unsigned long long g_xrSubmitted = 0;
 
+// The FOV the game actually rendered at. Built by XR_SetGameFov.
+static XrFovf g_gameFov = {};
+static bool   g_haveGameFov = false;
+static bool   g_loggedHmdFov = false;
+
 #define XRCHK(expr, what) \
     do { XrResult _r = (expr); if (XR_FAILED(_r)) { Log(">>> XR: %s failed (%d)", what, (int)_r); return false; } } while (0)
+
+void XR_SetGameFov(float horizFovDeg, unsigned w, unsigned h)
+{
+    const double PI = 3.14159265358979323846;
+
+    // Horizontal half-angle, then derive vertical from the real backbuffer aspect.
+    double halfH = (horizFovDeg * 0.5) * PI / 180.0;
+    double halfV = atan(tan(halfH) * ((double)h / (double)w));
+
+    // Symmetric frustum -- the game renders a normal centred perspective view.
+    // The HEADSET's frustum is asymmetric and canted; that's exactly the lie
+    // we're removing. Both eyes get the same symmetric FOV, so the same image
+    // lands in the same angular place in both eyes and can actually FUSE.
+    g_gameFov.angleLeft = (float)(-halfH);
+    g_gameFov.angleRight = (float)(halfH);
+    g_gameFov.angleUp = (float)(halfV);
+    g_gameFov.angleDown = (float)(-halfV);
+    g_haveGameFov = true;
+
+    Log(">>> XR: GAME FOV = %.1f h / %.1f v deg  (from %ux%u)",
+        horizFovDeg, halfV * 2.0 * 180.0 / PI, w, h);
+}
 
 bool XR_IsInit() { return g_init; }
 
@@ -289,7 +317,20 @@ void XR_Frame(ID3D11Texture2D* image)
 
                 pv[eye] = { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
                 pv[eye].pose = views[eye].pose;
-                pv[eye].fov = views[eye].fov;   // WRONG on purpose. Phase 8 fixes this.
+                
+                // THE PHASE 8 FIX. Report the GAME's fov, not the headset's.
+                pv[eye].fov = g_haveGameFov ? g_gameFov : views[eye].fov;
+
+                if (!g_loggedHmdFov && eye == 1)
+                {
+                    g_loggedHmdFov = true;
+                    const double R2D = 180.0 / 3.14159265358979323846;
+                    for (int e = 0; e < 2; ++e)
+                        Log(">>> XR: HMD eye %d fov  L%.1f R%.1f U%.1f D%.1f deg",
+                            e, views[e].fov.angleLeft * R2D, views[e].fov.angleRight * R2D,
+                            views[e].fov.angleUp * R2D, views[e].fov.angleDown * R2D);
+                }
+
                 pv[eye].subImage.swapchain = g_sc[eye];
                 pv[eye].subImage.imageRect.offset = { 0, 0 };
                 pv[eye].subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };

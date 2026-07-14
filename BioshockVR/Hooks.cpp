@@ -1,8 +1,6 @@
 // BioshockVR/Hooks.cpp
 //
-// Phase 2: hook IDXGISwapChain::Present via the dummy-swapchain vtable trick.
-// We render nothing. We only prove the hook fires, and we report what the
-// game's real backbuffer actually looks like -- which is the input Phase 3 needs.
+// Present hook + XR bring-up.
 
 #include "Hooks.h"
 #include "XRSession.h"
@@ -18,7 +16,9 @@
 
 #pragma comment(lib, "d3d11.lib")
 
-extern void LogFile(const char* msg);
+extern void  LogFile(const char* msg);
+extern float g_cfgFovDeg;          // from dllmain.cpp, read out of BioshockVR.ini
+
 static void Log(const char* fmt, ...)
 {
     char b[1024];
@@ -28,21 +28,21 @@ static void Log(const char* fmt, ...)
     LogFile(b);
 }
 
-// Rust's extern "system" on x86 == __stdcall == STDMETHODCALLTYPE.
 typedef HRESULT(__stdcall* PresentFn)(IDXGISwapChain*, UINT SyncInterval, UINT Flags);
 
 static PresentFn g_origPresent = nullptr;
 static void* g_presentAddr = nullptr;
 
-// Cached on first Present. Phase 3 needs these.
 static ID3D11Device* g_dev = nullptr;
 static ID3D11DeviceContext* g_ctx = nullptr;
-static bool     g_described = false;
-static uint64_t g_frames = 0;
-static DWORD    g_lastTick = 0;
+static unsigned  g_bbW = 0, g_bbH = 0;      // real backbuffer size, measured
+static bool      g_described = false;
+static uint64_t  g_frames = 0;
+static DWORD     g_lastTick = 0;
 
-// Pull the game's real device/context/backbuffer info out of the live swapchain.
-// Runs exactly once. This is the payload of Phase 2.
+static bool g_xrTried = false;
+static bool g_xrDead = false;
+
 static void DescribeOnce(IDXGISwapChain* sc)
 {
     g_described = true;
@@ -50,6 +50,9 @@ static void DescribeOnce(IDXGISwapChain* sc)
     DXGI_SWAP_CHAIN_DESC d = {};
     if (SUCCEEDED(sc->GetDesc(&d)))
     {
+        g_bbW = d.BufferDesc.Width;
+        g_bbH = d.BufferDesc.Height;
+
         Log("--- GAME SWAPCHAIN ---");
         Log("  backbuffer : %u x %u", d.BufferDesc.Width, d.BufferDesc.Height);
         Log("  format     : DXGI %d", (int)d.BufferDesc.Format);
@@ -57,7 +60,6 @@ static void DescribeOnce(IDXGISwapChain* sc)
         Log("  windowed   : %s", d.Windowed ? "YES" : "NO  <-- FIX THIS");
         Log("  samples    : %u (MSAA count)", d.SampleDesc.Count);
         Log("  hwnd       : 0x%08X", (unsigned)(uintptr_t)d.OutputWindow);
-        Log("  usage      : 0x%08X", (unsigned)d.BufferUsage);
     }
     else
     {
@@ -69,36 +71,13 @@ static void DescribeOnce(IDXGISwapChain* sc)
         g_dev->GetImmediateContext(&g_ctx);
         Log("  device     : 0x%08X   context: 0x%08X",
             (unsigned)(uintptr_t)g_dev, (unsigned)(uintptr_t)g_ctx);
-        Log("  feature lvl: 0x%04X", (unsigned)g_dev->GetFeatureLevel());
     }
     else
     {
         Log("!!! GetDevice failed -- this is NOT a D3D11 swapchain?");
     }
-
-    // Can we actually get at the backbuffer texture? Phase 3 lives or dies on this.
-    ID3D11Texture2D* bb = nullptr;
-    if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb)) && bb)
-    {
-        D3D11_TEXTURE2D_DESC td = {};
-        bb->GetDesc(&td);
-        Log("  BACKBUFFER TEXTURE OK: %u x %u  fmt %d  usage %d  bind 0x%X  misc 0x%X",
-            td.Width, td.Height, (int)td.Format, (int)td.Usage,
-            (unsigned)td.BindFlags, (unsigned)td.MiscFlags);
-        bb->Release();
-    }
-    else
-    {
-        Log("!!! GetBuffer(0) FAILED -- Phase 3 has a problem");
-    }
     Log("----------------------");
 }
-
-// One-shot: try XR init exactly once, on the game's render thread, once we
-// know the device. If it fails we set g_xrDead and never touch OpenXR again --
-// retrying every frame would be a disaster.
-static bool g_xrTried = false;
-static bool g_xrDead = false;
 
 static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT Flags)
 {
@@ -111,25 +90,28 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
 
     ++g_frames;
 
-    // --- bring OpenXR up, once, now that we have the game's device ---
-    if (!g_xrTried && g_dev && g_ctx)
+    // Bring OpenXR up once, on the render thread, at the REAL backbuffer size.
+    if (!g_xrTried && g_dev && g_ctx && g_bbW && g_bbH)
     {
         g_xrTried = true;
-        Log(">>> Attempting XR_Init on the game's device (1920x1080)...");
-        if (!XR_Init(g_dev, g_ctx, 1920, 1080))
+        Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
+        if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
         {
             g_xrDead = true;
             Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
         }
+        else
+        {
+            XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+        }
     }
 
-    // --- submit the game's backbuffer to the headset ---
     if (!g_xrDead && XR_IsInit())
     {
         ID3D11Texture2D* bb = nullptr;
         if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb)) && bb)
         {
-            XR_Frame(bb);      // blocks in xrWaitFrame -- this is expected
+            XR_Frame(bb);      // blocks in xrWaitFrame -- expected
             bb->Release();
         }
         else if ((g_frames % 600) == 0)
@@ -154,9 +136,6 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     return g_origPresent(sc, SyncInterval, Flags);
 }
 
-// Stand up a throwaway device + swapchain purely to read the vtable.
-// All IDXGISwapChain instances in the process share it, so hooking the
-// address we find here hooks the game's swapchain too.
 static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
 {
     WNDCLASSEXW wc = {};
@@ -199,7 +178,6 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
         return false;
     }
 
-    // vtable = *(void***)pInterface.  Indices are from the handoff (6f).
     void** scVT = *(void***)sc;
     void** ctxVT = *(void***)ctx;
 

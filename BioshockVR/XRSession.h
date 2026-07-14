@@ -8,6 +8,11 @@ struct ID3D11Texture2D;
 bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h);
 bool XR_IsInit();
 
+// Tell the XR layer the FOV the game ACTUALLY rendered at, so the compositor
+// stops stretching the frame across the headset's (wider) frustum.
+// horizFovDeg = the game's HORIZONTAL fov. Vertical is derived from w/h.
+void XR_SetGameFov(float horizFovDeg, unsigned w, unsigned h);
+
 // Call once per game frame. Pumps events and submits 'image' to both eyes.
 void XR_Frame(ID3D11Texture2D* image);
 

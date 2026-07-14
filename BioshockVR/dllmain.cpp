@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <cstdlib>
 #include <cstdint>
 #include "Hooks.h"
 
@@ -15,8 +16,13 @@
 static HMODULE           g_hSelf = nullptr;
 static CRITICAL_SECTION  g_logLock;
 static char              g_logPath[MAX_PATH] = {};
+static char              g_iniPath[MAX_PATH] = {};
 
-// Resolve "<folder containing this DLL>\BioshockVR.log" at runtime.
+// Non-static: Hooks.cpp externs this. §6h -- BSR's live FOV slider value can't
+// be read from memory, so the user declares it. Stock is 100 horizontal.
+float g_cfgFovDeg = 100.0f;
+
+// Resolve "<folder containing this DLL>\BioshockVR.log" and ".ini" at runtime.
 // Never hardcode a path -- a hardcoded path both breaks on other machines
 // and ships your username inside the binary.
 static void InitLogPath()
@@ -29,6 +35,7 @@ static void InitLogPath()
     *(slash + 1) = 0;                       // truncate to the directory
 
     _snprintf_s(g_logPath, MAX_PATH, _TRUNCATE, "%sBioshockVR.log", p);
+    _snprintf_s(g_iniPath, MAX_PATH, _TRUNCATE, "%sBioshockVR.ini", p);
 }
 
 // XRSession.cpp declares this extern. Keep the name.
@@ -59,6 +66,30 @@ static void Log(const char* fmt, ...)
     LogFile(b);
 }
 
+// Read BioshockVR.ini, sitting next to this DLL. Read-only -- we never write
+// it, because Program Files is UAC-protected and a write would get silently
+// redirected to VirtualStore, which is a debugging nightmare.
+static void LoadConfig()
+{
+    if (!g_iniPath[0]) { Log("config: no ini path. Using defaults."); return; }
+
+    char buf[64] = {};
+    GetPrivateProfileStringA("VR", "GameFovDegrees", "", buf, sizeof(buf), g_iniPath);
+
+    if (buf[0])
+    {
+        double v = atof(buf);
+        if (v > 30.0 && v < 170.0)
+        {
+            g_cfgFovDeg = (float)v;
+            Log("config: GameFovDegrees = %.1f   (from BioshockVR.ini)", g_cfgFovDeg);
+            return;
+        }
+        Log("config: GameFovDegrees '%s' is out of range. Ignoring.", buf);
+    }
+    Log("config: GameFovDegrees = %.1f   (DEFAULT - no BioshockVR.ini found)", g_cfgFovDeg);
+}
+
 // Real init happens off the loader lock. DllMain is not a safe place to
 // allocate, hook, or touch other modules.
 static DWORD WINAPI InitThread(LPVOID)
@@ -78,6 +109,7 @@ static DWORD WINAPI InitThread(LPVOID)
     Log("MH_Initialize -> %d  (0 == MH_OK)", (int)s);
     if (s != MH_OK) { Log("!!! MinHook dead. Stopping."); return 0; }
 
+    LoadConfig();
     if (!Hooks_Install())
     {
         Log("!!! Hooks_Install FAILED. No hook installed. Game will run clean.");
