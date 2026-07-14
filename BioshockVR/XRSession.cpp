@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <cstdio>
+#include <cstdarg>
 #include <vector>
 
 #include <openxr/openxr.h>
@@ -41,10 +42,29 @@ static unsigned g_w = 0, g_h = 0;
 
 static XrViewConfigurationView g_viewCfg[2] = {};
 
+// Frame accounting, so the log tells us whether frames are actually reaching
+// the compositor -- not just whether Present is firing.
+static unsigned long long g_xrFrames = 0;
+static unsigned long long g_xrSubmitted = 0;
+
 #define XRCHK(expr, what) \
     do { XrResult _r = (expr); if (XR_FAILED(_r)) { Log(">>> XR: %s failed (%d)", what, (int)_r); return false; } } while (0)
 
 bool XR_IsInit() { return g_init; }
+
+static const char* FmtName(int64_t f)
+{
+    switch ((int)f)
+    {
+    case 28: return "R8G8B8A8_UNORM";
+    case 29: return "R8G8B8A8_UNORM_SRGB";
+    case 87: return "B8G8R8A8_UNORM";
+    case 91: return "B8G8R8A8_UNORM_SRGB";
+    case 24: return "R10G10B10A2_UNORM";
+    case 10: return "R16G16B16A16_FLOAT";
+    default: return "?";
+    }
+}
 
 bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h)
 {
@@ -60,16 +80,17 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     XrInstanceCreateInfo ici = { XR_TYPE_INSTANCE_CREATE_INFO };
     ici.enabledExtensionCount = 1;
     ici.enabledExtensionNames = exts;
-    strcpy_s(ici.applicationInfo.applicationName, "BioShockVR");
+    strcpy_s(ici.applicationInfo.applicationName, "BioshockVR");
     ici.applicationInfo.applicationVersion = 1;
-    strcpy_s(ici.applicationInfo.engineName, "d3d9proxy");
+    strcpy_s(ici.applicationInfo.engineName, "BioshockVR");
     ici.applicationInfo.engineVersion = 1;
     ici.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
 
     XrResult r = xrCreateInstance(&ici, &g_inst);
     if (XR_FAILED(r))
     {
-        Log(">>> XR: xrCreateInstance FAILED (%d) - is Virtual Desktop running?", (int)r);
+        Log(">>> XR: xrCreateInstance FAILED (%d) - is Virtual Desktop Streamer running", (int)r);
+        Log(">>> XR: and the Quest connected BEFORE the game launched?");
         return false;
     }
 
@@ -122,25 +143,37 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     rsci.poseInReferenceSpace.orientation.w = 1.0f;
     XRCHK(xrCreateReferenceSpace(g_session, &rsci, &g_space), "xrCreateReferenceSpace");
 
-    // --- pick a swapchain format we can CopyResource into ---
+    // --- swapchain format ---
+    // The GAME'S BACKBUFFER IS R8G8B8A8_UNORM (DXGI 28), measured in Phase 2.
+    // CopyResource needs src and dst in the same typeless family, so we must
+    // pick an R8G8B8A8 format -- NOT B8G8R8A8. Both 28 and 29 are legal
+    // destinations (same family, raw bit copy).
+    //
+    // We prefer _SRGB (29): the game writes gamma-encoded pixels, and declaring
+    // the swapchain sRGB tells the compositor to linearize them on sample.
+    // If the headset image looks WASHED OUT / MILKY, swap the two blocks below.
     uint32_t fmtCount = 0;
     xrEnumerateSwapchainFormats(g_session, 0, &fmtCount, nullptr);
     std::vector<int64_t> fmts(fmtCount);
     xrEnumerateSwapchainFormats(g_session, fmtCount, &fmtCount, fmts.data());
 
+    Log(">>> XR: runtime offers %u swapchain formats:", fmtCount);
+    for (int64_t f : fmts)
+        Log("       DXGI %d  %s", (int)f, FmtName(f));
+
     int64_t chosen = 0;
-    for (int64_t f : fmts)   // our shared texture is B8G8R8A8_UNORM
-        if (f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) { chosen = f; break; }
+    for (int64_t f : fmts)                                   // 1st choice
+        if (f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) { chosen = f; break; }
     if (!chosen)
-        for (int64_t f : fmts)
-            if (f == DXGI_FORMAT_B8G8R8A8_UNORM) { chosen = f; break; }
+        for (int64_t f : fmts)                               // 2nd choice
+            if (f == DXGI_FORMAT_R8G8B8A8_UNORM) { chosen = f; break; }
     if (!chosen)
     {
-        Log(">>> XR: no BGRA swapchain format available. Runtime offers:");
-        for (int64_t f : fmts) Log("       DXGI %d", (int)f);
+        Log(">>> XR: !!! runtime offers NO R8G8B8A8 format. CopyResource from the");
+        Log(">>> XR: !!! game's DXGI 28 backbuffer would be illegal. Stopping.");
         return false;
     }
-    Log(">>> XR: swapchain format DXGI %d", (int)chosen);
+    Log(">>> XR: CHOSE swapchain format DXGI %d  %s", (int)chosen, FmtName(chosen));
 
     // --- swapchains, one per eye, at the GAME's resolution (runtime will scale) ---
     for (int eye = 0; eye < 2; ++eye)
@@ -209,6 +242,8 @@ void XR_Frame(ID3D11Texture2D* image)
     PumpEvents();
     if (!g_running || !image) return;
 
+    ++g_xrFrames;
+
     XrFrameWaitInfo fwi = { XR_TYPE_FRAME_WAIT_INFO };
     XrFrameState fs = { XR_TYPE_FRAME_STATE };
     if (XR_FAILED(xrWaitFrame(g_session, &fwi, &fs))) return;
@@ -246,7 +281,7 @@ void XR_Frame(ID3D11Texture2D* image)
                 wi.timeout = XR_INFINITE_DURATION;
                 if (XR_FAILED(xrWaitSwapchainImage(g_sc[eye], &wi))) continue;
 
-                // Same image to both eyes for now. AER comes next.
+                // Same image to both eyes. Mono, on purpose. AER is Phase 6.
                 g_ctx->CopyResource(g_scImages[eye][idx].texture, image);
 
                 XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
@@ -254,7 +289,7 @@ void XR_Frame(ID3D11Texture2D* image)
 
                 pv[eye] = { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
                 pv[eye].pose = views[eye].pose;
-                pv[eye].fov = views[eye].fov;
+                pv[eye].fov = views[eye].fov;   // WRONG on purpose. Phase 8 fixes this.
                 pv[eye].subImage.swapchain = g_sc[eye];
                 pv[eye].subImage.imageRect.offset = { 0, 0 };
                 pv[eye].subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
@@ -266,6 +301,7 @@ void XR_Frame(ID3D11Texture2D* image)
             layer.views = pv;
             layers[0] = (const XrCompositionLayerBaseHeader*)&layer;
             layerCount = 1;
+            ++g_xrSubmitted;
         }
     }
 
@@ -275,6 +311,13 @@ void XR_Frame(ID3D11Texture2D* image)
     fei.layerCount = layerCount;
     fei.layers = layers;
     xrEndFrame(g_session, &fei);
+}
+
+void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state)
+{
+    if (frames)    *frames = g_xrFrames;
+    if (submitted) *submitted = g_xrSubmitted;
+    if (state)     *state = (int)g_state;
 }
 
 void XR_Shutdown()

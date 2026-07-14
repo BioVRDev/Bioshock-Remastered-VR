@@ -5,6 +5,7 @@
 // game's real backbuffer actually looks like -- which is the input Phase 3 needs.
 
 #include "Hooks.h"
+#include "XRSession.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -93,6 +94,12 @@ static void DescribeOnce(IDXGISwapChain* sc)
     Log("----------------------");
 }
 
+// One-shot: try XR init exactly once, on the game's render thread, once we
+// know the device. If it fails we set g_xrDead and never touch OpenXR again --
+// retrying every frame would be a disaster.
+static bool g_xrTried = false;
+static bool g_xrDead = false;
+
 static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT Flags)
 {
     if (!g_described)
@@ -104,13 +111,42 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
 
     ++g_frames;
 
-    // Heartbeat once a second. Never log per-frame: at 240fps that's a disk
-    // write every 4ms and it will tank the game and lie to you about perf.
+    // --- bring OpenXR up, once, now that we have the game's device ---
+    if (!g_xrTried && g_dev && g_ctx)
+    {
+        g_xrTried = true;
+        Log(">>> Attempting XR_Init on the game's device (1920x1080)...");
+        if (!XR_Init(g_dev, g_ctx, 1920, 1080))
+        {
+            g_xrDead = true;
+            Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
+        }
+    }
+
+    // --- submit the game's backbuffer to the headset ---
+    if (!g_xrDead && XR_IsInit())
+    {
+        ID3D11Texture2D* bb = nullptr;
+        if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb)) && bb)
+        {
+            XR_Frame(bb);      // blocks in xrWaitFrame -- this is expected
+            bb->Release();
+        }
+        else if ((g_frames % 600) == 0)
+        {
+            Log("!!! GetBuffer(0) failed in Present");
+        }
+    }
+
     DWORD now = GetTickCount();
     if (now - g_lastTick >= 1000)
     {
         static uint64_t lastFrames = 0;
-        Log("frames: %llu   (~%llu fps)", g_frames, g_frames - lastFrames);
+        unsigned long long xrf = 0, xrs = 0;
+        int st = 0;
+        XR_Stats(&xrf, &xrs, &st);
+        Log("frames: %llu (~%llu fps)   xr: %llu waited / %llu submitted   state %d",
+            g_frames, g_frames - lastFrames, xrf, xrs, st);
         lastFrames = g_frames;
         g_lastTick = now;
     }

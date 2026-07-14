@@ -11,4 +11,7 @@ bool XR_IsInit();
 // Call once per game frame. Pumps events and submits 'image' to both eyes.
 void XR_Frame(ID3D11Texture2D* image);
 
+// For the heartbeat log. Any pointer may be null.
+void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state);
+
 void XR_Shutdown();
