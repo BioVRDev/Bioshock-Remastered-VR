@@ -18,17 +18,41 @@ static CRITICAL_SECTION  g_logLock;
 static char              g_logPath[MAX_PATH] = {};
 static char              g_iniPath[MAX_PATH] = {};
 
-// Non-static: Hooks.cpp externs this. §6h -- BSR's live FOV slider value can't
-// be read from memory, so the user declares it. Stock is 100 horizontal.
+// Non-static: Hooks.cpp / CameraHook.cpp extern these.
+
+// §6h. BSR's live FOV slider can't be read from memory, so the user declares it.
+// Stock is 100 horizontal. Slider and ini MUST match.
 float g_cfgFovDeg = 100.0f;
 
-// Kill switch. If the camera hook crashes the game, set EnableCameraHook=0
-// in BioshockVR.ini and you're playable again with NO rebuild.
+// Phase 5 kill switch: if the camera hook crashes the game, set 0. No rebuild.
 bool g_cfgCameraHook = true;
 
-// Resolve "<folder containing this DLL>\BioshockVR.log" and ".ini" at runtime.
-// Never hardcode a path -- a hardcoded path both breaks on other machines
-// and ships your username inside the binary.
+// Phase 6 kill switch, SEPARATE from the above. This is the one that lets the
+// hook actually MODIFY the game's camera.
+bool g_cfgCameraWrite = false;
+
+// Half-IPD in game units. 1 unit == 1 cm, MEASURED (§6b-note). 3.2 == 64mm IPD.
+float g_cfgEyeSep = 3.2f;
+
+// If depth comes out INVERTED (world feels like a hollow mask), flip this.
+bool g_cfgSwapEyes = false;
+
+// The game presents with SyncInterval=1. Overriding it to 0 turned out NOT to be
+// the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
+bool g_cfgDisableVSync = true;
+
+// XRMode:
+//   0 = XR never initializes. Flat game, with VD Streamer running and the headset
+//       connected. MEASURES the game's true Present rate under VD's load.
+//   1 = PHASE 5. Full XR cycle every Present, same image to both eyes. MONO.
+//       KNOWN GOOD: 118 submits/sec, headset at 120. The floor.
+//   2 = What §4 prescribed: submit every SECOND Present. HALVES the submit rate
+//       to 59/sec and drops the headset to 60. THE REGRESSION. Kept to reproduce.
+//   3 = AER. Full XR cycle EVERY Present, so the submit rate stays at 118/sec --
+//       but each eye carries its own image, one Present apart. Stereo never
+//       required starving the compositor. THIS IS THE ONE.
+int g_cfgXRMode = 3;
+
 static void InitLogPath()
 {
     char p[MAX_PATH] = {};
@@ -42,7 +66,6 @@ static void InitLogPath()
     _snprintf_s(g_iniPath, MAX_PATH, _TRUNCATE, "%sBioshockVR.ini", p);
 }
 
-// XRSession.cpp declares this extern. Keep the name.
 void LogFile(const char* msg)
 {
     if (!g_logPath[0]) return;
@@ -70,16 +93,15 @@ static void Log(const char* fmt, ...)
     LogFile(b);
 }
 
-// Read BioshockVR.ini, sitting next to this DLL. Read-only -- we never write
-// it, because Program Files is UAC-protected and a write would get silently
-// redirected to VirtualStore, which is a debugging nightmare.
+// Read-only. We never WRITE the ini -- Program Files is UAC-protected and a
+// write gets silently redirected to VirtualStore (a debugging nightmare, §8).
 static void LoadConfig()
 {
     if (!g_iniPath[0]) { Log("config: no ini path. Using defaults."); return; }
 
     char buf[64] = {};
-    GetPrivateProfileStringA("VR", "GameFovDegrees", "", buf, sizeof(buf), g_iniPath);
 
+    GetPrivateProfileStringA("VR", "GameFovDegrees", "", buf, sizeof(buf), g_iniPath);
     bool got = false;
     if (buf[0])
     {
@@ -87,11 +109,41 @@ static void LoadConfig()
         if (v > 30.0 && v < 170.0) { g_cfgFovDeg = (float)v; got = true; }
         else Log("config: GameFovDegrees '%s' is out of range. Ignoring.", buf);
     }
-    Log("config: GameFovDegrees  = %.1f   (%s)", g_cfgFovDeg,
+    Log("config: GameFovDegrees   = %.1f   (%s)", g_cfgFovDeg,
         got ? "from BioshockVR.ini" : "DEFAULT");
 
     g_cfgCameraHook = (GetPrivateProfileIntA("VR", "EnableCameraHook", 1, g_iniPath) != 0);
-    Log("config: EnableCameraHook = %d", (int)g_cfgCameraHook);
+    Log("config: EnableCameraHook  = %d", (int)g_cfgCameraHook);
+
+    g_cfgCameraWrite = (GetPrivateProfileIntA("VR", "EnableCameraWrite", 0, g_iniPath) != 0);
+    Log("config: EnableCameraWrite = %d   %s", (int)g_cfgCameraWrite,
+        g_cfgCameraWrite ? "(the camera WILL be modified)" : "(read-only, no stereo)");
+
+    buf[0] = 0;
+    GetPrivateProfileStringA("VR", "EyeSeparation", "", buf, sizeof(buf), g_iniPath);
+    got = false;
+    if (buf[0])
+    {
+        double v = atof(buf);
+        if (v >= 0.0 && v <= 20.0) { g_cfgEyeSep = (float)v; got = true; }
+        else Log("config: EyeSeparation '%s' is out of range (0..20). Ignoring.", buf);
+    }
+    Log("config: EyeSeparation     = %.2f units (cm)   (%s)", g_cfgEyeSep,
+        got ? "from BioshockVR.ini" : "DEFAULT");
+
+    g_cfgSwapEyes = (GetPrivateProfileIntA("VR", "SwapEyes", 0, g_iniPath) != 0);
+    Log("config: SwapEyes          = %d", (int)g_cfgSwapEyes);
+
+    g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
+    Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
+
+    g_cfgXRMode = GetPrivateProfileIntA("VR", "XRMode", 3, g_iniPath);
+    if (g_cfgXRMode < 0 || g_cfgXRMode > 3) { Log("config: XRMode out of range. Forcing 3."); g_cfgXRMode = 3; }
+    Log("config: XRMode            = %d   %s", g_cfgXRMode,
+        g_cfgXRMode == 0 ? "(NO XR -- flat, measuring the game under VD load)" :
+        g_cfgXRMode == 1 ? "(PHASE 5 mono, submit every Present -- KNOWN GOOD)" :
+        g_cfgXRMode == 2 ? "(submit every 2nd Present -- THE REGRESSION)" :
+        "(AER, submit every Present -- THE FIX)");
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to
@@ -120,7 +172,7 @@ static DWORD WINAPI InitThread(LPVOID)
         return 0;
     }
 
-    Log("Phase 2 init done. Hook armed.");
+    Log("Init done. Present hook armed.");
     return 0;
 }
 

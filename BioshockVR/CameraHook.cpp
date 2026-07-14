@@ -1,10 +1,19 @@
 // BioshockVR/CameraHook.cpp
 //
-// Phase 5: find APlayerController::eventPlayerCalcView by FName chain and hook
-// it READ-ONLY. We call the original, then log what it wrote. We change nothing.
+// Phase 6: the six-stage FName search (UNCHANGED from Phase 5), plus
+//   * automatic site0 detection -- the render view is the site with the most
+//     calls, because it is the only one that ticks while standing still (§6c-2)
+//   * the EYE TAG FIFO -- CalcView is on the GAME thread, Present is on the
+//     RENDER thread (MEASURED: 42040 vs 42432). The eye must travel with the
+//     frame, not be read from a shared flag.
+//   * the WRITE path: a per-eye camera POSITION offset for AER stereo (§6e)
 //
-// The search (handoff 6a) is six stages. Every stage logs. If ANY stage fails
-// we install NO hook -- a wrong hook here corrupts the stack and kills the game.
+// Gated TWICE:
+//   EnableCameraHook=1   installs the hook at all (Phase 5 kill switch)
+//   EnableCameraWrite=1  lets it MODIFY CameraLocation (Phase 6 kill switch)
+//
+// We do NOT touch *CameraRotation in Phase 6. Head tracking is Phase 8, and
+// `final == clean` means writing it back would be a no-op anyway.
 
 #include "CameraHook.h"
 
@@ -13,14 +22,21 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <cmath>
 #include <vector>
-#include <intrin.h>     // _ReturnAddress
+#include <intrin.h>     // _ReturnAddress, _InterlockedIncrement
 
 #include <MinHook.h>
 
 #pragma comment(lib, "psapi.lib")
 
 extern void LogFile(const char* msg);
+
+// From dllmain.cpp / BioshockVR.ini
+extern bool  g_cfgCameraWrite;   // default 0 -- the Phase 6 kill switch
+extern float g_cfgEyeSep;        // half-IPD in game units (== cm). default 3.2
+extern bool  g_cfgSwapEyes;      // 1 == invert the eye polarity
+
 static void Log(const char* fmt, ...)
 {
     char b[1024];
@@ -32,8 +48,8 @@ static void Log(const char* fmt, ...)
 
 // ---------------------------------------------------------------- types
 
-struct FVector { float   x, y, z; };            // 1 unit == 1 CENTIMETRE (to verify!)
-struct FRotator { int32_t pitch, yaw, roll; };   // 65536 units == 360 degrees
+struct FVector { float   x, y, z; };            // 1 unit == 1 CENTIMETRE (MEASURED, §6b-note)
+struct FRotator { int32_t pitch, yaw, roll; };   // low 16 bits: 65536 == 360 deg
 
 // MSVC __thiscall on x86: `this` in ECX, stack args right-to-left, callee cleans.
 // You cannot DEFINE a free function as __thiscall, so we use __fastcall with a
@@ -50,6 +66,19 @@ static void* g_fnAddr = nullptr;
 
 static uint8_t* g_modBase = nullptr;
 static size_t   g_modSize = 0;
+
+// ---------------------------------------------------------------- the eye FIFO
+// Single producer (game thread, in hkCalcView) / single consumer (render thread,
+// in hkPresent). x86 + volatile + Interlocked is sufficient here.
+
+static volatile long  g_eyeWr = 0;
+static volatile long  g_eyeRd = 0;
+static unsigned char  g_eyeQ[64] = {};
+
+static volatile long  g_qMin = 0x7FFFFFFF;
+static volatile long  g_qMax = -1;
+static volatile long  g_underruns = 0;
+static int            g_lastEye = 1;   // so the first underrun yields eye 0
 
 // ---------------------------------------------------------------- memory safety
 
@@ -68,6 +97,35 @@ static bool IsMemoryValid(const void* addr, size_t size)
     case PAGE_READWRITE:
     case PAGE_WRITECOPY:
     case PAGE_EXECUTE_READ:
+    case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE_WRITECOPY:
+        break;
+    default:
+        return false;
+    }
+
+    const uint8_t* rs = (const uint8_t*)mbi.BaseAddress;
+    const uint8_t* re = rs + mbi.RegionSize;
+    const uint8_t* a = (const uint8_t*)addr;
+    return (a >= rs) && (a + size <= re);
+}
+
+// The WRITE path needs the page to actually be writable, which IsMemoryValid
+// does not guarantee (it accepts PAGE_READONLY). Stack locals always are, but
+// check anyway -- this is the first phase that writes to the game.
+static bool IsMemoryWritable(const void* addr, size_t size)
+{
+    if (!addr || !size) return false;
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
+
+    switch (mbi.Protect & 0xFF)
+    {
+    case PAGE_READWRITE:
+    case PAGE_WRITECOPY:
     case PAGE_EXECUTE_READWRITE:
     case PAGE_EXECUTE_WRITECOPY:
         break;
@@ -139,6 +197,7 @@ static void FindDwordRefs(const std::vector<Region>& regs, uint32_t value,
 }
 
 // ---------------------------------------------------------------- the six stages
+// UNCHANGED FROM PHASE 5. Works: 31ms, module+0x1BE7A0. Do not touch it.
 
 static void* FindCalcView()
 {
@@ -172,7 +231,6 @@ static void* FindCalcView()
     for (uint8_t* h : strHits) Log("camera:          str @ 0x%08X", (unsigned)(uintptr_t)h);
     if (strHits.empty()) { Log("camera: STAGE 1 FAIL - string not found. STOP."); return nullptr; }
 
-    // Try every string hit; the first one that yields a function wins.
     for (uint8_t* strAddr : strHits)
     {
         // --- STAGE 2: PUSH <strAddr>  (68 imm32) inside executable memory ---
@@ -226,8 +284,7 @@ static void* FindCalcView()
             }
             Log("camera: STAGE 3  NAME_PlayerCalcView.Index global = 0x%08X", nameGlobal);
 
-            // --- STAGE 4: xrefs to that global, skipping any within 200 bytes
-            //              of the string xref (the name table is one big init loop) ---
+            // --- STAGE 4: xrefs to that global, skipping any within 200 bytes ---
             std::vector<uint8_t*> gRaw;
             FindDwordRefs(regs, nameGlobal, gRaw, 512);
 
@@ -277,54 +334,83 @@ static void* FindCalcView()
     return nullptr;
 }
 
-// ---------------------------------------------------------------- the detour
+// ---------------------------------------------------------------- basis math (§6d)
 
-// The out-pointers are the CALLER'S STACK LOCALS -- they are NOT stable, and
-// the handoff's pointer-cache "optimization" was built on a false premise.
-// No cache. Validate cheaply, log nothing per-call.
-//
-// PHASE 5b: bucket calls by RETURN ADDRESS. The log showed ~1.85 calls per
-// frame, so there is more than one call site. We need to know whether they
-// agree before Phase 6 starts writing to CameraRotation.
+struct Vec3 { double x, y, z; };
+
+static double UnitsToDeg(int32_t u)
+{
+    return (double)(int16_t)(u & 0xFFFF) * (360.0 / 65536.0);
+}
+
+static double UnitsToRad(int32_t u)
+{
+    return UnitsToDeg(u) * (3.14159265358979323846 / 180.0);
+}
+
+// §6d rotator_to_basis, but Phase 6 only needs the RIGHT vector -- that's the
+// axis the eye offset slides along. Roll is taken RAW here; the "-roll"
+// inversion belongs to apply_world_space_yaw (Phase 8), not here.
+static Vec3 RotatorRight(const FRotator& r)
+{
+    const double p = UnitsToRad(r.pitch);
+    const double y = UnitsToRad(r.yaw);
+    const double o = UnitsToRad(r.roll);
+
+    const double cp = cos(p), sp = sin(p);
+    const double cy = cos(y), sy = sin(y);
+    const double cr = cos(o), sr = sin(o);
+
+    const Vec3 right0 = { -sy,      cy,      0.0 };
+    const Vec3 up0 = { -sp * cy, -sp * sy,  cp };
+
+    return { right0.x * cr + up0.x * (-sr),
+             right0.y * cr + up0.y * (-sr),
+             right0.z * cr + up0.z * (-sr) };
+}
+
+// ---------------------------------------------------------------- the detour
 
 struct CallSite
 {
-    void* ret;       // absolute return address
+    void* ret;
     uint64_t count;
-    FVector  loc;
+    FVector  loc;    // CLEAN, snapshotted before any write
     FRotator rot;
 };
 
 static CallSite g_sites[8] = {};
 static int      g_siteCount = 0;
+static int      g_leader = 0;
 
 static uint64_t g_calls = 0;
-static DWORD    g_lastTick = 0;
-static void* g_pThis = nullptr;
+static uint64_t g_wLeft = 0, g_wRight = 0;   // writes per eye -- MUST stay ~50/50
+static bool     g_armLogged = false;
 
-static double UnitsToDeg(int32_t u)
-{
-    // The game stores rotator components in 0..65535. Reinterpret the low 16
-    // bits as signed to get -180..+180.
-    return (double)(int16_t)(u & 0xFFFF) * (360.0 / 65536.0);
-}
+static DWORD    g_lastTick = 0;
+
+static const uint64_t kArmAfterCalls = 200;   // let the leader settle before writing
 
 static void __fastcall hkCalcView(void* pThis, void* edx,
     void** ViewActor,
     FVector* CameraLocation,
     FRotator* CameraRotation)
 {
-    // 1. Call the ORIGINAL first. UnrealScript fills *CameraRotation with the
-    //    game's intended view. Phase 5 does NOTHING else -- we only read.
+    // 1. Call the ORIGINAL first. It rebuilds *CameraRotation from scratch every
+    //    call (§6c), so what arrives here is always CLEAN. Absolute offset, no
+    //    accumulator, no drift.
     g_orig(pThis, edx, ViewActor, CameraLocation, CameraRotation);
 
     void* ret = _ReturnAddress();
-    g_pThis = pThis;
 
     if (g_calls == 0)
     {
         Log(">>> CAMERA HOOK FIRED. First call.");
-        Log("camera:   pThis = 0x%08X  (APlayerController*)", (unsigned)(uintptr_t)pThis);
+        Log("camera:   pThis  = 0x%08X  (APlayerController*)", (unsigned)(uintptr_t)pThis);
+        Log("camera:   thread = %lu   (GAME thread -- Present is on a DIFFERENT one)",
+            GetCurrentThreadId());
+        Log("camera:   write  = %s", g_cfgCameraWrite ? "ENABLED (EnableCameraWrite=1)"
+            : "disabled (EnableCameraWrite=0)");
         g_lastTick = GetTickCount();
     }
     ++g_calls;
@@ -333,7 +419,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     if (!IsMemoryValid(CameraLocation, sizeof(FVector)))  return;
     if (!IsMemoryValid(CameraRotation, sizeof(FRotator))) return;
 
-    // Find or create the bucket for this caller.
+    // --- bucket by return address (§6c-2) ---
     CallSite* site = nullptr;
     for (int i = 0; i < g_siteCount; ++i)
         if (g_sites[i].ret == ret) { site = &g_sites[i]; break; }
@@ -347,28 +433,129 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             g_siteCount - 1, (unsigned)(uintptr_t)ret,
             (unsigned)((uint8_t*)ret - g_modBase));
     }
-    if (!site) return;   // more than 8 call sites: something is very wrong
+    if (!site) return;
 
     ++site->count;
-    site->loc = *CameraLocation;
+    site->loc = *CameraLocation;     // CLEAN snapshot, before we touch anything
     site->rot = *CameraRotation;
 
-    // Report every call site once a second. If they agree, we write to both in
-    // Phase 6. If they DISAGREE, we filter on return address.
+    // --- site0 = the site with the most calls. THE RENDER VIEW: the only one
+    //     that keeps ticking while the player stands still. Auto-detected. ---
+    int leader = 0;
+    for (int i = 1; i < g_siteCount; ++i)
+        if (g_sites[i].count > g_sites[leader].count) leader = i;
+    g_leader = leader;
+
+    // --- site0 ONLY. Sites 2/3/4 are movement/physics/AI CONSUMING the view;
+    //     writing to them would let head-look steer the character. ---
+    if (site != &g_sites[leader]) return;
+
+    // --- TAG THIS FRAME'S EYE and push it to Present. The eye is owned HERE,
+    //     on the game thread, by strict alternation of the producer index. It
+    //     rides the FIFO out to the render thread with the frame it belongs to. ---
+    const long w = g_eyeWr;
+    const int  eye = (int)(w & 1);          // 0 == LEFT, 1 == RIGHT
+
+    // --- THE WRITE (§6e). Only when armed. ---
+    if (g_cfgCameraWrite && g_calls >= kArmAfterCalls)
+    {
+        if (!IsMemoryWritable(CameraLocation, sizeof(FVector)))
+        {
+            if (!g_armLogged) { g_armLogged = true; Log("camera: !!! CameraLocation NOT WRITABLE. No stereo."); }
+        }
+        else
+        {
+            double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
+            if (g_cfgSwapEyes) s = -s;
+
+            // Offset along the right vector of the FINAL rotation. Phase 6:
+            // final == clean (no head tracking yet), so this is the clean right.
+            const Vec3 right = RotatorRight(*CameraRotation);
+
+            CameraLocation->x += (float)(right.x * s);
+            CameraLocation->y += (float)(right.y * s);
+            CameraLocation->z += (float)(right.z * s);
+
+            if (eye == 0) ++g_wLeft; else ++g_wRight;
+
+            if (!g_armLogged)
+            {
+                g_armLogged = true;
+                Log(">>> CAMERA WRITE ARMED. site%d (ret mod+0x%X)  halfIPD %.2f units  swap=%d",
+                    leader, (unsigned)((uint8_t*)g_sites[leader].ret - g_modBase),
+                    g_cfgEyeSep, (int)g_cfgSwapEyes);
+                Log("camera:   right vec %.3f %.3f %.3f   s=%+.2f (eye %d)",
+                    right.x, right.y, right.z, s, eye);
+            }
+        }
+    }
+
+    // Publish the tag AFTER the write, so the frame and its tag are consistent.
+    g_eyeQ[w & 63] = (unsigned char)eye;
+    MemoryBarrier();
+    _InterlockedIncrement(&g_eyeWr);
+
+    // --- heartbeat, once a second. NEVER per-frame. ---
     DWORD now = GetTickCount();
     if (now - g_lastTick >= 1000)
     {
         g_lastTick = now;
-        Log("--- camera: %llu calls total, %d call site(s) ---", g_calls, g_siteCount);
+        Log("--- camera: %llu calls, %d site(s), leader=site%d | writes L=%llu R=%llu ---",
+            g_calls, g_siteCount, g_leader, g_wLeft, g_wRight);
         for (int i = 0; i < g_siteCount; ++i)
         {
-            const CallSite& s = g_sites[i];
-            Log("  site%d mod+0x%-7X n=%-8llu pos %9.1f %9.1f %9.1f   p%7.1f y%7.1f r%7.1f",
-                i, (unsigned)((uint8_t*)s.ret - g_modBase), s.count,
-                s.loc.x, s.loc.y, s.loc.z,
-                UnitsToDeg(s.rot.pitch), UnitsToDeg(s.rot.yaw), UnitsToDeg(s.rot.roll));
+            const CallSite& s2 = g_sites[i];
+            Log("  %s%d mod+0x%-7X n=%-8llu pos %9.1f %9.1f %9.1f   p%7.1f y%7.1f r%7.1f",
+                (i == g_leader) ? "*site" : " site", i,
+                (unsigned)((uint8_t*)s2.ret - g_modBase), s2.count,
+                s2.loc.x, s2.loc.y, s2.loc.z,
+                UnitsToDeg(s2.rot.pitch), UnitsToDeg(s2.rot.yaw), UnitsToDeg(s2.rot.roll));
         }
     }
+}
+
+// ---------------------------------------------------------------- the FIFO API
+
+int CameraHook_NextEye()
+{
+    const long wr = g_eyeWr;      // volatile read
+    long rd = g_eyeRd;
+    long depth = wr - rd;
+
+    if (depth <= 0)
+    {
+        // No camera tag waiting: menu, loading screen, movie. Keep alternating
+        // so the compositor never stalls.
+        _InterlockedIncrement(&g_underruns);
+        if (g_qMin > 0) g_qMin = 0;
+        if (g_qMax < 0) g_qMax = 0;
+        g_lastEye ^= 1;
+        return g_lastEye;
+    }
+
+    if (depth > 32)               // producer ran far ahead (a stall): drop stale tags
+    {
+        rd = wr - 2;
+        g_eyeRd = rd;
+        depth = 2;
+    }
+
+    if (depth < g_qMin) g_qMin = depth;
+    if (depth > g_qMax) g_qMax = depth;
+
+    const int eye = (int)g_eyeQ[rd & 63];
+    _InterlockedIncrement(&g_eyeRd);
+    g_lastEye = eye;
+    return eye;
+}
+
+void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)
+{
+    if (minDepth)  *minDepth = (g_qMin == 0x7FFFFFFF) ? -1 : (int)g_qMin;
+    if (maxDepth)  *maxDepth = (int)g_qMax;
+    if (underruns) *underruns = (unsigned)g_underruns;
+    g_qMin = 0x7FFFFFFF;
+    g_qMax = -1;
 }
 
 // ---------------------------------------------------------------- install
@@ -391,7 +578,7 @@ bool CameraHook_Install()
     void* fn = FindCalcView();
     Log("camera: search took %lu ms", GetTickCount() - t0);
 
-    if (!fn) return false;     // handoff 6a: any stage fails -> install NOTHING
+    if (!fn) return false;     // §6a: any stage fails -> install NOTHING
 
     g_fnAddr = fn;
 
@@ -401,7 +588,7 @@ bool CameraHook_Install()
     s = MH_EnableHook(fn);
     if (s != MH_OK) { Log("camera: MH_EnableHook -> %d. No hook.", (int)s); g_fnAddr = nullptr; return false; }
 
-    Log(">>> CAMERA HOOK ARMED. Load a level and move.");
+    Log(">>> CAMERA HOOK ARMED (write=%d). Load a level and move.", (int)g_cfgCameraWrite);
     return true;
 }
 

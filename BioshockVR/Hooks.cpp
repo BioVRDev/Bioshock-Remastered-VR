@@ -1,6 +1,10 @@
 // BioshockVR/Hooks.cpp
 //
-// Present hook + XR bring-up.
+// Present hook, XR bring-up, XRMode cadence dispatch.
+//
+// MEASURED: Present runs on the RENDER thread, CalcView on the GAME thread. So
+// Present does NOT own the eye phase -- the camera hook tags each frame and
+// Present pops the tag from a FIFO (CameraHook_NextEye).
 
 #include "Hooks.h"
 #include "XRSession.h"
@@ -18,8 +22,10 @@
 #pragma comment(lib, "d3d11.lib")
 
 extern void  LogFile(const char* msg);
-extern float g_cfgFovDeg;          // from dllmain.cpp, read out of BioshockVR.ini
-extern bool  g_cfgCameraHook;      // ini kill switch, in case the hook crashes
+extern float g_cfgFovDeg;
+extern bool  g_cfgCameraHook;
+extern bool  g_cfgDisableVSync;
+extern int   g_cfgXRMode;      // 0 none, 1 mono(P5), 2 every-2nd(§4), 3 AER every Present
 
 static void Log(const char* fmt, ...)
 {
@@ -37,7 +43,7 @@ static void* g_presentAddr = nullptr;
 
 static ID3D11Device* g_dev = nullptr;
 static ID3D11DeviceContext* g_ctx = nullptr;
-static unsigned  g_bbW = 0, g_bbH = 0;      // real backbuffer size, measured
+static unsigned  g_bbW = 0, g_bbH = 0;
 static bool      g_described = false;
 static uint64_t  g_frames = 0;
 static DWORD     g_lastTick = 0;
@@ -45,6 +51,14 @@ static DWORD     g_lastTick = 0;
 static bool g_xrTried = false;
 static bool g_xrDead = false;
 static bool g_camTried = false;
+static bool g_loggedVSyncOverride = false;
+
+// Where each Present's milliseconds go.
+static LARGE_INTEGER g_qpf = {};
+static LARGE_INTEGER g_lastPresentReturn = {};
+static double g_msGame = 0.0;      // outside our hook -- the game's own work
+static double g_msXr = 0.0;        // inside XR_Submit*
+static double g_msPresent = 0.0;   // inside the game's real Present
 
 static void DescribeOnce(IDXGISwapChain* sc)
 {
@@ -87,28 +101,49 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     if (!g_described)
     {
         Log(">>> PRESENT HOOK FIRED. First frame.");
+        Log("present:  thread = %lu   (RENDER thread)", GetCurrentThreadId());
+        Log("present:  SyncInterval = %u  Flags = 0x%X", SyncInterval, Flags);
         DescribeOnce(sc);
         g_lastTick = GetTickCount();
     }
 
     ++g_frames;
 
-    // Bring OpenXR up once, on the render thread, at the REAL backbuffer size.
+    // The game's own frame time: everything between Present returning and the
+    // next Present arriving. Work we do not touch and cannot be blamed for.
+    if (!g_qpf.QuadPart) QueryPerformanceFrequency(&g_qpf);
+    if (g_lastPresentReturn.QuadPart)
+    {
+        LARGE_INTEGER nowIn;
+        QueryPerformanceCounter(&nowIn);
+        g_msGame += (double)(nowIn.QuadPart - g_lastPresentReturn.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
+    }
+
     if (!g_xrTried && g_dev && g_ctx && g_bbW && g_bbH)
     {
         g_xrTried = true;
-        Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
-        if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
+
+        if (g_cfgXRMode == 0)
         {
             g_xrDead = true;
-            Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
+            Log(">>> XRMode=0: XR will NOT initialize. Flat run under VD load.");
         }
         else
         {
-            XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+            Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
+            if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
+            {
+                g_xrDead = true;
+                Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
+            }
+            else
+            {
+                XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+            }
         }
-        // Camera hook: install once, on the render thread, at the first frame.
-        // NOT at DllMain -- the exe may still be packed/encrypted that early.
+
+        // Camera hook on the render thread at the first frame -- NOT at DllMain,
+        // where the exe may still be packed.
         if (!g_camTried)
         {
             g_camTried = true;
@@ -119,12 +154,25 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         }
     }
 
+    // Pop the eye tag for the frame we are about to present. ALWAYS, once per
+    // Present, so the FIFO stays drained even before XR comes up.
+    const int eye = CameraHook_NextEye();
+
     if (!g_xrDead && XR_IsInit())
     {
         ID3D11Texture2D* bb = nullptr;
         if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb)) && bb)
         {
-            XR_Frame(bb);      // blocks in xrWaitFrame -- expected
+            LARGE_INTEGER x0, x1;
+            QueryPerformanceCounter(&x0);
+
+            if (g_cfgXRMode == 1) XR_SubmitMono(bb);      // Phase 5 mono
+            else if (g_cfgXRMode == 2) XR_SubmitEye(bb, eye);  // §4 every-2nd (regression)
+            else                       XR_SubmitAER(bb, eye);  // AER every Present
+
+            QueryPerformanceCounter(&x1);
+            g_msXr += (double)(x1.QuadPart - x0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
+
             bb->Release();
         }
         else if ((g_frames % 600) == 0)
@@ -137,16 +185,73 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     if (now - g_lastTick >= 1000)
     {
         static uint64_t lastFrames = 0;
+        static unsigned long long lastSubmitted = 0;
+        static double lastGame = 0.0, lastXr = 0.0, lastPresent = 0.0;
+        static XrTimeBreakdown lastTb = {};
+
         unsigned long long xrf = 0, xrs = 0;
         int st = 0;
         XR_Stats(&xrf, &xrs, &st);
-        Log("frames: %llu (~%llu fps)   xr: %llu waited / %llu submitted   state %d",
-            g_frames, g_frames - lastFrames, xrf, xrs, st);
+
+        const uint64_t dF = g_frames - lastFrames;
+
+        Log("frames: %llu (~%llu Present/s)   submitted %llu (+%llu/s)   state %d   [XRMode=%d]",
+            g_frames, dF, xrs, xrs - lastSubmitted, st, g_cfgXRMode);
+
+        if (dF)
+        {
+            Log("  PER PRESENT: game %.2f | XR %.2f | origPresent %.2f  (ms)",
+                (g_msGame - lastGame) / (double)dF,
+                (g_msXr - lastXr) / (double)dF,
+                (g_msPresent - lastPresent) / (double)dF);
+        }
+
+        XrTimeBreakdown tb = {};
+        XR_Breakdown(&tb);
+        const unsigned long long dS = tb.submits - lastTb.submits;
+        if (dS)
+        {
+            Log("  PER SUBMIT:  wait %.2f | begin %.2f | locate %.2f | acquire %.2f | copy %.2f | end %.2f  (ms)",
+                (tb.waitFrame - lastTb.waitFrame) / (double)dS,
+                (tb.beginFrame - lastTb.beginFrame) / (double)dS,
+                (tb.locateViews - lastTb.locateViews) / (double)dS,
+                (tb.acquire - lastTb.acquire) / (double)dS,
+                (tb.copy - lastTb.copy) / (double)dS,
+                (tb.endFrame - lastTb.endFrame) / (double)dS);
+        }
+
+        int qmin = -1, qmax = -1;
+        unsigned und = 0;
+        CameraHook_EyeQueueStats(&qmin, &qmax, &und);
+        Log("  EYEQ: depth min=%d max=%d  underruns=%u", qmin, qmax, und);
+
         lastFrames = g_frames;
+        lastSubmitted = xrs;
+        lastGame = g_msGame;
+        lastXr = g_msXr;
+        lastPresent = g_msPresent;
+        lastTb = tb;
         g_lastTick = now;
     }
 
-    return g_origPresent(sc, SyncInterval, Flags);
+    if (g_cfgDisableVSync)
+    {
+        if (SyncInterval != 0 && !g_loggedVSyncOverride)
+        {
+            g_loggedVSyncOverride = true;
+            Log(">>> VSYNC OVERRIDE: game asked SyncInterval=%u, presenting with 0.", SyncInterval);
+        }
+        SyncInterval = 0;
+    }
+
+    LARGE_INTEGER p0, p1;
+    QueryPerformanceCounter(&p0);
+    HRESULT hr = g_origPresent(sc, SyncInterval, Flags);
+    QueryPerformanceCounter(&p1);
+    g_msPresent += (double)(p1.QuadPart - p0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
+
+    g_lastPresentReturn = p1;
+    return hr;
 }
 
 static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
