@@ -1,6 +1,6 @@
 // BioshockVR/Hooks.cpp
 //
-// Present hook, XR bring-up, XRMode cadence dispatch.
+// Present hook, XR bring-up
 //
 // MEASURED: Present runs on the RENDER thread, CalcView on the GAME thread. So
 // Present does NOT own the eye phase -- the camera hook tags each frame and
@@ -25,7 +25,6 @@ extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;
 extern bool  g_cfgCameraHook;
 extern bool  g_cfgDisableVSync;
-extern int   g_cfgXRMode;      // 0 none, 1 mono(P5), 2 every-2nd(§4), 3 AER every Present
 
 static void Log(const char* fmt, ...)
 {
@@ -123,23 +122,15 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     {
         g_xrTried = true;
 
-        if (g_cfgXRMode == 0)
+        Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
+        if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
         {
             g_xrDead = true;
-            Log(">>> XRMode=0: XR will NOT initialize. Flat run under VD load.");
+            Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
         }
         else
         {
-            Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
-            if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
-            {
-                g_xrDead = true;
-                Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
-            }
-            else
-            {
-                XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
-            }
+            XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
         }
 
         // Camera hook on the render thread at the first frame -- NOT at DllMain,
@@ -166,10 +157,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             LARGE_INTEGER x0, x1;
             QueryPerformanceCounter(&x0);
 
-            if (g_cfgXRMode == 1) XR_SubmitMono(bb);            // Phase 5 mono
-            else if (g_cfgXRMode == 2) XR_SubmitEye(bb, eye);        // §4 every-2nd (regression)
-            else if (g_cfgXRMode == 4) XR_SubmitAERStable(bb, eye);  // AER, stable pairing
-            else                       XR_SubmitAER(bb, eye);        // AER, flipping pairing
+            XR_SubmitPair(bb, eye);
 
             QueryPerformanceCounter(&x1);
             g_msXr += (double)(x1.QuadPart - x0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
@@ -196,8 +184,8 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
 
         const uint64_t dF = g_frames - lastFrames;
 
-        Log("frames: %llu (~%llu Present/s)   submitted %llu (+%llu/s)   state %d   [XRMode=%d]",
-            g_frames, dF, xrs, xrs - lastSubmitted, st, g_cfgXRMode);
+        Log("frames: %llu (~%llu Present/s)   submitted %llu (+%llu/s)   state %d",
+            g_frames, dF, xrs, xrs - lastSubmitted, st);
 
         if (dF)
         {

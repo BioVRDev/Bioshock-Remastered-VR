@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="BioshockVR/BioshockVR.vcxproj" />
+  <Project Path="BioshockVR/BioshockVR.vcxproj" Id="cbcd17fc-f75a-48bc-b30f-b38b965b25ed" />
 </Solution>

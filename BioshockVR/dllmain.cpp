@@ -41,18 +41,6 @@ bool g_cfgSwapEyes = false;
 // the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
 bool g_cfgDisableVSync = true;
 
-// XRMode:
-//   0 = XR never initializes. Flat game, with VD Streamer running and the headset
-//       connected. MEASURES the game's true Present rate under VD's load.
-//   1 = PHASE 5. Full XR cycle every Present, same image to both eyes. MONO.
-//       KNOWN GOOD: 118 submits/sec, headset at 120. The floor.
-//   2 = What §4 prescribed: submit every SECOND Present. HALVES the submit rate
-//       to 59/sec and drops the headset to 60. THE REGRESSION. Kept to reproduce.
-//   3 = AER. Full XR cycle EVERY Present, so the submit rate stays at 118/sec --
-//       but each eye carries its own image, one Present apart. Stereo never
-//       required starving the compositor. THIS IS THE ONE.
-int g_cfgXRMode = 3;
-
 static void InitLogPath()
 {
     char p[MAX_PATH] = {};
@@ -137,14 +125,6 @@ static void LoadConfig()
     g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
 
-    g_cfgXRMode = GetPrivateProfileIntA("VR", "XRMode", 3, g_iniPath);
-    if (g_cfgXRMode < 0 || g_cfgXRMode > 4) { Log("config: XRMode out of range. Forcing 3."); g_cfgXRMode = 3; }
-    Log("config: XRMode            = %d   %s", g_cfgXRMode,
-        g_cfgXRMode == 0 ? "(NO XR -- flat)" :
-        g_cfgXRMode == 1 ? "(PHASE 5 mono -- KNOWN GOOD)" :
-        g_cfgXRMode == 2 ? "(submit every 2nd Present -- THE REGRESSION)" :
-        g_cfgXRMode == 3 ? "(AER, flipping eye pairing -- WORKS, shimmers on turns)" :
-        "(AER, STABLE eye pairing -- no shimmer)");
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to
