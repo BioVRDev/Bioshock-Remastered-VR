@@ -5,7 +5,7 @@ is described in `HANDOFF.md` §1 — it's the current phase and doesn't need thi
 
 **Order matters. Each phase is one chat. Commit + push at every working checkpoint.**
 
----
+\---
 
 ## Phase 9 — SQUARE RENDER (kills the black bars)
 
@@ -14,7 +14,7 @@ is described in `HANDOFF.md` §1 — it's the current phase and doesn't need thi
 **Why FOV cannot fix this:** `Bioshock.ini` has `HorizontalFOVLock=True`. The slider
 sets HORIZONTAL fov; vertical is *derived from the aspect ratio*
 (`vFov = 2·atan(tan(hFov/2) × h/w)`). At 16:9 the vertical is permanently squashed.
-Raising the slider just widens an already-wide image. **The Quest 3 eye is ~94°×99°
+Raising the slider just widens an already-wide image. **The Quest 3 eye is \~94°×99°
 — nearly square. Feeding it 16:9 IS the bars.** (Full derivation in `SPEC.md` §8.)
 
 **The fix:** force the game to **1440×1440** via `Bioshock.ini`. With the slider at
@@ -24,7 +24,7 @@ Raising the slider just widens an already-wide image. **The Quest 3 eye is ~94°
 you're moving pixels from the sides (wasted) to the top and bottom (empty). Same GPU
 cost.
 
-`XR_SetGameFov` already derives vertical from `h/w`, and `g_bbW/g_bbH` are measured
+`XR\_SetGameFov` already derives vertical from `h/w`, and `g\_bbW/g\_bbH` are measured
 from the real swapchain. It adapts automatically.
 
 **Test:** log reads `backbuffer : 1440 x 1440` and `GAME FOV = 100.0 h / 100.0 v`.
@@ -33,7 +33,7 @@ Bars gone, top and bottom. Set `GameFovDegrees` to match the in-game slider.
 **Watch for:** the Scaleform HUD is laid out for 16:9 and may sit oddly. It gets
 suppressed in Phase 13 anyway.
 
----
+\---
 
 ## Phase 10 — MIRROR THROTTLE (removes the 240Hz hardware requirement)
 
@@ -50,13 +50,14 @@ But **nobody is looking at the monitor — they're wearing a headset.** We don't
 to mirror at 236fps.
 
 In `hkPresent`, call the real `Present` **on a timer**:
+
 ```
-if (now - lastRealPresent >= mirrorPeriod)  → call g_origPresent   (mirror updates)
-else                                        → return S_OK without presenting
+if (now - lastRealPresent >= mirrorPeriod)  → call g\_origPresent   (mirror updates)
+else                                        → return S\_OK without presenting
 ```
 
 With `MirrorFps=60`, DWM only ever sees 60 calls/sec — **under any monitor's cap**,
-so it never throttles. The other ~176 game frames never touch DWM at all.
+so it never throttles. The other \~176 game frames never touch DWM at all.
 
 **Then the ONLY thing pacing the game is `xrEndFrame`**, which blocks once per pair
 at the compositor rate. The game naturally settles at exactly **2 game frames per
@@ -71,20 +72,21 @@ It also **self-limits**: no 690fps runaway into the physics-instability zone
 until proven**).
 
 **Risks, each with a log check:**
-- Frozen desktop window → the timer keeps it alive.
-- Missing GPU flush (Present normally flushes) → may need an explicit `ctx->Flush()`.
-  The XR copies probably cover it; verify.
-- The game might use Present for its own timing (unlikely in UE2.5 — it'll be on
-  `QueryPerformanceCounter`) → that's what the kill switch is for.
+
+* Frozen desktop window → the timer keeps it alive.
+* Missing GPU flush (Present normally flushes) → may need an explicit `ctx->Flush()`.
+The XR copies probably cover it; verify.
+* The game might use Present for its own timing (unlikely in UE2.5 — it'll be on
+`QueryPerformanceCounter`) → that's what the kill switch is for.
 
 **THE TEST, and it is unambiguous:** turn it on, **set the desktop to 120Hz on
 purpose**, and confirm you still get **236 Present/s**. If you do, the mod works on
 anyone's hardware, with no VD setting to change.
 
-**~~Hook swapchain creation, force flip-model + ALLOW_TEARING~~ — REJECTED.** See
+<b>~~Hook swapchain creation, force flip-model + ALLOW\_TEARING~~ — REJECTED.</b> See
 `PERF.md` §4.
 
----
+\---
 
 ## Phase 11 — HEAD TRACKING
 
@@ -93,7 +95,7 @@ to your skull: turn your head and the world turns with you. **It contaminates ev
 judgment about stereo quality** — do not evaluate any remaining AER weirdness until
 this lands.
 
-Write `*CameraRotation = ApplyWorldSpaceYaw(clean, hmdYaw, hmdPitch, hmdRoll)` on
+Write `\*CameraRotation = ApplyWorldSpaceYaw(clean, hmdYaw, hmdPitch, hmdRoll)` on
 **site0 only**. Math in `SPEC.md` §5–6. **Ask for `SPEC.md` and `CameraHook.cpp`
 for this phase.**
 
@@ -102,6 +104,7 @@ which we never touch. Head-look won't move where the gun shoots. This is the
 foundation for motion controls later.
 
 ### THE RULE THAT IS EASY TO GET WRONG
+
 **Sample the HMD pose ONCE per eye-pair for the CAMERA write.** If you re-sample per
 game frame, a head turn between the two frames of a pair renders the eyes from
 *different head rotations* — a real stereo mismatch your brain fights.
@@ -112,7 +115,7 @@ timewarp smooth). **Do not conflate the two.**
 Remember `SPEC.md`: roll is **inverted** (`-roll`), and the eye offset goes along
 the **FINAL** (head-rotated) right vector, not the clean one.
 
----
+\---
 
 ## Phase 12 — TRUE DUAL-RENDER. It just got CHEAP.
 
@@ -124,7 +127,7 @@ compositor period. We now know a game frame costs **1.5ms**, so two cost **3.0ms
 inside an 8.33ms period.
 
 **The current pair cadence ALREADY IS the dual-render pipeline** — two engine-native
-eye renders per compositor period, with ~5ms to spare. It's running right now.
+eye renders per compositor period, with \~5ms to spare. It's running right now.
 
 The only thing separating us from true stereo: **the world clock advances 4.2ms
 between the two frames of a pair.**
@@ -144,36 +147,36 @@ not closer.
 **Risks — real, hence its own phase, hence kill switches:** divide-by-zero in engine
 code, frozen physics/animation, input sampling effectively halving to 118Hz.
 
----
+\---
 
 ## Phase 13 — HUD SUPPRESSION
 
-Hook `ID3D11DeviceContext` vtable[12] (`DrawIndexed`) and vtable[13] (`Draw`).
+Hook `ID3D11DeviceContext` vtable\[12] (`DrawIndexed`) and vtable\[13] (`Draw`).
 Identify the Scaleform HUD by draw-call vertex counts:
+
 ```
 DrawIndexed(234) = compass
 Draw(11)         = health / EVE
 Draw(9)          = gun reticle
 Draw(21)         = plasmid reticle
 ```
+
 **Gate the suppression:** only drop `Draw(9)` / `Draw(21)` when a HUD-active flag is
 set (raised by a `234` or `11` draw, cleared each Present) — otherwise you eat world
 particles that happen to share those vertex counts.
 
 Ask for `SPEC.md` and `Hooks.cpp`.
 
----
+\---
 
 ## Backlog (not phases yet)
 
-- **Loading screens / movies run ~15fps in-headset.** During movies the game only
-  Presents ~30/s, and the pair cadence submits on every second Present. Not a bug —
-  the pair cadence applied to a 30fps source. **Clean fix:** fall back to
-  mono-every-Present when the camera hook isn't ticking (we already detect this —
-  `EYEQ underruns`).
-- **Close-object misalignment.** Objects seem to slightly misalign at very close
-  range. Not characterised. **Do not chase until head tracking lands** — a
-  head-locked image makes it impossible to judge fairly.
-- **Motion controls.** The aim/view decoupling (`SPEC.md` §3) is the foundation.
-- **Window centering.** BSR launches top-left on an ultrawide; itsloopyo centers it
-  on first Present. Cosmetic.
+* **Loading screens / movies run \~15fps in-headset.** During movies the game only
+Presents \~30/s, and the pair cadence submits on every second Present. Not a bug —
+the pair cadence applied to a 30fps source. **Clean fix:** fall back to
+mono-every-Present when the camera hook isn't ticking (we already detect this —
+`EYEQ underruns`).
+* **Motion controls.** The aim/view decoupling (`SPEC.md` §3) is the foundation.
+* **Window centering.** BSR launches top-left on an ultrawide; itsloopyo centers it
+on first Present. Cosmetic.
+

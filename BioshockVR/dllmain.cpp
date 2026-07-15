@@ -37,6 +37,10 @@ float g_cfgEyeSep = 3.2f;
 // If depth comes out INVERTED (world feels like a hollow mask), flip this.
 bool g_cfgSwapEyes = false;
 
+// Phase 11 kill switch: compose HMD head orientation onto the camera. Default OFF
+// so a fresh deploy is known-good stereo; set EnableHeadTracking=1 to test.
+bool g_cfgHeadTracking = false;
+
 // The game presents with SyncInterval=1. Overriding it to 0 turned out NOT to be
 // the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
 bool g_cfgDisableVSync = true;
@@ -121,6 +125,10 @@ static void LoadConfig()
 
     g_cfgSwapEyes = (GetPrivateProfileIntA("VR", "SwapEyes", 0, g_iniPath) != 0);
     Log("config: SwapEyes          = %d", (int)g_cfgSwapEyes);
+
+    g_cfgHeadTracking = (GetPrivateProfileIntA("VR", "EnableHeadTracking", 0, g_iniPath) != 0);
+    Log("config: EnableHeadTracking = %d   %s", (int)g_cfgHeadTracking,
+        g_cfgHeadTracking ? "(head-look composed onto camera)" : "(off -- stereo only)");
 
     g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);

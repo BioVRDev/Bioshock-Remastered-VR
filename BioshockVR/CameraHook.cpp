@@ -36,6 +36,8 @@ extern void LogFile(const char* msg);
 extern bool  g_cfgCameraWrite;   // default 0 -- the Phase 6 kill switch
 extern float g_cfgEyeSep;        // half-IPD in game units (== cm). default 3.2
 extern bool  g_cfgSwapEyes;      // 1 == invert the eye polarity
+extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render thread)
+extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 
 static void Log(const char* fmt, ...)
 {
@@ -369,6 +371,123 @@ static Vec3 RotatorRight(const FRotator& r)
              right0.z * cr + up0.z * (-sr) };
 }
 
+// --- head tracking (Phase 11) -----------------------------------------------
+// OpenXR LOCAL-space head quat -> UE-convention pitch/yaw/roll DEGREES.
+// Axis map XR->UE: v_ue = (-v.z, v.x, v.y)   [UE +X == XR -Z look dir,
+// UE +Y == XR +X, UE +Z == XR +Y]. Roll extracted RAW; -roll inversion is
+// applied later, where the angle is USED (§5). LOG ONLY for now.
+static void HeadQuatToDeg(const float q[4], double& pitchDeg, double& yawDeg, double& rollDeg)
+{
+    const double x = q[0], y = q[1], z = q[2], w = q[3];
+
+    const Vec3 fXR = { -(2 * (x * z + y * w)), -(2 * (y * z - x * w)), -(1 - 2 * (x * x + y * y)) }; // -Zcol
+    const Vec3 rXR = { 1 - 2 * (y * y + z * z), 2 * (x * y + z * w),   2 * (x * z - y * w) };       // +Xcol
+
+    const Vec3 fwd = { -fXR.z, fXR.x, fXR.y };
+    const Vec3 rgt = { -rXR.z, rXR.x, rXR.y };
+
+    const double PI = 3.14159265358979323846;
+    double p = asin(fwd.z < -1.0 ? -1.0 : (fwd.z > 1.0 ? 1.0 : fwd.z));
+    double yw = atan2(fwd.y, fwd.x);
+    double cp = cos(p);
+
+    Vec3 right0, up0;
+    if (fabs(cp) > 1e-6)
+    {
+        right0 = { -sin(yw), cos(yw), 0.0 };
+        up0 = { -sin(p) * cos(yw), -sin(p) * sin(yw), cp };
+    }
+    else
+    {
+        right0 = { rgt.x, rgt.y, 0.0 };
+        up0 = { 0.0, 0.0, (cp < 0 ? -1.0 : 1.0) };
+    }
+    double rl = atan2(-(rgt.x * up0.x + rgt.y * up0.y + rgt.z * up0.z),
+        (rgt.x * right0.x + rgt.y * right0.y + rgt.z * right0.z));
+
+    pitchDeg = p * 180.0 / PI;
+    yawDeg = yw * 180.0 / PI;
+    rollDeg = rl * 180.0 / PI;
+}
+
+// Latched ONCE per pair (on eye 0), held for both eyes (§6 rule). Computed +
+// logged this increment; NOT yet written to the camera.
+static double g_headPitch = 0.0, g_headYaw = 0.0, g_headRoll = 0.0;
+
+// --- full rotator<->basis math (§5), for composing head-look onto the camera ---
+struct Basis { Vec3 forward, right, up; };
+
+static Basis RotatorToBasisRad(double p, double y, double o)
+{
+    const double cp = cos(p), sp = sin(p), cy = cos(y), sy = sin(y), cr = cos(o), sr = sin(o);
+    Basis b;
+    b.forward = { cp * cy, cp * sy, sp };
+    const Vec3 right0 = { -sy, cy, 0.0 };
+    const Vec3 up0 = { -sp * cy, -sp * sy, cp };
+    b.right = { right0.x * cr + up0.x * (-sr), right0.y * cr + up0.y * (-sr), right0.z * cr + up0.z * (-sr) };
+    b.up = { right0.x * sr + up0.x * cr,    right0.y * sr + up0.y * cr,    right0.z * sr + up0.z * cr };
+    return b;
+}
+
+static Basis RotatorToBasis(const FRotator& r)
+{
+    return RotatorToBasisRad(UnitsToRad(r.pitch), UnitsToRad(r.yaw), UnitsToRad(r.roll));
+}
+
+static FRotator BasisToRotator(const Basis& b)
+{
+    const double PI = 3.14159265358979323846;
+    double fz = b.forward.z < -1.0 ? -1.0 : (b.forward.z > 1.0 ? 1.0 : b.forward.z);
+    double p = asin(fz);
+    double y = atan2(b.forward.y, b.forward.x);
+    double cp = cos(p);
+    Vec3 right0, up0;
+    if (fabs(cp) > 1e-6)
+    {
+        right0 = { -sin(y), cos(y), 0.0 };
+        up0 = { -sin(p) * cos(y), -sin(p) * sin(y), cp };
+    }
+    else
+    {
+        right0 = { b.right.x, b.right.y, 0.0 };
+        up0 = { 0.0, 0.0, (cp < 0 ? -1.0 : 1.0) };
+    }
+    double o = atan2(-(b.right.x * up0.x + b.right.y * up0.y + b.right.z * up0.z),
+        (b.right.x * right0.x + b.right.y * right0.y + b.right.z * right0.z));
+    FRotator r;
+    r.pitch = (int32_t)lround(p * 32768.0 / PI);   // rad -> units (65536 == 2*PI)
+    r.yaw = (int32_t)lround(y * 32768.0 / PI);
+    r.roll = (int32_t)lround(o * 32768.0 / PI);
+    return r;
+}
+
+static Vec3 TransformVec(const Basis& b, const Vec3& v)
+{
+    return { b.forward.x * v.x + b.right.x * v.y + b.up.x * v.z,
+             b.forward.y * v.x + b.right.y * v.y + b.up.y * v.z,
+             b.forward.z * v.x + b.right.z * v.y + b.up.z * v.z };
+}
+
+static Basis MulBasis(const Basis& a, const Basis& b)
+{
+    return { TransformVec(a, b.forward), TransformVec(a, b.right), TransformVec(a, b.up) };
+}
+
+// clean = game's rotator (units); hmd angles in DEGREES. Roll inverted here (§5).
+static FRotator ApplyWorldSpaceYaw(const FRotator& clean,
+    double hmdYawDeg, double hmdPitchDeg, double hmdRollDeg)
+{
+    const double D2R = 3.14159265358979323846 / 180.0;
+    const double a = hmdYawDeg * D2R, ca = cos(a), sa = sin(a);
+    Basis c = RotatorToBasis(clean);
+    Basis yawed = {
+        { c.forward.x * ca - c.forward.y * sa, c.forward.x * sa + c.forward.y * ca, c.forward.z },
+        { c.right.x * ca - c.right.y * sa,   c.right.x * sa + c.right.y * ca,   c.right.z   },
+        { c.up.x * ca - c.up.y * sa,      c.up.x * sa + c.up.y * ca,      c.up.z      } };
+    Basis pr = RotatorToBasisRad(hmdPitchDeg * D2R, 0.0, hmdRollDeg * D2R);
+    return BasisToRotator(MulBasis(yawed, pr));
+}
+
 // ---------------------------------------------------------------- the detour
 
 struct CallSite
@@ -456,6 +575,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     const long w = g_eyeWr;
     const int  eye = (int)(w & 1);          // 0 == LEFT, 1 == RIGHT
 
+    // Latch the HMD pose ONCE per pair (LEFT frame), hold for both eyes so the
+    // two eyes never render from different head rotations (§6).
+    if (eye == 0)
+    {
+        float hq[4];
+        XR_GetHeadQuat(hq);
+        HeadQuatToDeg(hq, g_headPitch, g_headYaw, g_headRoll);
+    }
+
     // --- THE WRITE (§6e). Only when armed. ---
     if (g_cfgCameraWrite && g_calls >= kArmAfterCalls)
     {
@@ -465,12 +593,22 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         }
         else
         {
+            // Head tracking (Phase 11): compose the latched HMD orientation onto
+            // the clean mouse heading, then WRITE it. Aim stays on
+            // Controller.Rotation (untouched), so the gun won't follow the head.
+            FRotator finalRot = *CameraRotation;          // == clean
+            if (g_cfgHeadTracking)
+            {
+                finalRot = ApplyWorldSpaceYaw(*CameraRotation,
+                    g_headYaw, g_headPitch, g_headRoll);
+                *CameraRotation = finalRot;
+            }
+
             double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
             if (g_cfgSwapEyes) s = -s;
 
-            // Offset along the right vector of the FINAL rotation. Phase 6:
-            // final == clean (no head tracking yet), so this is the clean right.
-            const Vec3 right = RotatorRight(*CameraRotation);
+            // Eye offset along the FINAL (head-rotated) right vector (§6).
+            const Vec3 right = RotatorRight(finalRot);
 
             CameraLocation->x += (float)(right.x * s);
             CameraLocation->y += (float)(right.y * s);
@@ -502,6 +640,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         g_lastTick = now;
         Log("--- camera: %llu calls, %d site(s), leader=site%d | writes L=%llu R=%llu ---",
             g_calls, g_siteCount, g_leader, g_wLeft, g_wRight);
+        Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",
+            g_headYaw, g_headPitch, g_headRoll,
+            g_cfgHeadTracking ? "(WRITTEN to camera)" : "(computed, not written)");
+
         for (int i = 0; i < g_siteCount; ++i)
         {
             const CallSite& s2 = g_sites[i];

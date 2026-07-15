@@ -4,6 +4,7 @@
 #include "XRSession.h"
 
 #include <windows.h>
+#include <intrin.h>
 #include <d3d11.h>
 #include <cstdio>
 #include <cstdarg>
@@ -55,6 +56,12 @@ static unsigned long long g_xrSubmitted = 0;
 static XrFovf g_gameFov = {};
 static bool   g_haveGameFov = false;
 static bool   g_loggedHmdFov = false;
+
+// Head orientation published render-thread -> game-thread for the camera write
+// (Phase 11). Seqlock: odd seq == mid-write. This is a SEPARATE copy from the
+// layer pose, which stays per-submit fresh for timewarp.
+static volatile long g_headSeq = 0;
+static float         g_headQ[4] = { 0.f, 0.f, 0.f, 1.f };   // x,y,z,w, OpenXR LOCAL space
 
 // --- timing ---
 static LARGE_INTEGER   g_qpf = {};
@@ -327,6 +334,18 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
             (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
         {
+            // Publish head orientation for the game-thread camera write. view[0]
+            // and view[1] share head orientation in our symmetric rig (the cant
+            // is in the FOV, not the pose), so eye 0's is the head's.
+            _InterlockedIncrement(&g_headSeq);          // odd == writing
+            MemoryBarrier();
+            g_headQ[0] = views[0].pose.orientation.x;
+            g_headQ[1] = views[0].pose.orientation.y;
+            g_headQ[2] = views[0].pose.orientation.z;
+            g_headQ[3] = views[0].pose.orientation.w;
+            MemoryBarrier();
+            _InterlockedIncrement(&g_headSeq);          // even == done
+
             ID3D11Texture2D* src[2] = { leftImg, rightImg };
 
             for (int e = 0; e < 2; ++e)
@@ -417,6 +436,20 @@ void XR_SubmitPair(ID3D11Texture2D* image, int eye)
     // isn't ticking), fall back to mono for this cycle rather than dropping it.
     SubmitPair(g_stageLValid ? g_stageL : image, image);
     g_stageLValid = false;
+}
+
+void XR_GetHeadQuat(float out[4])
+{
+    for (;;)
+    {
+        const long s0 = g_headSeq;
+        if (s0 & 1) continue;               // writer mid-update
+        MemoryBarrier();
+        out[0] = g_headQ[0]; out[1] = g_headQ[1];
+        out[2] = g_headQ[2]; out[3] = g_headQ[3];
+        MemoryBarrier();
+        if (s0 == g_headSeq) return;        // consistent snapshot
+    }
 }
 
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state)

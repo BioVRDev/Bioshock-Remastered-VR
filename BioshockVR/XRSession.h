@@ -19,6 +19,10 @@ void XR_SetGameFov(float horizFovDeg, unsigned w, unsigned h);
 // one Present (~4.2ms) of inter-eye disparity. That disparity IS the stereo.
 void XR_SubmitPair(ID3D11Texture2D* image, int eye);
 
+// Latest HMD head orientation (OpenXR LOCAL-space quaternion x,y,z,w), published
+// from the render thread for the game-thread camera write. Seqlock-safe.
+void XR_GetHeadQuat(float out[4]);
+
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state);
 
 // Milliseconds inside each individual OpenXR call, accumulated since start.
