@@ -57,11 +57,59 @@ static XrFovf g_gameFov = {};
 static bool   g_haveGameFov = false;
 static bool   g_loggedHmdFov = false;
 
+// --- LIVE FOV TUNING RIG (temporary, numpad) -------------------------------
+// mode 0 = report the GAME's symmetric FOV (current behavior)
+// mode 1 = report the RUNTIME's true canted per-eye FOV (the experiment)
+// Scales warp the reported frustum via tangent space (correct at wide FOV).
+static int   g_fovMode = 0;
+static float g_fovScaleH = 1.0f;
+static float g_fovScaleV = 1.0f;
+
+static XrFovf ScaleFov(const XrFovf& f, float sh, float sv)
+{
+    XrFovf o;
+    o.angleLeft = atanf(tanf(f.angleLeft) * sh);
+    o.angleRight = atanf(tanf(f.angleRight) * sh);
+    o.angleUp = atanf(tanf(f.angleUp) * sv);
+    o.angleDown = atanf(tanf(f.angleDown) * sv);
+    return o;
+}
+
+static bool KeyFired(int vk, bool& prev)
+{
+    const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    const bool fired = down && !prev;
+    prev = down;
+    return fired;
+}
+
+static void PollFovKeys()
+{
+    static bool k0 = false, k4 = false, k6 = false, k2 = false, k8 = false, k5 = false;
+    bool chg = false;
+    if (KeyFired(VK_NUMPAD0, k0)) { g_fovMode = (g_fovMode + 1) & 1;              chg = true; }
+    if (KeyFired(VK_NUMPAD4, k4)) { g_fovScaleH -= 0.02f;                          chg = true; }
+    if (KeyFired(VK_NUMPAD6, k6)) { g_fovScaleH += 0.02f;                          chg = true; }
+    if (KeyFired(VK_NUMPAD2, k2)) { g_fovScaleV -= 0.02f;                          chg = true; }
+    if (KeyFired(VK_NUMPAD8, k8)) { g_fovScaleV += 0.02f;                          chg = true; }
+    if (KeyFired(VK_NUMPAD5, k5)) { g_fovScaleH = 1.0f; g_fovScaleV = 1.0f;        chg = true; }
+
+    if (g_fovScaleH < 0.5f) g_fovScaleH = 0.5f;  if (g_fovScaleH > 2.0f) g_fovScaleH = 2.0f;
+    if (g_fovScaleV < 0.5f) g_fovScaleV = 0.5f;  if (g_fovScaleV > 2.0f) g_fovScaleV = 2.0f;
+
+    if (chg)
+        Log(">>> FOVTUNE: mode=%d (%s)  scaleH=%.2f  scaleV=%.2f",
+            g_fovMode, g_fovMode == 0 ? "GAME symmetric" : "RUNTIME true per-eye",
+            g_fovScaleH, g_fovScaleV);
+}
+// ---------------------------------------------------------------------------
+
 // Head orientation published render-thread -> game-thread for the camera write
 // (Phase 11). Seqlock: odd seq == mid-write. This is a SEPARATE copy from the
 // layer pose, which stays per-submit fresh for timewarp.
 static volatile long g_headSeq = 0;
 static float         g_headQ[4] = { 0.f, 0.f, 0.f, 1.f };   // x,y,z,w, OpenXR LOCAL space
+static float         g_headPos[3] = { 0.f, 0.f, 0.f };      // head CENTER (eye midpoint), metres, XR LOCAL
 
 // --- timing ---
 static LARGE_INTEGER   g_qpf = {};
@@ -294,6 +342,7 @@ static bool EnsureStageL(ID3D11Texture2D* like)
 // ONE full XR frame cycle. Every OpenXR call individually timed.
 static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 {
+    PollFovKeys();
     ++g_xrFrames;
     LARGE_INTEGER a, b;
     if (!g_qpf.QuadPart) QueryPerformanceFrequency(&g_qpf);
@@ -343,6 +392,11 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             g_headQ[1] = views[0].pose.orientation.y;
             g_headQ[2] = views[0].pose.orientation.z;
             g_headQ[3] = views[0].pose.orientation.w;
+            // Head CENTER = midpoint of the two eye positions (each view pose is
+            // an EYE, offset by half the IPD -- the midpoint cancels that).
+            g_headPos[0] = (views[0].pose.position.x + views[1].pose.position.x) * 0.5f;
+            g_headPos[1] = (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
+            g_headPos[2] = (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
             MemoryBarrier();
             _InterlockedIncrement(&g_headSeq);          // even == done
 
@@ -374,7 +428,11 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 
                 pv[e] = { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
                 pv[e].pose = views[e].pose;
-                pv[e].fov = g_haveGameFov ? g_gameFov : views[e].fov;
+                {
+                    const XrFovf base = (g_fovMode == 1) ? views[e].fov
+                        : (g_haveGameFov ? g_gameFov : views[e].fov);
+                    pv[e].fov = ScaleFov(base, g_fovScaleH, g_fovScaleV);
+                }
                 pv[e].subImage.swapchain = g_sc[e];
                 pv[e].subImage.imageRect.offset = { 0, 0 };
                 pv[e].subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
@@ -451,6 +509,21 @@ void XR_GetHeadQuat(float out[4])
         if (s0 == g_headSeq) return;        // consistent snapshot
     }
 }
+
+void XR_GetHeadPos(float out[3])
+{
+    for (;;)
+    {
+        const long s0 = g_headSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        out[0] = g_headPos[0]; out[1] = g_headPos[1]; out[2] = g_headPos[2];
+        MemoryBarrier();
+        if (s0 == g_headSeq) return;
+    }
+}
+
+void XR_GetHeadPos(float out[3]);   // head-center position, metres, XR LOCAL space
 
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state)
 {

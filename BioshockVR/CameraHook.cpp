@@ -38,6 +38,8 @@ extern float g_cfgEyeSep;        // half-IPD in game units (== cm). default 3.2
 extern bool  g_cfgSwapEyes;      // 1 == invert the eye polarity
 extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render thread)
 extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
+extern void  XR_GetHeadPos(float out[3]);
+extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
 
 static void Log(const char* fmt, ...)
 {
@@ -414,6 +416,16 @@ static void HeadQuatToDeg(const float q[4], double& pitchDeg, double& yawDeg, do
 // logged this increment; NOT yet written to the camera.
 static double g_headPitch = 0.0, g_headYaw = 0.0, g_headRoll = 0.0;
 
+// Positional tracking (6DOF). Offsets in cm, head-frame (right, up, forward),
+// latched once per pair with the rotation. Origin = recenter point.
+static double g_posRight = 0.0, g_posUp = 0.0, g_posFwd = 0.0;
+static float  g_posOrigin[3] = {};
+static bool   g_posOriginSet = false;
+
+// Asymmetric clamps (cm), itsloopyo-proven: lean forward more than back.
+static const double kPosSide = 30.0, kPosUpMax = 20.0, kPosDownMax = 20.0;
+static const double kPosFwdMax = 40.0, kPosBackMax = 10.0;
+
 // --- full rotator<->basis math (§5), for composing head-look onto the camera ---
 struct Basis { Vec3 forward, right, up; };
 
@@ -582,6 +594,39 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         float hq[4];
         XR_GetHeadQuat(hq);
         HeadQuatToDeg(hq, g_headPitch, g_headYaw, g_headRoll);
+
+        float hp[3];
+        XR_GetHeadPos(hp);
+
+        // Recenter: first real (nonzero) sample, or Numpad-Del re-captures.
+        static bool prevDec = false;
+        const bool decDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
+        const bool wantRecenter = (decDown && !prevDec);
+        prevDec = decDown;
+
+        const bool haveSample = (fabs(hp[0]) + fabs(hp[1]) + fabs(hp[2])) > 1e-4;
+        if ((!g_posOriginSet && haveSample) || (wantRecenter && haveSample))
+        {
+            g_posOrigin[0] = hp[0]; g_posOrigin[1] = hp[1]; g_posOrigin[2] = hp[2];
+            g_posOriginSet = true;
+            Log("camera: HEAD POSITION recentered (origin %.3f %.3f %.3f m)",
+                hp[0], hp[1], hp[2]);
+        }
+
+        if (g_posOriginSet)
+        {
+            // XR LOCAL: +x right, +y up, +z BACK. Metres -> cm.
+            g_posRight = (double)(hp[0] - g_posOrigin[0]) * 100.0;
+            g_posUp = (double)(hp[1] - g_posOrigin[1]) * 100.0;
+            g_posFwd = -(double)(hp[2] - g_posOrigin[2]) * 100.0;
+
+            if (g_posRight > kPosSide)   g_posRight = kPosSide;
+            if (g_posRight < -kPosSide)   g_posRight = -kPosSide;
+            if (g_posUp > kPosUpMax)  g_posUp = kPosUpMax;
+            if (g_posUp < -kPosDownMax)g_posUp = -kPosDownMax;
+            if (g_posFwd > kPosFwdMax) g_posFwd = kPosFwdMax;
+            if (g_posFwd < -kPosBackMax)g_posFwd = -kPosBackMax;
+        }
     }
 
     // --- THE WRITE (§6e). Only when armed. ---
@@ -596,12 +641,26 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Head tracking (Phase 11): compose the latched HMD orientation onto
             // the clean mouse heading, then WRITE it. Aim stays on
             // Controller.Rotation (untouched), so the gun won't follow the head.
-            FRotator finalRot = *CameraRotation;          // == clean
+            const FRotator cleanRot = *CameraRotation;    // mouse heading, pre-head
+            FRotator finalRot = cleanRot;
             if (g_cfgHeadTracking)
             {
                 finalRot = ApplyWorldSpaceYaw(*CameraRotation,
                     g_headYaw, g_headPitch, g_headRoll);
                 *CameraRotation = finalRot;
+            }
+
+            // Positional tracking: head-frame offset rotated into world XY by
+            // the CLEAN yaw (mouse heading), so leaning forward goes into the
+            // screen regardless of where the head is turned. UE: fwd=+X, right=+Y.
+            if (g_cfgHeadPosition)
+            {
+                const double cy = UnitsToRad(cleanRot.yaw); // CLEAN yaw only -- the XR
+                // room frame is fixed; adding head yaw double-counts the turn.
+                const double cs = cos(cy), sn = sin(cy);
+                CameraLocation->x += (float)(g_posFwd * cs - g_posRight * sn);
+                CameraLocation->y += (float)(g_posFwd * sn + g_posRight * cs);
+                CameraLocation->z += (float)g_posUp;
             }
 
             double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
@@ -643,6 +702,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",
             g_headYaw, g_headPitch, g_headRoll,
             g_cfgHeadTracking ? "(WRITTEN to camera)" : "(computed, not written)");
+        Log("  POS : right%7.1f  up%7.1f  fwd%7.1f  cm   %s",
+            g_posRight, g_posUp, g_posFwd,
+            g_cfgHeadPosition ? "(WRITTEN)" : "(computed, not written)");
 
         for (int i = 0; i < g_siteCount; ++i)
         {

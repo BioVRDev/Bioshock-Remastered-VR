@@ -41,6 +41,9 @@ bool g_cfgSwapEyes = false;
 // so a fresh deploy is known-good stereo; set EnableHeadTracking=1 to test.
 bool g_cfgHeadTracking = false;
 
+// 6DOF positional tracking: apply the head's translation to the camera.
+bool g_cfgHeadPosition = false;
+
 // The game presents with SyncInterval=1. Overriding it to 0 turned out NOT to be
 // the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
 bool g_cfgDisableVSync = true;
@@ -129,6 +132,9 @@ static void LoadConfig()
     g_cfgHeadTracking = (GetPrivateProfileIntA("VR", "EnableHeadTracking", 0, g_iniPath) != 0);
     Log("config: EnableHeadTracking = %d   %s", (int)g_cfgHeadTracking,
         g_cfgHeadTracking ? "(head-look composed onto camera)" : "(off -- stereo only)");
+
+    g_cfgHeadPosition = (GetPrivateProfileIntA("VR", "EnableHeadPosition", 0, g_iniPath) != 0);
+    Log("config: EnableHeadPosition = %d", (int)g_cfgHeadPosition);
 
     g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
