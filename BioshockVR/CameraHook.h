@@ -24,3 +24,11 @@ int  CameraHook_NextEye();
 // threads are in lockstep at a fixed pipeline depth. Underruns = Presents that
 // had no camera tag waiting (menus, movies) -- expected before a level loads.
 void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns);
+
+// ---- THE LATCHED-POSE CHANNEL (flicker fix, §2) -------------------------
+// game->render, mirror of the render->game head seqlock. Publishes the pose
+// the camera was ACTUALLY rendered from: the quat latched at eye-0 time, and
+// the APPLIED head-center position (origin + CLAMPED offset, metres, XR
+// LOCAL). Returns false when the camera is not head-driven (tracking off,
+// write off, hook not yet armed) -- caller falls back to the fresh pose.
+bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);

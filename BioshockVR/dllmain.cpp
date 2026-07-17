@@ -1,7 +1,6 @@
 // BioshockVR/dllmain.cpp
 //
-// Entry point + logging. Deliberately contains NO absolute paths:
-// the log is written next to this DLL, wherever that happens to be.
+// Entry point + logging
 
 #include <windows.h>
 #include <cstdio>
@@ -20,8 +19,8 @@ static char              g_iniPath[MAX_PATH] = {};
 
 // Non-static: Hooks.cpp / CameraHook.cpp extern these.
 
-// §6h. BSR's live FOV slider can't be read from memory, so the user declares it.
-// Stock is 100 horizontal. Slider and ini MUST match.
+// BSR's live FOV slider can't be read from memory, so the user declares it.
+// MUST equal Bioshock.ini HorizontalFOV (§10) or turn-warp returns.
 float g_cfgFovDeg = 100.0f;
 
 // Phase 5 kill switch: if the camera hook crashes the game, set 0. No rebuild.
@@ -138,7 +137,6 @@ static void LoadConfig()
 
     g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
-
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to
@@ -161,6 +159,7 @@ static DWORD WINAPI InitThread(LPVOID)
     if (s != MH_OK) { Log("!!! MinHook dead. Stopping."); return 0; }
 
     LoadConfig();
+
     if (!Hooks_Install())
     {
         Log("!!! Hooks_Install FAILED. No hook installed. Game will run clean.");
@@ -176,6 +175,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH)
     {
         g_hSelf = hModule;
+
         DisableThreadLibraryCalls(hModule);
         InitializeCriticalSection(&g_logLock);
         InitLogPath();

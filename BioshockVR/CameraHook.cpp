@@ -84,6 +84,14 @@ static volatile long  g_qMax = -1;
 static volatile long  g_underruns = 0;
 static int            g_lastEye = 1;   // so the first underrun yields eye 0
 
+// ---------------------------------------------------------------- latched pose
+// game->render seqlock (flicker fix, §2). The mirror of XRSession's head
+// seqlock. Written once per pair in the eye-0 latch; read in SubmitPair.
+static volatile long g_lpSeq = 0;
+static float         g_lpQuat[4] = { 0.f, 0.f, 0.f, 1.f };
+static float         g_lpPos[3] = { 0.f, 0.f, 0.f };
+static volatile long g_lpValid = 0;
+
 // ---------------------------------------------------------------- memory safety
 
 static bool IsMemoryValid(const void* addr, size_t size)
@@ -627,6 +635,38 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             if (g_posFwd > kPosFwdMax) g_posFwd = kPosFwdMax;
             if (g_posFwd < -kPosBackMax)g_posFwd = -kPosBackMax;
         }
+
+        // Publish the LATCHED pose back to the render thread (§2). Position is
+        // the APPLIED head center -- origin + CLAMPED offset mapped back to XR
+        // axes -- so a saturated clamp can't re-open the render/layer mismatch.
+        // Valid only when the camera actually follows this pose.
+        {
+            float px, py, pz;
+            if (g_posOriginSet)
+            {
+                px = g_posOrigin[0]; py = g_posOrigin[1]; pz = g_posOrigin[2];
+                if (g_cfgHeadPosition)
+                {
+                    px += (float)(g_posRight * 0.01);   // cm -> m, XR +x right
+                    py += (float)(g_posUp * 0.01);   //           XR +y up
+                    pz -= (float)(g_posFwd * 0.01);   //           XR +z BACK
+                }
+            }
+            else { px = hp[0]; py = hp[1]; pz = hp[2]; }
+
+            const bool applied = g_cfgCameraWrite && g_cfgHeadTracking &&
+                (g_calls >= kArmAfterCalls);
+
+            _InterlockedIncrement(&g_lpSeq);        // odd == writing
+            MemoryBarrier();
+            g_lpQuat[0] = hq[0]; g_lpQuat[1] = hq[1];
+            g_lpQuat[2] = hq[2]; g_lpQuat[3] = hq[3];
+            g_lpPos[0] = px; g_lpPos[1] = py; g_lpPos[2] = pz;
+            g_lpValid = applied ? 1 : 0;
+            MemoryBarrier();
+            _InterlockedIncrement(&g_lpSeq);        // even == done
+        }
+
     }
 
     // --- THE WRITE (§6e). Only when armed. ---
@@ -751,6 +791,22 @@ int CameraHook_NextEye()
     _InterlockedIncrement(&g_eyeRd);
     g_lastEye = eye;
     return eye;
+}
+
+bool CameraHook_GetLatchedPose(float quat[4], float pos[3])
+{
+    for (;;)
+    {
+        const long s0 = g_lpSeq;
+        if (s0 & 1) continue;               // writer mid-update
+        MemoryBarrier();
+        const long valid = g_lpValid;
+        quat[0] = g_lpQuat[0]; quat[1] = g_lpQuat[1];
+        quat[2] = g_lpQuat[2]; quat[3] = g_lpQuat[3];
+        pos[0] = g_lpPos[0]; pos[1] = g_lpPos[1]; pos[2] = g_lpPos[2];
+        MemoryBarrier();
+        if (s0 == g_lpSeq) return valid != 0;
+    }
 }
 
 void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)

@@ -18,6 +18,10 @@
 
 extern void LogFile(const char* msg);
 
+extern float g_cfgEyeSep;    // half-IPD, game units == cm (dllmain.cpp)
+extern bool  g_cfgSwapEyes;
+bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
+
 static void Log(const char* fmt, ...)
 {
     char b[512];
@@ -105,8 +109,9 @@ static void PollFovKeys()
 // ---------------------------------------------------------------------------
 
 // Head orientation published render-thread -> game-thread for the camera write
-// (Phase 11). Seqlock: odd seq == mid-write. This is a SEPARATE copy from the
-// layer pose, which stays per-submit fresh for timewarp.
+// (Phase 11). Seqlock: odd seq == mid-write. The LAYER pose is no longer fresh
+// per-submit -- it comes back LATCHED via CameraHook_GetLatchedPose (§2), so
+// the compositor reprojects from the pose the image was actually rendered from.
 static volatile long g_headSeq = 0;
 static float         g_headQ[4] = { 0.f, 0.f, 0.f, 1.f };   // x,y,z,w, OpenXR LOCAL space
 static float         g_headPos[3] = { 0.f, 0.f, 0.f };      // head CENTER (eye midpoint), metres, XR LOCAL
@@ -400,6 +405,25 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             MemoryBarrier();
             _InterlockedIncrement(&g_headSeq);          // even == done
 
+            // --- LAYER POSE (flicker fix, §2): stamp the pose the image was
+            // RENDERED from -- the eye-0 latched pose -- not the fresh one.
+            // Fresh-vs-latched mismatch = ~3 deg of baked-in yaw at 200 deg/s
+            // = the flicker. Falls back to fresh whenever the camera isn't
+            // head-driven (the pre-Phase-11 known-good path).
+            float lq[4], lp[3];
+            const bool useLatched = CameraHook_GetLatchedPose(lq, lp);
+            float rxr = 0.f, ryr = 0.f, rzr = 0.f;   // latched RIGHT vec, XR space
+            if (useLatched)
+            {
+                const float qx = lq[0], qy = lq[1], qz = lq[2], qw = lq[3];
+                rxr = 1.f - 2.f * (qy * qy + qz * qz);   // quat * (1,0,0)
+                ryr = 2.f * (qx * qy + qz * qw);
+                rzr = 2.f * (qx * qz - qy * qw);
+
+                static bool logged = false;
+                if (!logged) { logged = true; Log(">>> XR: LAYER POSE = LATCHED (flicker fix live)"); }
+            }
+
             ID3D11Texture2D* src[2] = { leftImg, rightImg };
 
             for (int e = 0; e < 2; ++e)
@@ -427,7 +451,23 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                 xrReleaseSwapchainImage(g_sc[e], &ri);
 
                 pv[e] = { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW };
-                pv[e].pose = views[e].pose;
+                pv[e].pose = views[e].pose;              // fallback: fresh pose
+                if (useLatched)
+                {
+                    pv[e].pose.orientation.x = lq[0];
+                    pv[e].pose.orientation.y = lq[1];
+                    pv[e].pose.orientation.z = lq[2];
+                    pv[e].pose.orientation.w = lq[3];
+
+                    // Each eye = latched head center +- half-IPD along the
+                    // latched right vector -- where that eye was actually
+                    // rendered from. Same sign convention as the camera write.
+                    float s = (e == 0 ? -1.f : 1.f) * (g_cfgEyeSep * 0.01f);  // cm -> m
+                    if (g_cfgSwapEyes) s = -s;
+                    pv[e].pose.position.x = lp[0] + rxr * s;
+                    pv[e].pose.position.y = lp[1] + ryr * s;
+                    pv[e].pose.position.z = lp[2] + rzr * s;
+                }
                 {
                     const XrFovf base = (g_fovMode == 1) ? views[e].fov
                         : (g_haveGameFov ? g_gameFov : views[e].fov);
@@ -522,8 +562,6 @@ void XR_GetHeadPos(float out[3])
         if (s0 == g_headSeq) return;
     }
 }
-
-void XR_GetHeadPos(float out[3]);   // head-center position, metres, XR LOCAL space
 
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state)
 {
