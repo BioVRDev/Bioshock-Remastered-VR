@@ -144,11 +144,15 @@
     <ClCompile Include="..\third_party\minhook\src\trampoline.c" />
     <ClCompile Include="CameraHook.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="DrawHook.cpp" />
+    <ClCompile Include="GameIni.cpp" />
     <ClCompile Include="Hooks.cpp" />
     <ClCompile Include="XRSession.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CameraHook.h" />
+    <ClInclude Include="DrawHook.h" />
+    <ClInclude Include="GameIni.h" />
     <ClInclude Include="Hooks.h" />
     <ClInclude Include="XRSession.h" />
   </ItemGroup>

@@ -9,6 +9,7 @@
 #include "Hooks.h"
 #include "XRSession.h"
 #include "CameraHook.h"
+#include "DrawHook.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -40,6 +41,10 @@ typedef HRESULT(__stdcall* PresentFn)(IDXGISwapChain*, UINT SyncInterval, UINT F
 
 static PresentFn g_origPresent = nullptr;
 static void* g_presentAddr = nullptr;
+
+static void* g_drawIndexedAddr = nullptr;
+static void* g_drawAddr = nullptr;
+static bool  g_drawTried = false;
 
 static ID3D11Device* g_dev = nullptr;
 static ID3D11DeviceContext* g_ctx = nullptr;
@@ -144,6 +149,14 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             else
                 Log("camera: DISABLED by BioshockVR.ini (EnableCameraHook=0)");
         }
+
+        // Draw hook, same reasoning as the camera hook: render thread, first
+        // frame, never DllMain.
+        if (!g_drawTried)
+        {
+            g_drawTried = true;
+            DrawHook_Install(g_drawIndexedAddr, g_drawAddr);
+        }
     }
 
     // Pop the eye tag for the frame we are about to present. ALWAYS, once per
@@ -159,9 +172,15 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             QueryPerformanceCounter(&x0);
 
             static bool menuMode = false;
-            if (g_cfgMenuScreen && CameraHook_Starved())
+            if (g_cfgMenuScreen && (CameraHook_Starved() || DrawHook_MenuUp()))
             {
-                if (!menuMode) { menuMode = true; Log(">>> MENU SCREEN ON (camera starved)"); }
+                if (!menuMode)
+                {
+                    menuMode = true;
+                    Log(">>> MENU SCREEN ON (%s)",
+                        CameraHook_Starved() ? "camera starved" : "draw signature");
+                }
+
                 XR_SubmitMenuMono(bb);
             }
             else
@@ -244,6 +263,8 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         SyncInterval = 0;
     }
 
+    DrawHook_EndFrame();
+    
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
     HRESULT hr = g_origPresent(sc, SyncInterval, Flags);
@@ -321,6 +342,8 @@ bool Hooks_Install()
     if (!GrabVTable(&pPresent, &pDrawIndexed, &pDraw)) return false;
 
     g_presentAddr = pPresent;
+    g_drawIndexedAddr = pDrawIndexed;
+    g_drawAddr = pDraw;
 
     MH_STATUS s = MH_CreateHook(pPresent, &hkPresent, (LPVOID*)&g_origPresent);
     if (s != MH_OK) { Log("!!! MH_CreateHook(Present) -> %d", (int)s); return false; }

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include "Hooks.h"
+#include "GameIni.h"
 
 #include <MinHook.h>
 
@@ -47,9 +48,26 @@ bool g_cfgHeadPosition = false;
 // the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
 bool g_cfgDisableVSync = true;
 
+// Push our FOV/resolution into the game's Bioshock.ini so the two files can
+// never drift. 0 = leave Bioshock.ini strictly alone.
+bool g_cfgSyncGameIni = true;
+
+// Game render resolution, written to WindowedViewportX/Y. 0 = don't touch.
+// Match the runtime's recommended per-eye size (logged at XR_Init).
+int g_cfgResX = 0;
+int g_cfgResY = 0;
+
+// Draw-call fingerprinting / HUD suppression.
+bool g_cfgDrawHook = true;
+char g_cfgSuppressList[256] = {};
+char g_cfgMenuList[256] = {};
+
 // Menus/loading shown as a head-locked virtual screen (quad layer) instead of
 // the wall-sized projection. Kill switch if it misbehaves.
 bool g_cfgMenuScreen = true;
+
+// Pair-lock (§14): render both eyes of a pair from the same camera instant.
+bool g_cfgPairLock = true;
 
 static void InitLogPath()
 {
@@ -144,6 +162,35 @@ static void LoadConfig()
 
     g_cfgMenuScreen = (GetPrivateProfileIntA("VR", "EnableMenuScreen", 1, g_iniPath) != 0);
     Log("config: EnableMenuScreen  = %d", (int)g_cfgMenuScreen);
+
+    g_cfgSyncGameIni = (GetPrivateProfileIntA("VR", "SyncGameIni", 1, g_iniPath) != 0);
+    Log("config: SyncGameIni       = %d", (int)g_cfgSyncGameIni);
+
+    g_cfgResX = GetPrivateProfileIntA("VR", "ResolutionX", 0, g_iniPath);
+    g_cfgResY = GetPrivateProfileIntA("VR", "ResolutionY", 0, g_iniPath);
+
+    if (g_cfgResX < 0 || g_cfgResY < 0 || g_cfgResX > 16384 || g_cfgResY > 16384)
+    {
+        Log("config: Resolution out of range. Ignoring.");
+        g_cfgResX = g_cfgResY = 0;
+    }
+
+    Log("config: Resolution        = %d x %d   (%s)", g_cfgResX, g_cfgResY,
+        (g_cfgResX && g_cfgResY) ? "will be written to Bioshock.ini" : "not managed");
+
+    g_cfgDrawHook = (GetPrivateProfileIntA("VR", "EnableDrawHook", 1, g_iniPath) != 0);
+    Log("config: EnableDrawHook     = %d", (int)g_cfgDrawHook);
+
+    GetPrivateProfileStringA("VR", "SuppressIndexCounts", "",
+        g_cfgSuppressList, sizeof(g_cfgSuppressList), g_iniPath);
+    Log("config: SuppressIndexCounts = '%s'", g_cfgSuppressList);
+
+    GetPrivateProfileStringA("VR", "MenuIndexCounts", "1769,63,49,95,21,87",
+        g_cfgMenuList, sizeof(g_cfgMenuList), g_iniPath);
+    Log("config: MenuIndexCounts    = '%s'", g_cfgMenuList);
+
+    g_cfgPairLock = (GetPrivateProfileIntA("VR", "PairLockCamera", 1, g_iniPath) != 0);
+    Log("config: PairLockCamera    = %d", (int)g_cfgPairLock);
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to
@@ -166,6 +213,7 @@ static DWORD WINAPI InitThread(LPVOID)
     if (s != MH_OK) { Log("!!! MinHook dead. Stopping."); return 0; }
 
     LoadConfig();
+    SyncGameIni();
 
     if (!Hooks_Install())
     {

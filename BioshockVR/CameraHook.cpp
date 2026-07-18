@@ -40,6 +40,9 @@ extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render threa
 extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 extern void  XR_GetHeadPos(float out[3]);
 extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
+extern bool  g_cfgPairLock;
+
+bool DrawHook_MenuUp();   // DrawHook.cpp
 
 static void Log(const char* fmt, ...)
 {
@@ -85,6 +88,7 @@ static volatile long  g_underruns = 0;
 static int            g_lastEye = 1;   // so the first underrun yields eye 0
 static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
 static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
+static long           g_deepPops = 0;      // consecutive pops with depth > 1
 
 // ---------------------------------------------------------------- latched pose
 // game->render seqlock (flicker fix, §2). The mirror of XRSession's head
@@ -530,7 +534,50 @@ static bool     g_armLogged = false;
 
 static DWORD    g_lastTick = 0;
 
+// ---- PAIR LOCK (§14): the two eyes of a pair must be rendered from the SAME
+// instant. The head pose was already latched per pair (§6) -- but cleanRot and
+// CameraLocation were read FRESH each CalcView, so during a stick turn eye 1
+// rendered ~4.2ms of extra yaw (~0.5 deg at 120 deg/s == ~28% disparity error
+// at 2m, with a VERTICAL disparity component once the view is pitched). This
+// is the standard AER artifact; UEVR's "Synchronized Sequential" exists
+// precisely to hold game state constant across the pair.
+static FRotator g_pairRot = {};
+static FVector  g_pairLoc = {};
+static bool     g_pairValid = false;
+
 static const uint64_t kArmAfterCalls = 200;   // let the leader settle before writing
+
+// ---- ROTATION FIELD FINDER (head-aim / motion-control groundwork) --------
+// The gun follows Controller.Rotation, a DIFFERENT field from the view rotation
+// we write in CalcView -- which is why the weapon slides opposite your head.
+// To make aim follow the head we must find that field's offset. Numpad 9 fires
+// ONE scan of the PlayerController and logs every FRotator whose yaw matches the
+// clean view yaw. Run it facing a landmark, turn 90 deg, run it again: the
+// offset whose yaw TRACKS yours across both scans is Controller.Rotation.
+static void ScanForRotation(void* pc, const FRotator& clean)
+{
+    if (!pc) return;
+    const unsigned char* base = (const unsigned char*)pc;
+    Log("ROTSCAN: view p=%d y=%d r=%d  in PC 0x%08X",
+        clean.pitch, clean.yaw, clean.roll, (unsigned)(uintptr_t)pc);
+
+    int hits = 0;
+    for (size_t off = 0; off + sizeof(FRotator) <= 0x800; off += 4)
+    {
+        const unsigned char* p = base + off;
+        if (!IsMemoryValid((void*)p, sizeof(FRotator))) continue;
+
+        const FRotator* r = (const FRotator*)p;
+        const int dy = abs(r->yaw - clean.yaw);
+        if (dy < 364)                       // within ~2 deg (182 units == 1 deg)
+        {
+            Log("  ROTSCAN +0x%03X  p=%d y=%d r=%d",
+                (unsigned)off, r->pitch, r->yaw, r->roll);
+            if (++hits >= 16) break;
+        }
+    }
+    if (!hits) Log("  ROTSCAN: nothing in the first 2KB. Widen the scan.");
+}
 
 static void __fastcall hkCalcView(void* pThis, void* edx,
     void** ViewActor,
@@ -559,6 +606,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     if (!CameraLocation || !CameraRotation) return;
     if (!IsMemoryValid(CameraLocation, sizeof(FVector)))  return;
     if (!IsMemoryValid(CameraRotation, sizeof(FRotator))) return;
+
+    // Numpad 9: one-shot rotation scan. Rotation here is still CLEAN -- the
+    // head compose happens further down, at kArmAfterCalls.
+    {
+        static bool k9 = false;
+        const bool down = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
+        if (down && !k9) ScanForRotation(pThis, *CameraRotation);
+        k9 = down;
+    }
 
     // --- bucket by return address (§6c-2) ---
     CallSite* site = nullptr;
@@ -596,6 +652,22 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     //     rides the FIFO out to the render thread with the frame it belongs to. ---
     const long w = g_eyeWr;
     const int  eye = (int)(w & 1);          // 0 == LEFT, 1 == RIGHT
+
+    // PAIR LOCK: eye 0 snapshots the clean camera; eye 1 re-renders FROM that
+    // snapshot instead of its own (4.2ms newer) camera. Only when we are
+    // actually writing the camera -- read-only mode must stay read-only.
+    if (eye == 0)
+    {
+        g_pairRot = *CameraRotation;
+        g_pairLoc = *CameraLocation;
+        g_pairValid = true;
+    }
+    else if (g_cfgPairLock && g_pairValid &&
+        g_cfgCameraWrite && g_calls >= kArmAfterCalls)
+    {
+        *CameraRotation = g_pairRot;
+        *CameraLocation = g_pairLoc;
+    }
 
     // Latch the HMD pose ONCE per pair (LEFT frame), hold for both eyes so the
     // two eyes never render from different head rotations (§6).
@@ -685,7 +757,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Controller.Rotation (untouched), so the gun won't follow the head.
             const FRotator cleanRot = *CameraRotation;    // mouse heading, pre-head
             FRotator finalRot = cleanRot;
-            if (g_cfgHeadTracking)
+            if (g_cfgHeadTracking && !DrawHook_MenuUp())
             {
                 finalRot = ApplyWorldSpaceYaw(*CameraRotation,
                     g_headYaw, g_headPitch, g_headRoll);
@@ -776,28 +848,36 @@ int CameraHook_NextEye()
         // so the compositor never stalls.
         _InterlockedIncrement(&g_underruns);
         g_needResync = 1;         // tag<->frame alignment is now unknown
+        g_deepPops = 0;
         if (g_qMin > 0) g_qMin = 0;
         if (g_qMax < 0) g_qMax = 0;
         g_lastEye ^= 1;
         return g_lastEye;
     }
 
-    // RESYNC after an underrun period (the tutorial-mono bug). A stale tag
-    // left in the queue after starvation shifts alignment by one FOREVER
-    // (MEASURED: depth 1/1 became a permanent 2/2 after the 'press M' popup
-    // -> every frame labeled with the WRONG eye -> broken stereo). Steady-
-    // state depth is 1 (measured), so on the first real pop after any
-    // underrun, jump to the NEWEST tag.
-    if (g_needResync)
+    // Depth should be EXACTLY 1 in steady state (measured, §6/§13). Two ways
+    // it goes stale:
+    //   1. after an UNDERRUN period (menus/tutorials) -- the §13 bug.
+    //   2. DRIFT with no underrun at all: a producer burst during a streaming
+    //      hitch leaves an extra tag queued forever. No underrun ever fires,
+    //      so the §13 resync never arms -- every tag is then one frame stale,
+    //      which SWAPS the eyes persistently. (Movement + fast turns == the
+    //      hitchy case. Pair-lock made the resulting inverted stereo blatant.)
+    // Both collapse to the same cure: jump to the NEWEST tag.
+    if (depth > 1) ++g_deepPops; else g_deepPops = 0;
+
+    if (g_needResync || g_deepPops >= 8)
     {
-        g_needResync = 0;
         if (depth > 1)
         {
-            Log("camera: EYEQ RESYNC -- dropped %ld stale tag(s) after underrun", depth - 1);
+            Log("camera: EYEQ RESYNC (%s) -- dropped %ld stale tag(s)",
+                g_needResync ? "post-underrun" : "DRIFT", depth - 1);
             rd = wr - 1;
             g_eyeRd = rd;
             depth = 1;
         }
+        g_needResync = 0;
+        g_deepPops = 0;
     }
 
     if (depth > 32)               // producer ran far ahead (a stall): take newest

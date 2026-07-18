@@ -45,6 +45,12 @@
     <ClCompile Include="CameraHook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="GameIni.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="XRSession.h">
@@ -56,8 +62,15 @@
     <ClInclude Include="CameraHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="GameIni.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DrawHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="$(OpenXRLoaderBinaryRoot)\bin\openxr_loader.dll" />
   </ItemGroup>
 </Project>

@@ -91,12 +91,19 @@ static bool KeyFired(int vk, bool& prev)
 static void PollFovKeys()
 {
     static bool k0 = false, k4 = false, k6 = false, k2 = false, k8 = false, k5 = false;
+    static bool k7 = false;
+    static float step = 0.02f;
+    if (KeyFired(VK_NUMPAD7, k7))
+    {
+        step = (step > 0.01f) ? 0.004f : 0.02f;   // 0.004 ~ 0.4 deg
+        Log(">>> FOVTUNE: step = %.3f  (%s)", step, step > 0.01f ? "COARSE" : "FINE");
+    }
     bool chg = false;
     if (KeyFired(VK_NUMPAD0, k0)) { g_fovMode = (g_fovMode + 1) & 1;              chg = true; }
-    if (KeyFired(VK_NUMPAD4, k4)) { g_fovScaleH -= 0.02f;                          chg = true; }
-    if (KeyFired(VK_NUMPAD6, k6)) { g_fovScaleH += 0.02f;                          chg = true; }
-    if (KeyFired(VK_NUMPAD2, k2)) { g_fovScaleV -= 0.02f;                          chg = true; }
-    if (KeyFired(VK_NUMPAD8, k8)) { g_fovScaleV += 0.02f;                          chg = true; }
+    if (KeyFired(VK_NUMPAD4, k4)) { g_fovScaleH -= step;                           chg = true; }
+    if (KeyFired(VK_NUMPAD6, k6)) { g_fovScaleH += step;                           chg = true; }
+    if (KeyFired(VK_NUMPAD2, k2)) { g_fovScaleV -= step;                           chg = true; }
+    if (KeyFired(VK_NUMPAD8, k8)) { g_fovScaleV += step;                           chg = true; }
     if (KeyFired(VK_NUMPAD5, k5)) { g_fovScaleH = 1.0f; g_fovScaleV = 1.0f;        chg = true; }
 
     if (g_fovScaleH < 0.5f) g_fovScaleH = 0.5f;  if (g_fovScaleH > 2.0f) g_fovScaleH = 2.0f;
