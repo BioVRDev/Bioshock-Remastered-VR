@@ -41,6 +41,8 @@ extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp
 extern void  XR_GetHeadPos(float out[3]);
 extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
 extern bool  g_cfgPairLock;
+extern bool  g_cfgHeadAim;
+extern bool g_cfgHeadRoll;
 
 bool DrawHook_MenuUp();   // DrawHook.cpp
 
@@ -89,6 +91,13 @@ static int            g_lastEye = 1;   // so the first underrun yields eye 0
 static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
 static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
 static long           g_deepPops = 0;      // consecutive pops with depth > 1
+
+// With head-aim the head reaches the view INDIRECTLY (we write the aim field,
+// the game derives CameraRotation from it NEXT call). So the image is rendered
+// from the PREVIOUS pair's head pose, and stamping the current one re-opens the
+// §2 render/layer mismatch -- i.e. the flicker comes back.
+static float g_prevQuat[4] = { 0.f, 0.f, 0.f, 1.f };
+static bool  g_prevQuatValid = false;
 
 // ---------------------------------------------------------------- latched pose
 // game->render seqlock (flicker fix, §2). The mirror of XRSession's head
@@ -534,6 +543,22 @@ static bool     g_armLogged = false;
 
 static DWORD    g_lastTick = 0;
 
+// ---- HEAD-AIM (§15) -----------------------------------------------------
+// MEASURED: the reticle is drawn at backbuffer center (so it appears to follow
+// the head) but melee/fire resolve against Controller.Rotation, driven by the
+// mouse. The crosshair therefore LIES at any head angle. Head-aim writes that
+// field so the gun goes where you look.
+//
+// THE TRAP: writing the field naively makes the head offset accumulate -- the
+// game applies the next mouse delta on top of OUR value and the player spins.
+// So we keep our own base, and each frame add only the delta the GAME made
+// since our last write.
+static FRotator g_aimBase = {};
+static FRotator g_aimLastWrote = {};
+static bool     g_aimInit = false;
+static int      g_aimCand = 0;      // Numpad + cycles the ROTSCAN candidates
+static const unsigned kAimOffsets[2] = { 0x1E4, 0x328 };
+
 // ---- PAIR LOCK (§14): the two eyes of a pair must be rendered from the SAME
 // instant. The head pose was already latched per pair (§6) -- but cleanRot and
 // CameraLocation were read FRESH each CalcView, so during a stick turn eye 1
@@ -686,6 +711,20 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         const bool wantRecenter = (decDown && !prevDec);
         prevDec = decDown;
 
+        // Numpad + : cycle which ROTSCAN candidate we drive (+0x1E4 / +0x328).
+        // Only one of them is the gun; poke and watch.
+        {
+            static bool prevAdd = false;
+            const bool d = (GetAsyncKeyState(VK_ADD) & 0x8000) != 0;
+            if (d && !prevAdd)
+            {
+                g_aimCand ^= 1;
+                g_aimInit = false;                 // re-baseline on the new field
+                Log(">>> HEAD-AIM candidate -> +0x%X", kAimOffsets[g_aimCand & 1]);
+            }
+            prevAdd = d;
+        }
+
         const bool haveSample = (fabs(hp[0]) + fabs(hp[1]) + fabs(hp[2])) > 1e-4;
         if ((!g_posOriginSet && haveSample) || (wantRecenter && haveSample))
         {
@@ -731,14 +770,22 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             const bool applied = g_cfgCameraWrite && g_cfgHeadTracking &&
                 (g_calls >= kArmAfterCalls);
 
+            // Which pose did the image ACTUALLY render from?
+            const bool lag = (g_cfgHeadAim && g_prevQuatValid);
+            const float* sq = lag ? g_prevQuat : hq;
+
             _InterlockedIncrement(&g_lpSeq);        // odd == writing
             MemoryBarrier();
-            g_lpQuat[0] = hq[0]; g_lpQuat[1] = hq[1];
-            g_lpQuat[2] = hq[2]; g_lpQuat[3] = hq[3];
+            g_lpQuat[0] = sq[0]; g_lpQuat[1] = sq[1];
+            g_lpQuat[2] = sq[2]; g_lpQuat[3] = sq[3];
             g_lpPos[0] = px; g_lpPos[1] = py; g_lpPos[2] = pz;
             g_lpValid = applied ? 1 : 0;
             MemoryBarrier();
             _InterlockedIncrement(&g_lpSeq);        // even == done
+
+            g_prevQuat[0] = hq[0]; g_prevQuat[1] = hq[1];
+            g_prevQuat[2] = hq[2]; g_prevQuat[3] = hq[3];
+            g_prevQuatValid = true;
         }
 
     }
@@ -757,10 +804,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Controller.Rotation (untouched), so the gun won't follow the head.
             const FRotator cleanRot = *CameraRotation;    // mouse heading, pre-head
             FRotator finalRot = cleanRot;
-            if (g_cfgHeadTracking && !DrawHook_MenuUp())
+            if (g_cfgHeadTracking)
             {
-                finalRot = ApplyWorldSpaceYaw(*CameraRotation,
-                    g_headYaw, g_headPitch, g_headRoll);
+                if (g_cfgHeadAim)
+                {
+                    // Head yaw/pitch already reached the view THROUGH the aim
+                    // field (+0x1E4 -> Controller.Rotation -> CameraRotation).
+                    // Adding them here too applies the head TWICE and the view
+                    // swims as if the mouse were being dragged. Roll only: the
+                    // controller rotator can't carry head roll, so it's the one
+                    // component still missing from the view.
+                    finalRot = ApplyWorldSpaceYaw(*CameraRotation,
+                        0.0, 0.0, g_cfgHeadRoll ? g_headRoll : 0.0);
+                }
+                else
+                {
+                    finalRot = ApplyWorldSpaceYaw(*CameraRotation,
+                        g_headYaw, g_headPitch, g_headRoll);
+                }
                 *CameraRotation = finalRot;
             }
 
@@ -769,8 +830,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // screen regardless of where the head is turned. UE: fwd=+X, right=+Y.
             if (g_cfgHeadPosition)
             {
-                const double cy = UnitsToRad(cleanRot.yaw); // CLEAN yaw only -- the XR
-                // room frame is fixed; adding head yaw double-counts the turn.
+                // CLEAN yaw only. With head-aim, *CameraRotation CONTAINS head
+                // yaw (it comes from Controller.Rotation), so cleanRot is no
+                // longer clean -- using it rotates the positional offset by the
+                // head turn and sweeps the camera around an arc (§16: walk into
+                // a wall, turn your head, drift off it counterclockwise).
+                // g_aimBase is the mouse-only heading: it accumulates ONLY
+                // game-driven deltas, which is exactly the room frame we want.
+                const double cy = UnitsToRad(
+                    (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : cleanRot.yaw);
                 const double cs = cos(cy), sn = sin(cy);
                 CameraLocation->x += (float)(g_posFwd * cs - g_posRight * sn);
                 CameraLocation->y += (float)(g_posFwd * sn + g_posRight * cs);
@@ -786,6 +854,39 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             CameraLocation->x += (float)(right.x * s);
             CameraLocation->y += (float)(right.y * s);
             CameraLocation->z += (float)(right.z * s);
+
+            // --- HEAD-AIM WRITE ---
+            if (g_cfgHeadAim && g_cfgHeadTracking &&
+                !DrawHook_MenuUp() && !CameraHook_Starved())
+            {
+                unsigned off = kAimOffsets[g_aimCand & 1];
+                FRotator* aim = (FRotator*)((uint8_t*)pThis + off);
+
+                if (IsMemoryWritable(aim, sizeof(FRotator)))
+                {
+                    if (!g_aimInit)
+                    {
+                        g_aimBase = *aim;
+                        g_aimLastWrote = *aim;
+                        g_aimInit = true;
+                        Log(">>> HEAD-AIM armed on +0x%X", off);
+                    }
+                    else
+                    {
+                        // Only the GAME's own change since our last write.
+                        g_aimBase.pitch += aim->pitch - g_aimLastWrote.pitch;
+                        g_aimBase.yaw += aim->yaw - g_aimLastWrote.yaw;
+                        g_aimBase.roll += aim->roll - g_aimLastWrote.roll;
+                    }
+
+                    FRotator want = g_aimBase;
+                    want.pitch += (int)(g_headPitch * 182.0444);
+                    want.yaw += (int)(g_headYaw * 182.0444);
+
+                    *aim = want;
+                    g_aimLastWrote = want;
+                }
+            }
 
             if (eye == 0) ++g_wLeft; else ++g_wRight;
 

@@ -69,6 +69,18 @@ bool g_cfgMenuScreen = true;
 // Pair-lock (§14): render both eyes of a pair from the same camera instant.
 bool g_cfgPairLock = true;
 
+// Head-aim (§15): make Controller.Rotation follow the head. Default OFF -- it
+// also steers movement direction in UE, so it changes how walking feels.
+bool g_cfgHeadAim = false;
+
+// Menu quad geometry, metres. Angular size = 2*atan(size/2 / dist).
+float g_cfgMenuSize = 1.5f;
+float g_cfgMenuDist = 1.75f;
+
+// Head roll onto the view. Suspect for the pitched-turn swivel (§16): if the
+// roll axis is world-space rather than view-space, the error grows with pitch.
+bool g_cfgHeadRoll = true;
+
 static void InitLogPath()
 {
     char p[MAX_PATH] = {};
@@ -191,6 +203,22 @@ static void LoadConfig()
 
     g_cfgPairLock = (GetPrivateProfileIntA("VR", "PairLockCamera", 1, g_iniPath) != 0);
     Log("config: PairLockCamera    = %d", (int)g_cfgPairLock);
+
+    g_cfgHeadAim = (GetPrivateProfileIntA("VR", "EnableHeadAim", 0, g_iniPath) != 0);
+    Log("config: EnableHeadAim      = %d", (int)g_cfgHeadAim);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "MenuScreenSize", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.2 && v < 10.0) g_cfgMenuSize = (float)v; }
+        b[0] = 0;
+        GetPrivateProfileStringA("VR", "MenuScreenDistance", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.3 && v < 20.0) g_cfgMenuDist = (float)v; }
+        Log("config: MenuScreen        = %.2f m at %.2f m", g_cfgMenuSize, g_cfgMenuDist);
+    }
+
+    g_cfgHeadRoll = (GetPrivateProfileIntA("VR", "EnableHeadRoll", 1, g_iniPath) != 0);
+    Log("config: EnableHeadRoll     = %d", (int)g_cfgHeadRoll);
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to

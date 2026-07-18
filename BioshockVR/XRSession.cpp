@@ -20,6 +20,8 @@ extern void LogFile(const char* msg);
 
 extern float g_cfgEyeSep;    // half-IPD, game units == cm (dllmain.cpp)
 extern bool  g_cfgSwapEyes;
+extern float g_cfgMenuSize;
+extern float g_cfgMenuDist;
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 
 static void Log(const char* fmt, ...)
@@ -36,6 +38,12 @@ static XrSystemId  g_sysId = XR_NULL_SYSTEM_ID;
 static XrSession   g_session = XR_NULL_HANDLE;
 static XrSpace     g_space = XR_NULL_HANDLE;
 static XrSpace     g_viewSpace = XR_NULL_HANDLE;   // head-locked, for the menu quad
+
+// Menus are WORLD-locked, not head-locked: a screen pinned to your face is a
+// motion-sickness generator. We anchor it once, where you were looking when the
+// menu came up, and leave it in the room until the menu closes.
+static bool    g_menuAnchorSet = false;
+static XrPosef g_menuAnchor = {};
 
 static XrSwapchain g_sc[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 static std::vector<XrSwapchainImageD3D11KHR> g_scImages[2];
@@ -524,6 +532,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 void XR_SubmitPair(ID3D11Texture2D* image, int eye)
 {
     if (!g_init) return;
+    g_menuAnchorSet = false;   // next menu re-anchors to wherever you're facing
     PumpEvents();
     if (!g_running || !image) return;
 
@@ -596,15 +605,37 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
             XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(g_sc[0], &ri);
 
-            quad.space = g_viewSpace;                    // head-locked: always visible
+            if (!g_menuAnchorSet)
+            {
+                float hq[4], hp[3];
+                XR_GetHeadQuat(hq);
+                XR_GetHeadPos(hp);
+
+                // Head forward = q * (0,0,-1), then flattened to horizontal so
+                // the screen is never tilted even if you looked up or down.
+                float fx = -2.f * (hq[0] * hq[2] + hq[1] * hq[3]);
+                float fz = -(1.f - 2.f * (hq[0] * hq[0] + hq[1] * hq[1]));
+                float len = sqrtf(fx * fx + fz * fz);
+                if (len < 1e-4f) { fx = 0.f; fz = -1.f; len = 1.f; }
+                fx /= len; fz /= len;
+
+                const float yaw = atan2f(fx, -fz);
+                g_menuAnchor.orientation = { 0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f) };
+                g_menuAnchor.position = { hp[0] + fx * g_cfgMenuDist,
+                                          hp[1],
+                                          hp[2] + fz * g_cfgMenuDist };
+                g_menuAnchorSet = true;
+                Log(">>> MENU anchored world-locked at yaw %.1f deg", yaw * 57.2958f);
+            }
+
+            quad.space = g_space;                        // world-locked
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH; // MONO -- depth can't break
             quad.subImage.swapchain = g_sc[0];
             quad.subImage.imageRect.offset = { 0, 0 };
             quad.subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
             quad.subImage.imageArrayIndex = 0;
-            quad.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
-            quad.pose.position = { 0.f, 0.f, -1.75f };   // metres in front of the eyes
-            quad.size = { 1.5f, 1.5f };                  // metres: ~46 deg wide. Comfortable.
+            quad.pose = g_menuAnchor;
+            quad.size = { g_cfgMenuSize, g_cfgMenuSize };
             layers[0] = (const XrCompositionLayerBaseHeader*)&quad;
             layerCount = 1;
             ++g_xrSubmitted;

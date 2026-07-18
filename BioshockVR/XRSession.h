@@ -28,6 +28,10 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image);
 // from the render thread for the game-thread camera write. Seqlock-safe.
 void XR_GetHeadQuat(float out[4]);
 
+// Latest HMD head-center position (metres, OpenXR LOCAL space). Same seqlock
+// as the quaternion above.
+void XR_GetHeadPos(float out[3]);
+
 void XR_Stats(unsigned long long* frames, unsigned long long* submitted, int* state);
 
 // Milliseconds inside each individual OpenXR call, accumulated since start.
