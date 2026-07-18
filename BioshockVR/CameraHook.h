@@ -25,6 +25,9 @@ int  CameraHook_NextEye();
 // had no camera tag waiting (menus, movies) -- expected before a level loads.
 void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns);
 
+// TRUE when no camera view has been produced for >250ms (menu/loading/movie).
+bool CameraHook_Starved();
+
 // ---- THE LATCHED-POSE CHANNEL (flicker fix, §2) -------------------------
 // game->render, mirror of the render->game head seqlock. Publishes the pose
 // the camera was ACTUALLY rendered from: the quat latched at eye-0 time, and

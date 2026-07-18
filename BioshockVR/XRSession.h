@@ -19,6 +19,11 @@ void XR_SetGameFov(float horizFovDeg, unsigned w, unsigned h);
 // one Present (~4.2ms) of inter-eye disparity. That disparity IS the stereo.
 void XR_SubmitPair(ID3D11Texture2D* image, int eye);
 
+// Menu/loading path: ONE mono frame per Present, shown on a head-locked quad
+// ("virtual screen") instead of the projection layer. Called when the camera
+// hook is starved (CameraHook_Starved), i.e. the game isn't rendering a world.
+void XR_SubmitMenuMono(ID3D11Texture2D* image);
+
 // Latest HMD head orientation (OpenXR LOCAL-space quaternion x,y,z,w), published
 // from the render thread for the game-thread camera write. Seqlock-safe.
 void XR_GetHeadQuat(float out[4]);

@@ -47,6 +47,10 @@ bool g_cfgHeadPosition = false;
 // the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
 bool g_cfgDisableVSync = true;
 
+// Menus/loading shown as a head-locked virtual screen (quad layer) instead of
+// the wall-sized projection. Kill switch if it misbehaves.
+bool g_cfgMenuScreen = true;
+
 static void InitLogPath()
 {
     char p[MAX_PATH] = {};
@@ -137,6 +141,9 @@ static void LoadConfig()
 
     g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
     Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
+
+    g_cfgMenuScreen = (GetPrivateProfileIntA("VR", "EnableMenuScreen", 1, g_iniPath) != 0);
+    Log("config: EnableMenuScreen  = %d", (int)g_cfgMenuScreen);
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to

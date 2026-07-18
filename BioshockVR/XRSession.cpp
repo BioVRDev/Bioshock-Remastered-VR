@@ -35,6 +35,7 @@ static XrInstance  g_inst = XR_NULL_HANDLE;
 static XrSystemId  g_sysId = XR_NULL_SYSTEM_ID;
 static XrSession   g_session = XR_NULL_HANDLE;
 static XrSpace     g_space = XR_NULL_HANDLE;
+static XrSpace     g_viewSpace = XR_NULL_HANDLE;   // head-locked, for the menu quad
 
 static XrSwapchain g_sc[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 static std::vector<XrSwapchainImageD3D11KHR> g_scImages[2];
@@ -238,6 +239,9 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace.orientation.w = 1.0f;
     XRCHK(xrCreateReferenceSpace(g_session, &rsci, &g_space), "xrCreateReferenceSpace");
+
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    XRCHK(xrCreateReferenceSpace(g_session, &rsci, &g_viewSpace), "xrCreateReferenceSpace(VIEW)");
 
     // The game's backbuffer is R8G8B8A8_UNORM (DXGI 28). CopyResource needs the
     // same typeless family, so we MUST pick an R8G8B8A8 format -- never BGRA.
@@ -536,6 +540,80 @@ void XR_SubmitPair(ID3D11Texture2D* image, int eye)
     g_stageLValid = false;
 }
 
+void XR_SubmitMenuMono(ID3D11Texture2D* image)
+{
+    if (!g_init) return;
+    PumpEvents();
+    if (!g_running || !image) return;
+
+    g_stageLValid = false;   // any stashed left eye is stale once a menu is up
+
+    ++g_xrFrames;
+    LARGE_INTEGER a, b;
+
+    XrFrameWaitInfo fwi = { XR_TYPE_FRAME_WAIT_INFO };
+    XrFrameState    fs = { XR_TYPE_FRAME_STATE };
+    QPC(a); XrResult wr = xrWaitFrame(g_session, &fwi, &fs); QPC(b);
+    g_tb.waitFrame += MS(a, b);
+    if (XR_FAILED(wr)) return;
+
+    XrFrameBeginInfo fbi = { XR_TYPE_FRAME_BEGIN_INFO };
+    QPC(a); XrResult br = xrBeginFrame(g_session, &fbi); QPC(b);
+    g_tb.beginFrame += MS(a, b);
+    if (XR_FAILED(br)) return;
+
+    XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+    const XrCompositionLayerBaseHeader* layers[1] = { nullptr };
+    uint32_t layerCount = 0;
+
+    if (fs.shouldRender)
+    {
+        uint32_t idx = 0;
+        XrSwapchainImageAcquireInfo ai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        XrSwapchainImageWaitInfo    wi = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        wi.timeout = XR_INFINITE_DURATION;
+
+        QPC(a);
+        XrResult ar = xrAcquireSwapchainImage(g_sc[0], &ai, &idx);
+        XrResult sr = XR_FAILED(ar) ? ar : xrWaitSwapchainImage(g_sc[0], &wi);
+        QPC(b);
+        g_tb.acquire += MS(a, b);
+
+        if (XR_SUCCEEDED(ar) && XR_SUCCEEDED(sr))
+        {
+            QPC(a);
+            g_ctx->CopyResource(g_scImages[0][idx].texture, image);
+            QPC(b);
+            g_tb.copy += MS(a, b);
+
+            XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+            xrReleaseSwapchainImage(g_sc[0], &ri);
+
+            quad.space = g_viewSpace;                    // head-locked: always visible
+            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH; // MONO -- depth can't break
+            quad.subImage.swapchain = g_sc[0];
+            quad.subImage.imageRect.offset = { 0, 0 };
+            quad.subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
+            quad.subImage.imageArrayIndex = 0;
+            quad.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+            quad.pose.position = { 0.f, 0.f, -1.75f };   // metres in front of the eyes
+            quad.size = { 1.5f, 1.5f };                  // metres: ~46 deg wide. Comfortable.
+            layers[0] = (const XrCompositionLayerBaseHeader*)&quad;
+            layerCount = 1;
+            ++g_xrSubmitted;
+        }
+    }
+
+    XrFrameEndInfo fei = { XR_TYPE_FRAME_END_INFO };
+    fei.displayTime = fs.predictedDisplayTime;
+    fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    fei.layerCount = layerCount;
+    fei.layers = layers;
+    QPC(a); xrEndFrame(g_session, &fei); QPC(b);
+    g_tb.endFrame += MS(a, b);
+    ++g_tb.submits;
+}
+
 void XR_GetHeadQuat(float out[4])
 {
     for (;;)
@@ -583,6 +661,7 @@ void XR_Shutdown()
     for (int eye = 0; eye < 2; ++eye)
         if (g_sc[eye]) { xrDestroySwapchain(g_sc[eye]); g_sc[eye] = XR_NULL_HANDLE; }
     if (g_space) { xrDestroySpace(g_space);     g_space = XR_NULL_HANDLE; }
+    if (g_viewSpace) { xrDestroySpace(g_viewSpace); g_viewSpace = XR_NULL_HANDLE; }
     if (g_session) { xrDestroySession(g_session); g_session = XR_NULL_HANDLE; }
     if (g_inst) { xrDestroyInstance(g_inst);   g_inst = XR_NULL_HANDLE; }
     g_init = g_running = false;

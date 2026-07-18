@@ -83,6 +83,8 @@ static volatile long  g_qMin = 0x7FFFFFFF;
 static volatile long  g_qMax = -1;
 static volatile long  g_underruns = 0;
 static int            g_lastEye = 1;   // so the first underrun yields eye 0
+static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
+static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
 
 // ---------------------------------------------------------------- latched pose
 // game->render seqlock (flicker fix, §2). The mirror of XRSession's head
@@ -731,6 +733,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     g_eyeQ[w & 63] = (unsigned char)eye;
     MemoryBarrier();
     _InterlockedIncrement(&g_eyeWr);
+    g_lastPushTick = (long)GetTickCount();
+    if (!g_lastPushTick) g_lastPushTick = 1;   // 0 is reserved for "never"
 
     // --- heartbeat, once a second. NEVER per-frame. ---
     DWORD now = GetTickCount();
@@ -771,17 +775,36 @@ int CameraHook_NextEye()
         // No camera tag waiting: menu, loading screen, movie. Keep alternating
         // so the compositor never stalls.
         _InterlockedIncrement(&g_underruns);
+        g_needResync = 1;         // tag<->frame alignment is now unknown
         if (g_qMin > 0) g_qMin = 0;
         if (g_qMax < 0) g_qMax = 0;
         g_lastEye ^= 1;
         return g_lastEye;
     }
 
-    if (depth > 32)               // producer ran far ahead (a stall): drop stale tags
+    // RESYNC after an underrun period (the tutorial-mono bug). A stale tag
+    // left in the queue after starvation shifts alignment by one FOREVER
+    // (MEASURED: depth 1/1 became a permanent 2/2 after the 'press M' popup
+    // -> every frame labeled with the WRONG eye -> broken stereo). Steady-
+    // state depth is 1 (measured), so on the first real pop after any
+    // underrun, jump to the NEWEST tag.
+    if (g_needResync)
     {
-        rd = wr - 2;
+        g_needResync = 0;
+        if (depth > 1)
+        {
+            Log("camera: EYEQ RESYNC -- dropped %ld stale tag(s) after underrun", depth - 1);
+            rd = wr - 1;
+            g_eyeRd = rd;
+            depth = 1;
+        }
+    }
+
+    if (depth > 32)               // producer ran far ahead (a stall): take newest
+    {
+        rd = wr - 1;
         g_eyeRd = rd;
-        depth = 2;
+        depth = 1;
     }
 
     if (depth < g_qMin) g_qMin = depth;
@@ -809,6 +832,15 @@ bool CameraHook_GetLatchedPose(float quat[4], float pos[3])
     }
 }
 
+// TRUE when the camera hook hasn't produced a view for >250ms: menu, loading,
+// movie, or pre-level. The trigger for the menu quad-screen.
+bool CameraHook_Starved()
+{
+    const long t = g_lastPushTick;
+    if (!t) return true;                       // camera never ticked yet
+    return (GetTickCount() - (DWORD)t) > 250;
+}
+
 void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)
 {
     if (minDepth)  *minDepth = (g_qMin == 0x7FFFFFFF) ? -1 : (int)g_qMin;
@@ -817,6 +849,9 @@ void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)
     g_qMin = 0x7FFFFFFF;
     g_qMax = -1;
 }
+
+// TRUE when no camera view has been produced for >250ms (menu/loading/movie).
+bool CameraHook_Starved();
 
 // ---------------------------------------------------------------- install
 

@@ -25,6 +25,7 @@ extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;
 extern bool  g_cfgCameraHook;
 extern bool  g_cfgDisableVSync;
+extern bool  g_cfgMenuScreen;
 
 static void Log(const char* fmt, ...)
 {
@@ -157,7 +158,17 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             LARGE_INTEGER x0, x1;
             QueryPerformanceCounter(&x0);
 
-            XR_SubmitPair(bb, eye);
+            static bool menuMode = false;
+            if (g_cfgMenuScreen && CameraHook_Starved())
+            {
+                if (!menuMode) { menuMode = true; Log(">>> MENU SCREEN ON (camera starved)"); }
+                XR_SubmitMenuMono(bb);
+            }
+            else
+            {
+                if (menuMode) { menuMode = false; Log(">>> MENU SCREEN off (camera ticking)"); }
+                XR_SubmitPair(bb, eye);
+            }
 
             QueryPerformanceCounter(&x1);
             g_msXr += (double)(x1.QuadPart - x0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
