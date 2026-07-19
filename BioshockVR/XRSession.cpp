@@ -22,6 +22,10 @@ extern float g_cfgEyeSep;    // half-IPD, game units == cm (dllmain.cpp)
 extern bool  g_cfgSwapEyes;
 extern float g_cfgMenuSize;
 extern float g_cfgMenuDist;
+extern bool  g_cfgCrosshair;
+extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
+extern float g_cfgXhDist;
+extern float g_cfgMenuHeight;
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 
 static void Log(const char* fmt, ...)
@@ -45,8 +49,31 @@ static XrSpace     g_viewSpace = XR_NULL_HANDLE;   // head-locked, for the menu 
 static bool    g_menuAnchorSet = false;
 static XrPosef g_menuAnchor = {};
 
+// S24: where the head WAS when the anchor was taken. At startup the first valid
+// pose can be the headset sitting on a desk -- one run anchored at y = -1.01 m,
+// a metre below the player, so the menu hung far below and the player felt
+// suspended above it. Nothing ever re-anchored because g_menuAnchorSet only
+// clears in SubmitPair, which never runs while a pre-game menu is up.
+// So: if the head is now far from where it was at anchor time, re-anchor.
+static float g_menuAnchorHead[3] = { 0.f, 0.f, 0.f };
+static const float kMenuReanchorM = 0.45f;   // metres of head travel
+
 static XrSwapchain g_sc[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 static std::vector<XrSwapchainImageD3D11KHR> g_scImages[2];
+
+// ---- crosshair (S18) ------------------------------------------------------
+// The game's reticle is a big translucent star drawn at BACKBUFFER CENTRE, so
+// it is baked into the projection layer and inherits every one of that layer's
+// problems. Ours is a separate head-locked QUAD layer: composited by the
+// runtime at display time, so it is pixel-stable and latency-free no matter
+// what the game's frame is doing. Because head-aim is on, "where you look" IS
+// "where you shoot", so a view-space dot is honest by construction.
+static const int   kXhPx = 64;      // texture is 64x64
+static const float kXhDotFrac = 28.0f / 64.0f;   // white dot / quad edge
+static XrSwapchain g_xhSc = XR_NULL_HANDLE;
+static std::vector<XrSwapchainImageD3D11KHR> g_xhImages;
+static ID3D11Texture2D* g_xhSrc = nullptr;
+static bool             g_xhReady = false;
 
 static XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 static bool g_running = false;
@@ -304,6 +331,75 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
         Log(">>> XR: eye %d swapchain %ux%u  %u images", eye, g_w, g_h, imgCount);
     }
 
+    // ---- crosshair swapchain + dot texture --------------------------------
+    if (g_cfgCrosshair)
+    {
+        XrSwapchainCreateInfo xc = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+        xc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+        xc.format = chosen;
+        xc.sampleCount = 1;
+        xc.width = kXhPx;
+        xc.height = kXhPx;
+        xc.faceCount = 1;
+        xc.arraySize = 1;
+        xc.mipCount = 1;
+
+        if (XR_SUCCEEDED(xrCreateSwapchain(g_session, &xc, &g_xhSc)))
+        {
+            uint32_t n = 0;
+            xrEnumerateSwapchainImages(g_xhSc, 0, &n, nullptr);
+            g_xhImages.resize(n, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+            xrEnumerateSwapchainImages(g_xhSc, n, &n,
+                (XrSwapchainImageBaseHeader*)g_xhImages.data());
+
+            // Filled white dot, thin dark ring for contrast against a bright
+            // wall, hard zero alpha outside. Alpha is UNPREMULTIPLIED.
+            static unsigned char px[kXhPx * kXhPx * 4];
+            const float c = (kXhPx - 1) * 0.5f;
+            const float rIn = kXhPx * kXhDotFrac * 0.5f;   // white radius
+            const float rOut = rIn + 3.0f;                 // ring radius
+            for (int yy = 0; yy < kXhPx; ++yy)
+                for (int xx = 0; xx < kXhPx; ++xx)
+                {
+                    const float dx = xx - c, dy = yy - c;
+                    const float r = sqrtf(dx * dx + dy * dy);
+                    unsigned char* o = &px[(yy * kXhPx + xx) * 4];
+                    float lum = 255.f, a = 0.f;
+                    if (r <= rIn) { lum = 255.f; a = 255.f; }
+                    else if (r <= rIn + 1.f) { lum = 255.f; a = 255.f * (rIn + 1.f - r); }
+                    else if (r <= rOut) { lum = 0.f;   a = 190.f; }
+                    else if (r <= rOut + 1.f) { lum = 0.f;   a = 190.f * (rOut + 1.f - r); }
+                    o[0] = (unsigned char)lum; o[1] = (unsigned char)lum;
+                    o[2] = (unsigned char)lum; o[3] = (unsigned char)a;
+                }
+
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = kXhPx; td.Height = kXhPx;
+            td.MipLevels = 1; td.ArraySize = 1;
+            td.Format = (DXGI_FORMAT)chosen;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA sd = {};
+            sd.pSysMem = px;
+            sd.SysMemPitch = kXhPx * 4;
+
+            if (SUCCEEDED(g_dev->CreateTexture2D(&td, &sd, &g_xhSrc)) && g_xhSrc)
+            {
+                g_xhReady = true;
+                const float edge = g_cfgXhSize / kXhDotFrac;
+                Log(">>> XR: CROSSHAIR ready. dot %.1f mm at %.2f m = %.2f deg",
+                    g_cfgXhSize * 1000.f, g_cfgXhDist,
+                    2.f * atanf(g_cfgXhSize * 0.5f / g_cfgXhDist) * 57.2958f);
+                (void)edge;
+            }
+            else Log(">>> XR: !!! crosshair CreateTexture2D failed");
+        }
+        else Log(">>> XR: !!! crosshair xrCreateSwapchain failed");
+    }
+    else Log(">>> XR: crosshair DISABLED by ini (EnableCrosshair=0)");
+
     g_init = true;
     Log(">>> XR: INIT COMPLETE");
     return true;
@@ -363,6 +459,30 @@ static bool EnsureStageL(ID3D11Texture2D* like)
     return true;
 }
 
+// Publish head orientation + centre for the game-thread camera write, and for
+// the menu anchor. MUST be called from EVERY path that runs an XR frame -- the
+// menu path included. It was originally only called from SubmitPair, which meant
+// g_headQ/g_headPos were whatever gameplay last left there. At startup gameplay
+// has never run, so they were still identity/origin, and the 2K-logo quad got
+// anchored to LOCAL forward at LOCAL origin instead of in front of the player.
+// Viewed from anywhere else that is an oblique rectangle -- i.e. a TRAPEZOID.
+static void PublishHead(const XrView views[2])
+{
+    _InterlockedIncrement(&g_headSeq);          // odd == writing
+    MemoryBarrier();
+    g_headQ[0] = views[0].pose.orientation.x;
+    g_headQ[1] = views[0].pose.orientation.y;
+    g_headQ[2] = views[0].pose.orientation.z;
+    g_headQ[3] = views[0].pose.orientation.w;
+    // Head CENTER = midpoint of the two eye positions (each view pose is an EYE,
+    // offset by half the IPD -- the midpoint cancels that).
+    g_headPos[0] = (views[0].pose.position.x + views[1].pose.position.x) * 0.5f;
+    g_headPos[1] = (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
+    g_headPos[2] = (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
+    MemoryBarrier();
+    _InterlockedIncrement(&g_headSeq);          // even == done
+}
+
 // ONE full XR frame cycle. Every OpenXR call individually timed.
 static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 {
@@ -385,8 +505,9 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     XrCompositionLayerProjection layer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView pv[2] = {};
     XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
-    const XrCompositionLayerBaseHeader* layers[1] = { nullptr };
+    const XrCompositionLayerBaseHeader* layers[2] = { nullptr, nullptr };
     uint32_t layerCount = 0;
+    XrCompositionLayerQuad xh = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 
     if (fs.shouldRender)
     {
@@ -410,19 +531,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             // Publish head orientation for the game-thread camera write. view[0]
             // and view[1] share head orientation in our symmetric rig (the cant
             // is in the FOV, not the pose), so eye 0's is the head's.
-            _InterlockedIncrement(&g_headSeq);          // odd == writing
-            MemoryBarrier();
-            g_headQ[0] = views[0].pose.orientation.x;
-            g_headQ[1] = views[0].pose.orientation.y;
-            g_headQ[2] = views[0].pose.orientation.z;
-            g_headQ[3] = views[0].pose.orientation.w;
-            // Head CENTER = midpoint of the two eye positions (each view pose is
-            // an EYE, offset by half the IPD -- the midpoint cancels that).
-            g_headPos[0] = (views[0].pose.position.x + views[1].pose.position.x) * 0.5f;
-            g_headPos[1] = (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
-            g_headPos[2] = (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
-            MemoryBarrier();
-            _InterlockedIncrement(&g_headSeq);          // even == done
+            PublishHead(views);
 
             // --- LAYER POSE (flicker fix, §2): stamp the pose the image was
             // RENDERED from -- the eye-0 latched pose -- not the fresh one.
@@ -514,6 +623,39 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             layers[0] = (const XrCompositionLayerBaseHeader*)&layer;
             layerCount = 1;
             ++g_xrSubmitted;
+
+            // ---- crosshair quad, ON TOP, head-locked ----------------------
+            if (g_cfgCrosshair && g_xhReady)
+            {
+                uint32_t xi = 0;
+                XrSwapchainImageAcquireInfo xai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+                XrSwapchainImageWaitInfo    xwi = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+                xwi.timeout = XR_INFINITE_DURATION;
+
+                if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_xhSc, &xai, &xi)) &&
+                    XR_SUCCEEDED(xrWaitSwapchainImage(g_xhSc, &xwi)))
+                {
+                    g_ctx->CopyResource(g_xhImages[xi].texture, g_xhSrc);
+                    XrSwapchainImageReleaseInfo xri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+                    xrReleaseSwapchainImage(g_xhSc, &xri);
+
+                    // VIEW space == head-locked. Straight ahead at CrosshairDistance.
+                    const float edge = g_cfgXhSize / kXhDotFrac;
+                    xh.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                        XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+                    xh.space = g_viewSpace;
+                    xh.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                    xh.subImage.swapchain = g_xhSc;
+                    xh.subImage.imageRect.offset = { 0, 0 };
+                    xh.subImage.imageRect.extent = { kXhPx, kXhPx };
+                    xh.subImage.imageArrayIndex = 0;
+                    xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+                    xh.pose.position = { 0.f, 0.f, -g_cfgXhDist };
+                    xh.size = { edge, edge };
+                    layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
+                    layerCount = 2;
+                }
+            }
         }
     }
 
@@ -584,6 +726,47 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
 
     if (fs.shouldRender)
     {
+        // Locate the head HERE. The menu path used to skip this entirely and
+        // then anchor from g_headQ/g_headPos, which only gameplay ever wrote.
+        // Consequence: any menu shown before the first gameplay frame (the 2K
+        // logo, the startup movies, the main menu) anchored at identity /
+        // LOCAL origin rather than in front of the player.
+        {
+            XrViewLocateInfo vli = { XR_TYPE_VIEW_LOCATE_INFO };
+            vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            vli.displayTime = fs.predictedDisplayTime;
+            vli.space = g_space;
+
+            XrViewState vs = { XR_TYPE_VIEW_STATE };
+            XrView      mv[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+            uint32_t    got = 0;
+
+            QPC(a);
+            XrResult lr = xrLocateViews(g_session, &vli, &vs, 2, &got, mv);
+            QPC(b);
+            g_tb.locateViews += MS(a, b);
+
+            if (XR_SUCCEEDED(lr) && got == 2 &&
+                (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
+                (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
+            {
+                PublishHead(mv);
+            }
+            else if (!g_menuAnchorSet)
+            {
+                // No valid pose yet -- do NOT anchor to a stale/identity one.
+                // Skip this frame's anchor; we will get another Present in ~4ms.
+                XrFrameEndInfo skip = { XR_TYPE_FRAME_END_INFO };
+                skip.displayTime = fs.predictedDisplayTime;
+                skip.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+                skip.layerCount = 0;
+                skip.layers = nullptr;
+                xrEndFrame(g_session, &skip);
+                ++g_tb.submits;
+                return;
+            }
+        }
+
         uint32_t idx = 0;
         XrSwapchainImageAcquireInfo ai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
         XrSwapchainImageWaitInfo    wi = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
@@ -605,6 +788,23 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
             XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(g_sc[0], &ri);
 
+            // Drop a stale anchor if the head has since moved a long way --
+            // headset picked up off a desk, player stood up, room-scale step.
+            if (g_menuAnchorSet)
+            {
+                float now[3];
+                XR_GetHeadPos(now);
+                const float dx = now[0] - g_menuAnchorHead[0];
+                const float dy = now[1] - g_menuAnchorHead[1];
+                const float dz = now[2] - g_menuAnchorHead[2];
+                if (dx * dx + dy * dy + dz * dz > kMenuReanchorM * kMenuReanchorM)
+                {
+                    g_menuAnchorSet = false;
+                    Log(">>> MENU re-anchoring: head moved %.2f m from the anchor",
+                        sqrtf(dx * dx + dy * dy + dz * dz));
+                }
+            }
+
             if (!g_menuAnchorSet)
             {
                 float hq[4], hp[3];
@@ -619,13 +819,27 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
                 if (len < 1e-4f) { fx = 0.f; fz = -1.f; len = 1.f; }
                 fx /= len; fz /= len;
 
-                const float yaw = atan2f(fx, -fz);
+                // The quad's visible face is its local +Z (identity
+                // orientation faces a viewer at -Z -- which is why yaw~0
+                // anchors always looked straight). We need local +Z
+                // rotated onto -forward = (-fx, 0, -fz), and
+                // R_y(yaw)*(0,0,1) = (sin yaw, 0, cos yaw), so:
+                //     yaw = atan2(-fx, -fz)
+                // The old atan2f(fx, -fz) built the MIRROR of the head
+                // yaw: quad askew by 2*yaw, opposite sign looking left vs
+                // right -- the S17 slight-rotation artifact.
+                const float yaw = atan2f(-fx, -fz);
                 g_menuAnchor.orientation = { 0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f) };
+                hp[1] += g_cfgMenuHeight;      // manual height nudge (S25)
                 g_menuAnchor.position = { hp[0] + fx * g_cfgMenuDist,
                                           hp[1],
                                           hp[2] + fz * g_cfgMenuDist };
                 g_menuAnchorSet = true;
-                Log(">>> MENU anchored world-locked at yaw %.1f deg", yaw * 57.2958f);
+                g_menuAnchorHead[0] = hp[0];
+                g_menuAnchorHead[1] = hp[1];
+                g_menuAnchorHead[2] = hp[2];
+                Log(">>> MENU anchored at yaw %.1f deg, head (%.2f %.2f %.2f) m",
+                    yaw * 57.2958f, hp[0], hp[1], hp[2]);
             }
 
             quad.space = g_space;                        // world-locked
@@ -635,7 +849,28 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
             quad.subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
             quad.subImage.imageArrayIndex = 0;
             quad.pose = g_menuAnchor;
-            quad.size = { g_cfgMenuSize, g_cfgMenuSize };
+
+            // ASPECT. The quad was square while the image is 3072x3264 (0.94),
+            // so every menu was stretched ~6% horizontally. quad.size is METRES
+            // in the world; the runtime maps the whole imageRect onto it and
+            // does NOT preserve aspect for you. MenuScreenSize = the LONG edge.
+            {
+                float qw = g_cfgMenuSize, qh = g_cfgMenuSize;
+                if (g_w && g_h)
+                {
+                    if (g_w >= g_h) qh = g_cfgMenuSize * (float)g_h / (float)g_w;
+                    else            qw = g_cfgMenuSize * (float)g_w / (float)g_h;
+                }
+                quad.size = { qw, qh };
+
+                static bool loggedSz = false;
+                if (!loggedSz)
+                {
+                    loggedSz = true;
+                    Log(">>> MENU quad %.3f x %.3f m for a %ux%u image (aspect %.4f)",
+                        qw, qh, g_w, g_h, (float)g_w / (float)g_h);
+                }
+            }
             layers[0] = (const XrCompositionLayerBaseHeader*)&quad;
             layerCount = 1;
             ++g_xrSubmitted;
@@ -695,6 +930,10 @@ void XR_Shutdown()
 {
     if (g_stageL) { g_stageL->Release(); g_stageL = nullptr; }
     g_stageLValid = false;
+
+    if (g_xhSrc) { g_xhSrc->Release(); g_xhSrc = nullptr; }
+    g_xhReady = false;
+    if (g_xhSc) { xrDestroySwapchain(g_xhSc); g_xhSc = XR_NULL_HANDLE; }
 
     for (int eye = 0; eye < 2; ++eye)
         if (g_sc[eye]) { xrDestroySwapchain(g_sc[eye]); g_sc[eye] = XR_NULL_HANDLE; }

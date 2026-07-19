@@ -62,6 +62,55 @@ bool g_cfgDrawHook = true;
 char g_cfgSuppressList[256] = {};
 char g_cfgMenuList[256] = {};
 
+// Isolate stepper (S18): the shortlist Numpad - walks, one count at a time.
+// Default = the counts that appeared exactly ONCE PER FRAME in 100% of frames
+// across two independent gameplay samples from the same spot. That is the
+// signature of a singleton object (weapon, reticle, HUD root) rather than
+// scenery, which varies with facing.
+char g_cfgIsolateList[256] = {};
+
+// S23: which draws are the first-person weapon, and how much to shrink their
+// projection. MEASURED: the weapon renders at 44.3 deg horizontal FOV while the
+// world renders at 110, so it appears 3.5x too large. 0 == leave it alone.
+char  g_cfgWeaponList[256] = {};
+float g_cfgWeaponScale = 0.0f;
+
+// S25: health (23d) and EVE (11d) sit in the top-left corner of a 110-degree
+// frame, outside where a headset can comfortably look. A viewport scaled about
+// the centre pulls corner elements inward. 0 == leave them where they are.
+char  g_cfgHudList[256] = {};
+float g_cfgHudScale = 0.0f;
+
+// Manual nudge for the menu quad's height, metres. The Quest accessibility
+// height setting moves the LOCAL space origin, so the automatic anchor can sit
+// low or high relative to where you actually are.
+float g_cfgMenuHeight = 0.0f;
+
+// Frames with this few DrawIndexed calls are a menu. Pre-game menus are pure
+// Scaleform (ONE indexed draw); gameplay runs hundreds. 0 == off.
+int g_cfgMenuMaxIndexed = 8;
+
+// RETRACTED (S31). The "menus draw fewer calls" figure came from summing dump
+// columns that DumpTable truncates at 64 rows, so it was a lower bound treated
+// as exact. Measured properly with the untruncated per-frame counters:
+//     gameplay    Draw 116-120   Indexed 387-399
+//     pause menu  Draw 145-150   Indexed 382-386
+// The menu draws MORE, not fewer, and Indexed is identical because the world
+// renders behind it. A 25-call gap that moves with subtitles and pickup prompts
+// is not a discriminator. OFF by default; do not re-enable without new data.
+int g_cfgMenuMaxDraw = 0;
+
+// S26: hooking DrawIndexedInstanced/DrawInstanced needs vtable slots 20 and 21.
+// Slots 14/15 are Map/Unmap, and detouring THOSE with draw-shaped handlers
+// crashed the game the moment a menu streamed textures. Off by default: the
+// cursor turned out to be 5 Draw, so these were never needed.
+bool g_cfgHookInstanced = false;
+
+// Our own reticle: a head-locked quad layer, not a game draw call.
+bool  g_cfgCrosshair = true;
+float g_cfgXhSize = 0.012f;   // DOT diameter in metres at CrosshairDistance
+float g_cfgXhDist = 2.0f;
+
 // Menus/loading shown as a head-locked virtual screen (quad layer) instead of
 // the wall-sized projection. Kill switch if it misbehaves.
 bool g_cfgMenuScreen = true;
@@ -72,6 +121,11 @@ bool g_cfgPairLock = true;
 // Head-aim (§15): make Controller.Rotation follow the head. Default OFF -- it
 // also steers movement direction in UE, so it changes how walking feels.
 bool g_cfgHeadAim = false;
+
+// S19 head-aim composition. 0 = legacy euler ADDITION (has the turn artifact),
+// 1 = compose in the base's local frame, 2 = also drop mouse pitch so the
+// horizon stays level and ALL pitch comes from the head.
+int g_cfgHeadAimMode = 1;
 
 // Menu quad geometry, metres. Angular size = 2*atan(size/2 / dist).
 float g_cfgMenuSize = 1.5f;
@@ -201,11 +255,75 @@ static void LoadConfig()
         g_cfgMenuList, sizeof(g_cfgMenuList), g_iniPath);
     Log("config: MenuIndexCounts    = '%s'", g_cfgMenuList);
 
+    GetPrivateProfileStringA("VR", "IsolateCounts",
+        "7425,3360,600,381,297,174,153,144,129,33,63021,9,105,139,83,7,2,17,23",
+        g_cfgIsolateList, sizeof(g_cfgIsolateList), g_iniPath);
+    Log("config: IsolateCounts      = '%s'", g_cfgIsolateList);
+
+    GetPrivateProfileStringA("VR", "WeaponCounts", "",
+        g_cfgWeaponList, sizeof(g_cfgWeaponList), g_iniPath);
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "WeaponScale", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 4.0) g_cfgWeaponScale = (float)v; }
+    }
+    Log("config: WeaponCounts       = '%s'  scale %.3f %s", g_cfgWeaponList,
+        g_cfgWeaponScale, g_cfgWeaponScale > 0.0f ? "" : "(OFF)");
+
+    GetPrivateProfileStringA("VR", "HudCounts", "",
+        g_cfgHudList, sizeof(g_cfgHudList), g_iniPath);
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "HudScale", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 4.0) g_cfgHudScale = (float)v; }
+    }
+    Log("config: HudCounts          = '%s'  scale %.3f %s", g_cfgHudList,
+        g_cfgHudScale, g_cfgHudScale > 0.0f ? "" : "(OFF)");
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "MenuScreenHeight", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > -3.0 && v < 3.0) g_cfgMenuHeight = (float)v; }
+        Log("config: MenuScreenHeight  = %+.2f m", g_cfgMenuHeight);
+    }
+
+    g_cfgHookInstanced = (GetPrivateProfileIntA("VR", "HookInstanced", 0, g_iniPath) != 0);
+    Log("config: HookInstanced      = %d", (int)g_cfgHookInstanced);
+
+    g_cfgMenuMaxDraw = GetPrivateProfileIntA("VR", "MenuMaxDraw", 0, g_iniPath);
+    if (g_cfgMenuMaxDraw < 0 || g_cfgMenuMaxDraw > 100000) g_cfgMenuMaxDraw = 60;
+    Log("config: MenuMaxDraw        = %d", g_cfgMenuMaxDraw);
+
+    g_cfgMenuMaxIndexed = GetPrivateProfileIntA("VR", "MenuMaxIndexed", 8, g_iniPath);
+    if (g_cfgMenuMaxIndexed < 0 || g_cfgMenuMaxIndexed > 100000) g_cfgMenuMaxIndexed = 8;
+    Log("config: MenuMaxIndexed     = %d", g_cfgMenuMaxIndexed);
+
+    g_cfgCrosshair = (GetPrivateProfileIntA("VR", "EnableCrosshair", 1, g_iniPath) != 0);
+    Log("config: EnableCrosshair    = %d", (int)g_cfgCrosshair);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "CrosshairSize", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.0005 && v < 0.5) g_cfgXhSize = (float)v; }
+        b[0] = 0;
+        GetPrivateProfileStringA("VR", "CrosshairDistance", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.2 && v < 50.0) g_cfgXhDist = (float)v; }
+        Log("config: Crosshair         = %.1f mm dot at %.2f m",
+            g_cfgXhSize * 1000.f, g_cfgXhDist);
+    }
+
     g_cfgPairLock = (GetPrivateProfileIntA("VR", "PairLockCamera", 1, g_iniPath) != 0);
     Log("config: PairLockCamera    = %d", (int)g_cfgPairLock);
 
     g_cfgHeadAim = (GetPrivateProfileIntA("VR", "EnableHeadAim", 0, g_iniPath) != 0);
     Log("config: EnableHeadAim      = %d", (int)g_cfgHeadAim);
+
+    g_cfgHeadAimMode = GetPrivateProfileIntA("VR", "HeadAimMode", 1, g_iniPath);
+    if (g_cfgHeadAimMode < 0 || g_cfgHeadAimMode > 2) g_cfgHeadAimMode = 1;
+    Log("config: HeadAimMode        = %d   %s", g_cfgHeadAimMode,
+        g_cfgHeadAimMode == 0 ? "(LEGACY additive -- turn artifact expected)" :
+        g_cfgHeadAimMode == 1 ? "(local compose, mouse pitch kept)" :
+        "(local compose, PITCH DECOUPLED)");
 
     {
         char b[64] = {};

@@ -44,6 +44,8 @@ static void* g_presentAddr = nullptr;
 
 static void* g_drawIndexedAddr = nullptr;
 static void* g_drawAddr = nullptr;
+static void* g_drawIdxInstAddr = nullptr;
+static void* g_drawInstAddr = nullptr;
 static bool  g_drawTried = false;
 
 static ID3D11Device* g_dev = nullptr;
@@ -155,7 +157,8 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         if (!g_drawTried)
         {
             g_drawTried = true;
-            DrawHook_Install(g_drawIndexedAddr, g_drawAddr);
+            DrawHook_Install(g_drawIndexedAddr, g_drawAddr,
+                g_drawIdxInstAddr, g_drawInstAddr);
         }
     }
 
@@ -264,7 +267,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     }
 
     DrawHook_EndFrame();
-    
+
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
     HRESULT hr = g_origPresent(sc, SyncInterval, Flags);
@@ -275,7 +278,8 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     return hr;
 }
 
-static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
+static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw,
+    void** outDrawIdxInst, void** outDrawInst)
 {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -323,10 +327,20 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
     *outPresent = scVT[8];
     *outDrawIndexed = ctxVT[12];
     *outDraw = ctxVT[13];
+    // ID3D11DeviceContext vtable: DrawIndexed 12, Draw 13, Map 14, Unmap 15,
+    // PSSetConstantBuffers 16, IASetInputLayout 17, IASetVertexBuffers 18,
+    // IASetIndexBuffer 19, DrawIndexedInstanced 20, DrawInstanced 21.
+    // The draw calls are NOT contiguous -- 14/15 are Map/Unmap, and detouring
+    // those with draw-shaped handlers crashes the moment a menu streams
+    // textures. Verified against the header, not guessed from 12/13.
+    *outDrawIdxInst = ctxVT[20];
+    *outDrawInst = ctxVT[21];
 
     Log("vtable  Present     = 0x%08X", (unsigned)(uintptr_t)*outPresent);
-    Log("vtable  DrawIndexed = 0x%08X   (not hooked yet -- Phase 9)", (unsigned)(uintptr_t)*outDrawIndexed);
-    Log("vtable  Draw        = 0x%08X   (not hooked yet -- Phase 9)", (unsigned)(uintptr_t)*outDraw);
+    Log("vtable  DrawIndexed = 0x%08X", (unsigned)(uintptr_t)*outDrawIndexed);
+    Log("vtable  Draw        = 0x%08X", (unsigned)(uintptr_t)*outDraw);
+    Log("vtable  DrawIdxInst = 0x%08X", (unsigned)(uintptr_t)*outDrawIdxInst);
+    Log("vtable  DrawInst    = 0x%08X", (unsigned)(uintptr_t)*outDrawInst);
 
     ctx->Release();
     dev->Release();
@@ -339,11 +353,15 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw)
 bool Hooks_Install()
 {
     void* pPresent = nullptr, * pDrawIndexed = nullptr, * pDraw = nullptr;
-    if (!GrabVTable(&pPresent, &pDrawIndexed, &pDraw)) return false;
+    void* pDrawIdxInst = nullptr, * pDrawInst = nullptr;
+    if (!GrabVTable(&pPresent, &pDrawIndexed, &pDraw, &pDrawIdxInst, &pDrawInst))
+        return false;
 
     g_presentAddr = pPresent;
     g_drawIndexedAddr = pDrawIndexed;
     g_drawAddr = pDraw;
+    g_drawIdxInstAddr = pDrawIdxInst;
+    g_drawInstAddr = pDrawInst;
 
     MH_STATUS s = MH_CreateHook(pPresent, &hkPresent, (LPVOID*)&g_origPresent);
     if (s != MH_OK) { Log("!!! MH_CreateHook(Present) -> %d", (int)s); return false; }

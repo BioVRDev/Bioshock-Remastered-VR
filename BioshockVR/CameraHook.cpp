@@ -40,6 +40,7 @@ extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render threa
 extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 extern void  XR_GetHeadPos(float out[3]);
 extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
+extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch-decoupled
 extern bool  g_cfgPairLock;
 extern bool  g_cfgHeadAim;
 extern bool g_cfgHeadRoll;
@@ -523,6 +524,41 @@ static FRotator ApplyWorldSpaceYaw(const FRotator& clean,
     return BasisToRotator(MulBasis(yawed, pr));
 }
 
+// --- S19: THE WORLD MAP MUST NOT DEPEND ON THE HEAD -------------------------
+// A VR camera is coherent only if the room->world transform M is independent of
+// head orientation: camera = M . head, M fixed. The compositor assumes exactly
+// that when it reprojects our layer from the stamped head pose.
+//
+// The legacy head-aim write ADDED euler components:
+//     camera = Rz(yaw_base + yaw_head) . Ry(pitch_base + pitch_head)
+// Solve for M and you get  Rz(yaw_head) . Ry(pitch_base) . Rz(-yaw_head)  --
+// a tilt of size pitch_base whose AXIS ROTATES WITH HEAD YAW. So the world
+// leans one way looking left and the other looking right, by an amount
+// proportional to how far the MOUSE is pitched. That is the turn artifact:
+// yaw-triggered, pitch-scaled, roll-innocent.
+//
+// Fix: apply the whole head rotation in the base's LOCAL frame (right-multiply)
+// so M collapses to the mouse-only rotator and stops moving.
+//
+//   mode 1  M = Rz(yaw_base) . Ry(pitch_base)   -- keeps mouse pitch, but the
+//                                                  horizon tilts with it
+//   mode 2  M = Rz(yaw_base)                    -- PITCH DECOUPLED: all pitch
+//                                                  comes from the head, so the
+//                                                  horizon is always level
+static FRotator ComposeHeadLocal(const FRotator& base,
+    double headYawDeg, double headPitchDeg, bool dropBasePitch)
+{
+    const double D2R = 3.14159265358979323846 / 180.0;
+
+    FRotator m = base;
+    if (dropBasePitch) m.pitch = 0;
+    m.roll = 0;                       // M is the player's heading, never rolled
+
+    const Basis M = RotatorToBasis(m);
+    const Basis H = RotatorToBasisRad(headPitchDeg * D2R, headYawDeg * D2R, 0.0);
+    return BasisToRotator(MulBasis(M, H));
+}
+
 // ---------------------------------------------------------------- the detour
 
 struct CallSite
@@ -542,6 +578,24 @@ static uint64_t g_wLeft = 0, g_wRight = 0;   // writes per eye -- MUST stay ~50/
 static bool     g_armLogged = false;
 
 static DWORD    g_lastTick = 0;
+
+// Absolute pitch the GAME wrote into the aim field since the last heartbeat,
+// in rotator units. Sums |delta| so a sweep up and back down cannot cancel out.
+static double   g_aimGameDPitch = 0.0;
+
+// S22: rotator fields are 16-bit-periodic (65536 units == 360 deg) but stored
+// in a wider signed field, and the game NORMALISES what we write. Look down and
+// we write a negative pitch; the game stores it normalised, and a naive
+// (now - then) reads that as a full +360 deg EVERY FRAME. g_aimBase then grows
+// by 65536 units/frame -- ~15M/s, which overflows int32 in about 140 seconds.
+// Mode 2 discards base pitch so it is invisible there, but it corrupts mode 1
+// and the yaw accumulator regardless. Difference on the circle instead.
+static inline int RotDelta(int now, int then)
+{
+    int d = (now - then) & 0xFFFF;
+    if (d >= 32768) d -= 65536;
+    return d;
+}
 
 // ---- HEAD-AIM (§15) -----------------------------------------------------
 // MEASURED: the reticle is drawn at backbuffer center (so it appears to follow
@@ -874,14 +928,40 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     else
                     {
                         // Only the GAME's own change since our last write.
-                        g_aimBase.pitch += aim->pitch - g_aimLastWrote.pitch;
-                        g_aimBase.yaw += aim->yaw - g_aimLastWrote.yaw;
-                        g_aimBase.roll += aim->roll - g_aimLastWrote.roll;
+                        // S21 diagnostic: how much pitch is the GAME still
+                        // injecting? If mouse-Y is truly dead at the engine
+                        // level this stays at 0.0 while you sweep the mouse
+                        // up and down. If it does not, the User.ini edit did
+                        // not take -- almost always because the live User.ini
+                        // is beside the live Bioshock.ini, not where the
+                        // guide's default path says.
+                        const int dP = RotDelta(aim->pitch, g_aimLastWrote.pitch);
+                        const int dY = RotDelta(aim->yaw, g_aimLastWrote.yaw);
+                        const int dR = RotDelta(aim->roll, g_aimLastWrote.roll);
+
+                        g_aimGameDPitch += fabs((double)dP);
+
+                        g_aimBase.pitch += dP;
+                        g_aimBase.yaw += dY;
+                        g_aimBase.roll += dR;
                     }
 
-                    FRotator want = g_aimBase;
-                    want.pitch += (int)(g_headPitch * 182.0444);
-                    want.yaw += (int)(g_headYaw * 182.0444);
+                    FRotator want;
+                    if (g_cfgHeadAimMode <= 0)
+                    {
+                        // LEGACY. Kept only so the artifact can be A/B'd live.
+                        want = g_aimBase;
+                        want.pitch += (int)(g_headPitch * 182.0444);
+                        want.yaw += (int)(g_headYaw * 182.0444);
+                    }
+                    else
+                    {
+                        want = ComposeHeadLocal(g_aimBase, g_headYaw, g_headPitch,
+                            g_cfgHeadAimMode >= 2);
+                        // The controller rotator cannot carry head roll (S6);
+                        // roll still reaches the view through the compose above.
+                        want.roll = g_aimBase.roll;
+                    }
 
                     *aim = want;
                     g_aimLastWrote = want;
@@ -914,6 +994,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     if (now - g_lastTick >= 1000)
     {
         g_lastTick = now;
+        Log("  MOUSE-Y: game injected %.1f deg of pitch this second   (0.0 == mouse Y is dead)",
+            g_aimGameDPitch / 182.0444);
+        g_aimGameDPitch = 0.0;
+
         Log("--- camera: %llu calls, %d site(s), leader=site%d | writes L=%llu R=%llu ---",
             g_calls, g_siteCount, g_leader, g_wLeft, g_wRight);
         Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",

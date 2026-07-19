@@ -12,7 +12,13 @@
 //
 // Install from the RENDER THREAD on the first Present, with the vtable slots
 // Hooks.cpp already reads (ctxVT[12] == DrawIndexed, ctxVT[13] == Draw).
-bool DrawHook_Install(void* pDrawIndexed, void* pDraw);
+// S24: the instanced entry points are hooked too. Six sessions of fingerprinting
+// eliminated every persistent Draw/DrawIndexed count as the cursor -- something
+// on screen every frame that lands in no bucket is being issued through a
+// function we were not watching. ctxVT[14] == DrawIndexedInstanced,
+// ctxVT[15] == DrawInstanced. The last two may be null; that is not fatal.
+bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
+    void* pDrawIndexedInstanced, void* pDrawInstanced);
 void DrawHook_Remove();
 
 // Call ONCE per Present, before the real Present. Rolls the per-frame table.
