@@ -16,6 +16,7 @@
 // `final == clean` means writing it back would be a no-op anyway.
 
 #include "CameraHook.h"
+#include "GameState.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -92,6 +93,7 @@ static int            g_lastEye = 1;   // so the first underrun yields eye 0
 static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
 static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
 static long           g_deepPops = 0;      // consecutive pops with depth > 1
+extern float g_cfgHeightOffset;   // CameraHeightOffset, cm
 
 // With head-aim the head reaches the view INDIRECTLY (we write the aim field,
 // the game derives CameraRotation from it NEXT call). So the image is rendered
@@ -668,6 +670,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     //    accumulator, no drift.
     g_orig(pThis, edx, ViewActor, CameraLocation, CameraRotation);
 
+    // The game's own UI state, read off the controller we already have in hand.
+    GameState_Observe(pThis);
+
     void* ret = _ReturnAddress();
 
     if (g_calls == 0)
@@ -948,6 +953,23 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 CameraLocation->y += (float)(g_posFwd * sn + g_posRight * cs);
                 CameraLocation->z += (float)g_posUp;
             }
+
+            // S40: STATURE. The pawn's eye height is authored for a monitor and
+            // reads short in VR -- a head below the splicers. Independent of the
+            // head-position channel above: that one is your real head moving
+            // around a recentred origin, this is a constant offset to the origin
+            // itself, so it must apply even with EnableHeadPosition=0.
+            //
+            // It also fixes the shoulders. Hands.UpdateLocation() anchors the
+            // arms to PawnOwner.Location + EyeHeight, NOT to the camera we
+            // write -- so raising the camera leaves the arms where they were and
+            // they drop relative to your view, which is the other half of the
+            // complaint. One knob, both symptoms.
+            //
+            // The collision capsule does NOT move. At large values you will see
+            // through low ceilings before your head bumps them.
+            if (g_cfgHeightOffset != 0.0f)
+                CameraLocation->z += g_cfgHeightOffset;
 
             double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
             if (g_cfgSwapEyes) s = -s;

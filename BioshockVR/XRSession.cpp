@@ -507,7 +507,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     g_tb.beginFrame += MS(a, b);
     if (XR_FAILED(br)) return;
 
-    Input_XrSync(fs.predictedDisplayTime);
+    Input_XrSync(fs.predictedDisplayTime, g_space);
 
     XrCompositionLayerProjection layer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView pv[2] = {};
@@ -727,7 +727,7 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
     g_tb.beginFrame += MS(a, b);
     if (XR_FAILED(br)) return;
 
-    Input_XrSync(fs.predictedDisplayTime);
+    Input_XrSync(fs.predictedDisplayTime, g_space);
 
     XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     const XrCompositionLayerBaseHeader* layers[1] = { nullptr };

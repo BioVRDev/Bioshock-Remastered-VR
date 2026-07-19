@@ -874,7 +874,7 @@ void DrawHook_EndFrame()
             all = true;
             if (!whyBuf[0])
                 _snprintf_s(whyBuf, sizeof(whyBuf), _TRUNCATE,
-                    "MenuIndexCounts group %d (first count %u)", g, mg.counts[0]);
+                    "MenuIndexCounts group %d (first count %u)", g, mg.counts[0].count);
         }
         mg.mask = 0;
     }

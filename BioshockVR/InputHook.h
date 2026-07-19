@@ -36,7 +36,40 @@ bool Input_XrCreate(XrInstance inst, XrSession sess);
 // ONCE per XR frame, from BOTH SubmitPair and SubmitMenuMono (menus need input
 // too). Safe to call when the session is not focused: it publishes a neutral
 // pad instead, so taking the headset off cannot leave the player walking.
-void Input_XrSync(XrTime displayTime);
+//
+// baseSpace is the app's LOCAL reference space (XRSession's g_space) -- the SAME
+// space the head pose is published in, so hand and head poses are directly
+// comparable without a conversion step.
+void Input_XrSync(XrTime displayTime, XrSpace baseSpace);
+
+// ---- HAND POSES (motion controls) ---------------------------------------
+// Published every XR frame in the app's LOCAL space, through a seqlock, exactly
+// like the pad state. FULL 6-DOF for both hands and both pose types, even
+// though the first consumer (clamped hybrid aim) uses orientation only:
+//
+//   aim  -- the runtime's own "pointing" ray. Use this for AIMING. It already
+//           accounts for how a Touch controller is held; the grip pose does not.
+//   grip -- the physical hold point. Use this for PLACING a weapon model in the
+//           hand, if we ever get control of the weapon transform.
+//
+// Publishing both from day one means the aim consumer and a future 6-DOF weapon
+// consumer share one channel and one producer; adding the second one later
+// touches nothing that already works.
+enum { HAND_LEFT = 0, HAND_RIGHT = 1 };
+
+struct HandPose
+{
+    float aimQuat[4];    // x,y,z,w  OpenXR LOCAL
+    float aimPos[3];     // metres   OpenXR LOCAL
+    float gripQuat[4];
+    float gripPos[3];
+    bool  aimValid;      // false == not tracked this frame; do NOT use the values
+    bool  gripValid;
+};
+
+// Returns false if the seqlock could not be read cleanly. Check aimValid /
+// gripValid separately: a clean read of an untracked hand is still a clean read.
+bool Input_GetHandPose(int hand, HandPose* out);
 
 // ---- consumer: call from Hooks.cpp --------------------------------------
 // Once per Present. Handles deferred hook installation (the game may load its

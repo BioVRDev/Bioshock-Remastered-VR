@@ -141,6 +141,13 @@ struct PadState
 static volatile long g_padSeq = 0;
 static PadState      g_pad = {};
 
+// Second, independent seqlock for the hand poses. Separate from the pad on
+// purpose: the pad is read by the game's input thread every XInput poll, the
+// poses will be read by the camera hook on the game thread at CalcView rate.
+// One channel per consumer means neither can be starved by the other's retries.
+static volatile long g_handSeq = 0;
+static HandPose      g_hands[2] = {};
+
 static void PublishPad(const PadState& s)
 {
     _InterlockedIncrement(&g_padSeq);        // odd == writing
@@ -148,6 +155,31 @@ static void PublishPad(const PadState& s)
     g_pad = s;
     MemoryBarrier();
     _InterlockedIncrement(&g_padSeq);        // even == done
+}
+
+static void PublishHands(const HandPose h[2])
+{
+    _InterlockedIncrement(&g_handSeq);
+    MemoryBarrier();
+    g_hands[0] = h[0];
+    g_hands[1] = h[1];
+    MemoryBarrier();
+    _InterlockedIncrement(&g_handSeq);
+}
+
+bool Input_GetHandPose(int hand, HandPose* out)
+{
+    if (!out || hand < 0 || hand > 1) return false;
+    for (int tries = 0; tries < 8; ++tries)
+    {
+        const long s0 = g_handSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        *out = g_hands[hand];
+        MemoryBarrier();
+        if (g_handSeq == s0) return true;
+    }
+    return false;
 }
 
 static bool ReadPad(PadState* out)
@@ -396,7 +428,35 @@ static void Deadzone(float* x, float* y, float dz)
     *y *= k;
 }
 
-void Input_XrSync(XrTime /*displayTime*/)
+// Rotate (0,0,-1) by q -- OpenXR forward. Used only for the log line; the
+// consumers get the raw quaternion and do their own maths in game units.
+static void QuatForward(const float q[4], float f[3])
+{
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    f[0] = -2.0f * (x * z + w * y);
+    f[1] = -2.0f * (y * z - w * x);
+    f[2] = -(1.0f - 2.0f * (x * x + y * y));
+}
+
+static bool LocateOne(XrSpace act, XrSpace base, XrTime t, float q[4], float p[3])
+{
+    if (act == XR_NULL_HANDLE) return false;
+
+    XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+    if (XR_FAILED(xrLocateSpace(act, base, t, &loc))) return false;
+
+    const XrSpaceLocationFlags need =
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    if ((loc.locationFlags & need) != need) return false;
+
+    q[0] = loc.pose.orientation.x; q[1] = loc.pose.orientation.y;
+    q[2] = loc.pose.orientation.z; q[3] = loc.pose.orientation.w;
+    p[0] = loc.pose.position.x;    p[1] = loc.pose.position.y;
+    p[2] = loc.pose.position.z;
+    return true;
+}
+
+void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
 {
     if (!g_xrReady) return;
 
@@ -421,6 +481,9 @@ void Input_XrSync(XrTime /*displayTime*/)
         PadState z = {};
         z.active = false;
         PublishPad(z);
+
+        HandPose hz[2] = {};      // untracked: consumers must fall back to head
+        PublishHands(hz);
         return;
     }
 
@@ -447,6 +510,23 @@ void Input_XrSync(XrTime /*displayTime*/)
     s.restR = GetBool(g_aRestR);
 
     PublishPad(s);
+
+    // ---- hand poses -----------------------------------------------------
+    // Located in the SAME space and at the SAME predicted display time as the
+    // views, so a hand pose and the head pose for one frame are consistent with
+    // each other. Locating at "now" instead would put them tens of ms apart and
+    // the aim ray would lag the world during head motion.
+    HandPose hp[2] = {};
+    hp[HAND_LEFT].aimValid =
+        LocateOne(g_spAimL, baseSpace, displayTime, hp[HAND_LEFT].aimQuat, hp[HAND_LEFT].aimPos);
+    hp[HAND_LEFT].gripValid =
+        LocateOne(g_spGripL, baseSpace, displayTime, hp[HAND_LEFT].gripQuat, hp[HAND_LEFT].gripPos);
+    hp[HAND_RIGHT].aimValid =
+        LocateOne(g_spAimR, baseSpace, displayTime, hp[HAND_RIGHT].aimQuat, hp[HAND_RIGHT].aimPos);
+    hp[HAND_RIGHT].gripValid =
+        LocateOne(g_spGripR, baseSpace, displayTime, hp[HAND_RIGHT].gripQuat, hp[HAND_RIGHT].gripPos);
+
+    PublishHands(hp);
 }
 
 // ---------------------------------------------------------------- the detour
@@ -534,33 +614,27 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (mod)
     {
         // Dominant axis only -- diagonals on a thumbstick are too easy to hit
-        // by accident when the intent is "next weapon".
+        // by accident when the intent is a single direction.
         int dir = 0;   // 1 up, 2 down, 3 left, 4 right
         const float ax = fabsf(s.moveX), ay = fabsf(s.moveY);
         if (ay >= 0.5f && ay >= ax)      dir = (s.moveY > 0.0f) ? 1 : 2;
         else if (ax >= 0.5f && ax > ay)  dir = (s.moveX > 0.0f) ? 4 : 3;
 
-        static int   lastDir = 0;
-        static DWORD pulseUntil = 0;
-        static int   pulseDir = 0;
-
-        const DWORD now = GetTickCount();
-        if (dir != lastDir)
+        // S38: HELD, not pulsed. The first version emitted a 120ms pulse to
+        // avoid weapon-switch spam -- but weapons are on the RADIAL in this
+        // game, and the d-pad drives HUD functions. One of those is the hint
+        // button, and ShockPlayerController gates the MAP SCREEN behind
+        // HintButtonHeld with HintHoldTime=0.5s. A pulse made the map
+        // unreachable by construction. Holding costs nothing and buys it back.
+        switch (dir)
         {
-            lastDir = dir;
-            if (dir) { pulseDir = dir; pulseUntil = now + 120; }
+        case 1: out->Gamepad.wButtons |= XI_DPAD_UP;    break;
+        case 2: out->Gamepad.wButtons |= XI_DPAD_DOWN;  break;
+        case 3: out->Gamepad.wButtons |= XI_DPAD_LEFT;  break;
+        case 4: out->Gamepad.wButtons |= XI_DPAD_RIGHT; break;
+        default: break;
         }
 
-        if (pulseDir && now < pulseUntil)
-        {
-            switch (pulseDir)
-            {
-            case 1: out->Gamepad.wButtons |= XI_DPAD_UP;    break;
-            case 2: out->Gamepad.wButtons |= XI_DPAD_DOWN;  break;
-            case 3: out->Gamepad.wButtons |= XI_DPAD_LEFT;  break;
-            case 4: out->Gamepad.wButtons |= XI_DPAD_RIGHT; break;
-            }
-        }
         // left stick contributes NO movement while the modifier is held
     }
     else
@@ -603,7 +677,10 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (aHypo)           btn |= XI_B;      // XENON_B = Med hypo
     if (aHack)           btn |= XI_X;      // XENON_X = Hack / Reload
     if (aJump)           btn |= XI_Y;      // XENON_Y = Jump
-    if (s.menu)          btn |= XI_START;
+    // Touch has ONE application menu button, and the game wants both START
+    // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
+    // modifier disambiguates: menu alone pauses, modifier+menu is context help.
+    if (s.menu)          btn |= (mod ? XI_BACK : XI_START);
     if (s.thumbL)        btn |= XI_LTHUMB;
 
     // A control used as the modifier must not ALSO send its normal button, or
@@ -1016,6 +1093,26 @@ void Input_Tick()
         g_installed ? "ON" : "off", g_xrReady ? "ON" : "off");
 
     lastGet = gs; lastCaps = cp; lastSynth = sy; lastReal = rp;
+
+    // Hand poses. Yaw/pitch here are for EYEBALLING only -- point straight
+    // ahead and yaw should read near 0; point right, yaw goes positive.
+    for (int h = 0; h < 2; ++h)
+    {
+        HandPose hp = {};
+        if (!Input_GetHandPose(h, &hp)) continue;
+        if (!hp.aimValid) { Log("  HAND%s: aim NOT TRACKED", h ? "R" : "L"); continue; }
+
+        float f[3];
+        QuatForward(hp.aimQuat, f);
+        const double yaw = atan2((double)f[0], -(double)f[2]) * 57.2957795;
+        double fy = f[1]; if (fy > 1.0) fy = 1.0; if (fy < -1.0) fy = -1.0;
+        const double pitch = asin(fy) * 57.2957795;
+
+        Log("  HAND%s: aim yaw %+6.1f  pitch %+6.1f deg   pos %+5.2f %+5.2f %+5.2f m   grip %s",
+            h ? "R" : "L", yaw, pitch,
+            hp.aimPos[0], hp.aimPos[1], hp.aimPos[2],
+            hp.gripValid ? "ok" : "--");
+    }
 
     PadState s = {};
     if (ReadPad(&s) && s.active)

@@ -149,6 +149,12 @@ bool  g_cfgControllerLog   = true;
 int g_cfgDpadModifier = 1;   // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
 int g_cfgControllerLayout = 1;   // 0 literal Xbox / 1 jump on right-A
 
+int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
+float g_cfgFgFovValue = 0.0f;   // ForegroundFovValue, 0 == use GameFovDegrees
+bool g_cfgGameState = true;   // read the game's own input context (GameState.cpp)
+int g_cfgFgFovSrc = 0;   // ForegroundFovSrcOffset, 0 == off
+float g_cfgHeightOffset = 0.0f;   // CameraHeightOffset, cm. +up.
+
 
 static void InitLogPath()
 {
@@ -386,6 +392,28 @@ static void LoadConfig()
     Log("config: ControllerLayout  = %d   %s", g_cfgControllerLayout,
         g_cfgControllerLayout ? "(jump on right-A, use on right-B)"
         : "(literal Xbox: jump on left-Y, use on right-A)");
+
+    g_cfgGameState = (GetPrivateProfileIntA("VR", "EnableGameState", 1, g_iniPath) != 0);
+    Log("config: EnableGameState   = %d", (int)g_cfgGameState);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "ForegroundFovOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgFgFovOffset = (int)strtol(b, nullptr, 0);   // accepts 0x1A4
+        GetPrivateProfileStringA("VR", "ForegroundFovValue", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgFgFovValue = (float)atof(b);
+        GetPrivateProfileStringA("VR", "ForegroundFovSrcOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgFgFovSrc = (int)strtol(b, nullptr, 0);
+    }
+    Log("config: ForegroundFov     = offset 0x%X  value %.1f",
+        g_cfgFgFovOffset, g_cfgFgFovValue);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "CameraHeightOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > -100.0 && v < 100.0) g_cfgHeightOffset = (float)v; }
+    }
+    Log("config: CameraHeightOffset = %.1f cm", g_cfgHeightOffset);
 
 }
 
