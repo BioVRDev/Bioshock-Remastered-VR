@@ -27,6 +27,7 @@ extern bool  g_cfgCrosshair;
 extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
 extern float g_cfgXhDist;
 extern float g_cfgMenuHeight;
+bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 
 static void Log(const char* fmt, ...)
@@ -656,8 +657,22 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     xh.subImage.imageRect.offset = { 0, 0 };
                     xh.subImage.imageRect.extent = { kXhPx, kXhPx };
                     xh.subImage.imageArrayIndex = 0;
+                    // Still VIEW space, but swung by the aim offset so the dot
+                    // sits where the GUN points, not where the head points.
+                    // Origin stays at the head deliberately: the game hitscans
+                    // from the pawn's eye, so a dot cast from the head along the
+                    // aim direction is what actually agrees with where shots go.
+                    float axd = 0.f, apd = 0.f;
+                    CameraHook_GetAimOffset(&axd, &apd);
+                    const float ry = axd * 0.01745329f;
+                    const float rp = apd * 0.01745329f;
+                    const float xd = g_cfgXhDist;
+
                     xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
-                    xh.pose.position = { 0.f, 0.f, -g_cfgXhDist };
+                    xh.pose.position = {
+                        xd * sinf(ry) * cosf(rp),
+                        xd * sinf(rp),
+                        -xd * cosf(ry) * cosf(rp) };
                     xh.size = { edge, edge };
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
                     layerCount = 2;

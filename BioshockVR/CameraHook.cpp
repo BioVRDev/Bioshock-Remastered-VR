@@ -17,6 +17,7 @@
 
 #include "CameraHook.h"
 #include "GameState.h"
+#include "InputHook.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -45,6 +46,9 @@ extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch
 extern bool  g_cfgPairLock;
 extern bool  g_cfgHeadAim;
 extern bool g_cfgHeadRoll;
+extern int   g_cfgAimSource;     // 0 head, 1 right controller
+extern float g_cfgAimClampDeg;   // max angle between aim and view
+extern float g_cfgAimSmooth;     // 0 none .. 0.95 heavy
 
 bool DrawHook_MenuUp();   // DrawHook.cpp
 
@@ -397,6 +401,37 @@ static Vec3 RotatorRight(const FRotator& r)
     return { right0.x * cr + up0.x * (-sr),
              right0.y * cr + up0.y * (-sr),
              right0.z * cr + up0.z * (-sr) };
+}
+
+// ---- motion aim state (game thread writes, render thread reads) ---------
+static double g_aimHandYaw = 0.0, g_aimHandPitch = 0.0;
+static bool   g_aimHandValid = false;
+
+static volatile long g_aimOffSeq = 0;
+static float         g_aimOffYaw = 0.0f, g_aimOffPitch = 0.0f;
+
+static double WrapDeg180(double d)
+{
+    while (d > 180.0) d -= 360.0;
+    while (d < -180.0) d += 360.0;
+    return d;
+}
+
+bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg)
+{
+    for (int t = 0; t < 8; ++t)
+    {
+        const long s0 = g_aimOffSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        const float y = g_aimOffYaw, p = g_aimOffPitch;
+        MemoryBarrier();
+        if (g_aimOffSeq != s0) continue;
+        if (dYawDeg)   *dYawDeg = y;
+        if (dPitchDeg) *dPitchDeg = p;
+        return g_aimHandValid;
+    }
+    return false;
 }
 
 // --- head tracking (Phase 11) -----------------------------------------------
@@ -761,6 +796,53 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         XR_GetHeadQuat(hq);
         HeadQuatToDeg(hq, g_headPitch, g_headYaw, g_headRoll);
 
+        // ---- MOTION AIM (S41) -------------------------------------------
+        // The controller aim quaternion goes through the SAME conversion as the
+        // head, so both land in the game's rotator frame and are directly
+        // comparable. Latched once per pair, like the head pose, so the two eyes
+        // never disagree about where the gun points.
+        //
+        // Clamped PER AXIS rather than as a cone. That is not laziness: a
+        // controller pointed near vertical has a meaningless yaw (the gimbal
+        // degeneracy the 12:37 pose log showed, where yaw jumped to +171 at
+        // pitch +53). A per-axis clamp bounds that garbage to +-AimClampDeg
+        // instead of letting it swing the gun, so the failure mode is "aim
+        // saturates" rather than "aim flies away".
+        g_aimHandValid = false;
+        if (g_cfgAimSource == 1)
+        {
+            HandPose hpose = {};
+            if (Input_GetHandPose(HAND_RIGHT, &hpose) && hpose.aimValid)
+            {
+                double ap, ay, ar;
+                HeadQuatToDeg(hpose.aimQuat, ap, ay, ar);
+
+                double dY = WrapDeg180(ay - g_headYaw);
+                double dP = ap - g_headPitch;
+
+                const double c = (double)g_cfgAimClampDeg;
+                if (dY > c) dY = c;   if (dY < -c) dY = -c;
+                if (dP > c) dP = c;   if (dP < -c) dP = -c;
+
+                // Smooth the OFFSET, not the absolute angle -- so head motion
+                // stays instant and only hand tremor gets damped.
+                const double a = (double)g_cfgAimSmooth;
+                const double sy = g_aimOffYaw * a + dY * (1.0 - a);
+                const double sp = g_aimOffPitch * a + dP * (1.0 - a);
+
+                _InterlockedIncrement(&g_aimOffSeq);
+                MemoryBarrier();
+                g_aimOffYaw = (float)sy;
+                g_aimOffPitch = (float)sp;
+                MemoryBarrier();
+                _InterlockedIncrement(&g_aimOffSeq);
+
+                g_aimHandYaw = g_headYaw + sy;
+                g_aimHandPitch = g_headPitch + sp;
+                g_aimHandValid = true;
+            }
+        }
+
         float hp[3];
         XR_GetHeadPos(hp);
 
@@ -880,7 +962,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 (g_calls >= kArmAfterCalls);
 
             // Which pose did the image ACTUALLY render from?
-            const bool lag = (g_cfgHeadAim && g_prevQuatValid);
+            // S41: motion aim composes the view from the CURRENT head quat and
+            // writes it outright, so there is no frame of indirection left to
+            // compensate for. Publishing the previous pose here made the
+            // compositor reproject with a pose the image was not rendered from
+            // -- the S2 flicker, reopened backwards. Head-only, because
+            // g_prevQuat is a head quaternion.
+            const bool lag = (g_cfgHeadAim && g_cfgAimSource != 1 && g_prevQuatValid);
             const float* sq = lag ? g_prevQuat : hq;
 
             _InterlockedIncrement(&g_lpSeq);        // odd == writing
@@ -915,14 +1003,29 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             FRotator finalRot = cleanRot;
             if (g_cfgHeadTracking)
             {
-                if (g_cfgHeadAim)
+                if (g_cfgHeadAim && g_cfgAimSource == 1 && g_aimInit)
+                {
+                    // MOTION AIM: the aim field now carries the CONTROLLER, so
+                    // the view can no longer be inherited from it. Compose the
+                    // view from the head and write it outright. This also closes
+                    // the one-frame indirection that made the weapon swell while
+                    // turning.
+                    //
+                    // NOTE: lean and camera-anim (headbob) are dropped on this
+                    // path. Headbob is already zero via the mod; PC lean is
+                    // unbound on a controller.
+                    finalRot = ComposeHeadLocal(g_aimBase, g_headYaw, g_headPitch,
+                        g_cfgHeadAimMode >= 2);
+                    finalRot.roll = g_aimBase.roll;
+                    finalRot = ApplyWorldSpaceYaw(finalRot, 0.0, 0.0,
+                        g_cfgHeadRoll ? g_headRoll : 0.0);
+                }
+                else if (g_cfgHeadAim)
                 {
                     // Head yaw/pitch already reached the view THROUGH the aim
                     // field (+0x1E4 -> Controller.Rotation -> CameraRotation).
                     // Adding them here too applies the head TWICE and the view
-                    // swims as if the mouse were being dragged. Roll only: the
-                    // controller rotator can't carry head roll, so it's the one
-                    // component still missing from the view.
+                    // swims as if the mouse were being dragged. Roll only.
                     finalRot = ApplyWorldSpaceYaw(*CameraRotation,
                         0.0, 0.0, g_cfgHeadRoll ? g_headRoll : 0.0);
                 }
@@ -931,6 +1034,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     finalRot = ApplyWorldSpaceYaw(*CameraRotation,
                         g_headYaw, g_headPitch, g_headRoll);
                 }
+
+                // S41: say which branch is live. Three paths now write the view
+                // and picking the wrong one looks like a tracking fault rather
+                // than a code fault -- which cost a session.
+                {
+                    static int lastBranch = -1;
+                    const int b = (g_cfgHeadAim && g_cfgAimSource == 1 && g_aimInit) ? 2
+                        : (g_cfgHeadAim ? 1 : 0);
+                    if (b != lastBranch)
+                    {
+                        lastBranch = b;
+                        Log(">>> VIEW PATH: %s",
+                            b == 2 ? "motion aim (view=head, aim=controller)"
+                            : b == 1 ? "head-aim (view inherited from aim field, roll only)"
+                            : "legacy additive (head applied to view directly)");
+                    }
+                }
+
                 *CameraRotation = finalRot;
             }
 
@@ -1028,7 +1149,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     }
                     else
                     {
-                        want = ComposeHeadLocal(g_aimBase, g_headYaw, g_headPitch,
+                        // Motion aim feeds the CONTROLLER direction here while
+                        // the view above keeps the head. That split is the whole
+                        // feature.
+                        const double aimY = (g_cfgAimSource == 1 && g_aimHandValid)
+                            ? g_aimHandYaw : g_headYaw;
+                        const double aimP = (g_cfgAimSource == 1 && g_aimHandValid)
+                            ? g_aimHandPitch : g_headPitch;
+
+                        want = ComposeHeadLocal(g_aimBase, aimY, aimP,
                             g_cfgHeadAimMode >= 2);
                         // The controller rotator cannot carry head roll (S6);
                         // roll still reaches the view through the compose above.

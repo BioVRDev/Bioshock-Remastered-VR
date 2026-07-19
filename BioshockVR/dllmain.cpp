@@ -155,6 +155,11 @@ bool g_cfgGameState = true;   // read the game's own input context (GameState.cp
 int g_cfgFgFovSrc = 0;   // ForegroundFovSrcOffset, 0 == off
 float g_cfgHeightOffset = 0.0f;   // CameraHeightOffset, cm. +up.
 
+// Motion controls
+int   g_cfgAimSource = 0;      // 0 head, 1 right controller
+float g_cfgAimClampDeg = 20.0f;
+float g_cfgAimSmooth = 0.35f;
+
 
 static void InitLogPath()
 {
@@ -414,6 +419,17 @@ static void LoadConfig()
         if (b[0]) { double v = atof(b); if (v > -100.0 && v < 100.0) g_cfgHeightOffset = (float)v; }
     }
     Log("config: CameraHeightOffset = %.1f cm", g_cfgHeightOffset);
+
+    g_cfgAimSource = GetPrivateProfileIntA("VR", "AimSource", 0, g_iniPath);
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "AimClampDeg", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v >= 1.0 && v <= 80.0) g_cfgAimClampDeg = (float)v; }
+        GetPrivateProfileStringA("VR", "AimSmoothing", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 0.95) g_cfgAimSmooth = (float)v; }
+    }
+    Log("config: AimSource         = %d  clamp %.0f deg  smoothing %.2f",
+        g_cfgAimSource, g_cfgAimClampDeg, g_cfgAimSmooth);
 
 }
 

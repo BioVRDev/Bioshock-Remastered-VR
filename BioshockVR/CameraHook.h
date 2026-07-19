@@ -35,3 +35,11 @@ bool CameraHook_Starved();
 // LOCAL). Returns false when the camera is not head-driven (tracking off,
 // write off, hook not yet armed) -- caller falls back to the fresh pose.
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);
+
+// ---- MOTION AIM (S41) ---------------------------------------------------
+// Angular offset of the (clamped, smoothed) controller aim from the head, in
+// degrees. The crosshair quad lives in VIEW space, so this offset is all
+// XRSession needs to move it off head-centre and onto where the gun points.
+// Returns false when motion aim is off or the controller is untracked --
+// caller should draw the crosshair straight ahead.
+bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
