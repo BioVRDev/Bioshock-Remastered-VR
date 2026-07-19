@@ -147,6 +147,7 @@
     <ClCompile Include="DrawHook.cpp" />
     <ClCompile Include="GameIni.cpp" />
     <ClCompile Include="Hooks.cpp" />
+    <ClCompile Include="InputHook.cpp" />
     <ClCompile Include="XRSession.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -154,6 +155,7 @@
     <ClInclude Include="DrawHook.h" />
     <ClInclude Include="GameIni.h" />
     <ClInclude Include="Hooks.h" />
+    <ClInclude Include="InputHook.h" />
     <ClInclude Include="XRSession.h" />
   </ItemGroup>
   <ItemGroup>

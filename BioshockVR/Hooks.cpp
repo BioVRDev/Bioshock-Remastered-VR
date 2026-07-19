@@ -10,6 +10,7 @@
 #include "XRSession.h"
 #include "CameraHook.h"
 #include "DrawHook.h"
+#include "InputHook.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -267,6 +268,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     }
 
     DrawHook_EndFrame();
+    Input_Tick();
 
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
@@ -375,6 +377,7 @@ bool Hooks_Install()
 
 void Hooks_Remove()
 {
+    Input_Remove();
     if (g_presentAddr) MH_DisableHook(g_presentAddr);
     if (g_ctx) { g_ctx->Release(); g_ctx = nullptr; }
     if (g_dev) { g_dev->Release(); g_dev = nullptr; }

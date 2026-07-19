@@ -780,12 +780,30 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         }
 
         const bool haveSample = (fabs(hp[0]) + fabs(hp[1]) + fabs(hp[2])) > 1e-4;
-        if ((!g_posOriginSet && haveSample) || (wantRecenter && haveSample))
+
+        // ---- S36: DO NOT seed the origin from the first non-zero pose. -----
+        // MEASURED (02:49 log): the runtime's first pose arrived 0.2s after XR
+        // init with y = -0.986 m -- the headset was still on the desk. That
+        // became the origin, so once it was on a head the up offset was ~+99cm,
+        // clamped to +20, and PINNED there for the whole session. The camera
+        // then rode 20cm above the pawn: world looks fine (you are just taller),
+        // but the arms and weapon are drawn at the PAWN's eye height and fall
+        // out of the bottom of the frame, leaving the head-locked crosshair
+        // floating ~35 deg above the gun. WeaponScale had nothing to do with it.
+        //
+        // Whether this bit was pure luck about where the headset physically was
+        // when the runtime woke up, which is why it looked like a regression.
+        //
+        // Gate on the hook being ARMED: by then the game is rendering a real
+        // view, so the headset is on a head, not a desk.
+        const bool mayAutoSeed = haveSample && (g_calls >= kArmAfterCalls);
+
+        if ((!g_posOriginSet && mayAutoSeed) || (wantRecenter && haveSample))
         {
             g_posOrigin[0] = hp[0]; g_posOrigin[1] = hp[1]; g_posOrigin[2] = hp[2];
             g_posOriginSet = true;
-            Log("camera: HEAD POSITION recentered (origin %.3f %.3f %.3f m)",
-                hp[0], hp[1], hp[2]);
+            Log("camera: HEAD POSITION recentered (origin %.3f %.3f %.3f m)%s",
+                hp[0], hp[1], hp[2], wantRecenter ? "  [manual]" : "  [auto]");
         }
 
         if (g_posOriginSet)
@@ -794,6 +812,38 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             g_posRight = (double)(hp[0] - g_posOrigin[0]) * 100.0;
             g_posUp = (double)(hp[1] - g_posOrigin[1]) * 100.0;
             g_posFwd = -(double)(hp[2] - g_posOrigin[2]) * 100.0;
+
+            // ---- SATURATION WATCHDOG (self-heal) ---------------------------
+            // A bad origin shows up as an axis pinned at its clamp with a RAW
+            // delta far past it. Real head motion never parks 60cm off-centre
+            // for seconds. If it does, the origin is wrong -- re-seed rather
+            // than quietly rendering from the wrong height for an hour.
+            {
+                const double rawUp = g_posUp, rawFwd = g_posFwd, rawSide = g_posRight;
+                const bool wayOff =
+                    fabs(rawUp) > kPosUpMax * 3.0 ||
+                    fabs(rawSide) > kPosSide * 3.0 ||
+                    fabs(rawFwd) > kPosFwdMax * 3.0;
+
+                static DWORD offSince = 0;
+                const DWORD nowTick = GetTickCount();
+
+                if (wayOff)
+                {
+                    if (!offSince) offSince = nowTick;
+                    else if (nowTick - offSince > 3000)
+                    {
+                        Log("!!! camera: POSITION ORIGIN BAD. raw offset %.0f/%.0f/%.0f cm",
+                            rawSide, rawUp, rawFwd);
+                        Log("!!! camera: (origin was probably captured with the headset off");
+                        Log("!!! camera:  your head.) Re-seeding from the current pose.");
+                        g_posOrigin[0] = hp[0]; g_posOrigin[1] = hp[1]; g_posOrigin[2] = hp[2];
+                        g_posRight = g_posUp = g_posFwd = 0.0;
+                        offSince = 0;
+                    }
+                }
+                else offSince = 0;
+            }
 
             if (g_posRight > kPosSide)   g_posRight = kPosSide;
             if (g_posRight < -kPosSide)   g_posRight = -kPosSide;
@@ -1003,8 +1053,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",
             g_headYaw, g_headPitch, g_headRoll,
             g_cfgHeadTracking ? "(WRITTEN to camera)" : "(computed, not written)");
-        Log("  POS : right%7.1f  up%7.1f  fwd%7.1f  cm   %s",
-            g_posRight, g_posUp, g_posFwd,
+        Log("  POS : right%7.1f%s  up%7.1f%s  fwd%7.1f%s  cm   %s",
+            g_posRight, (fabs(g_posRight) >= kPosSide - 0.05) ? "*" : " ",
+            g_posUp, (g_posUp >= kPosUpMax - 0.05 ||
+                g_posUp <= -kPosDownMax + 0.05) ? "*" : " ",
+            g_posFwd, (g_posFwd >= kPosFwdMax - 0.05 ||
+                g_posFwd <= -kPosBackMax + 0.05) ? "*" : " ",
             g_cfgHeadPosition ? "(WRITTEN)" : "(computed, not written)");
 
         for (int i = 0; i < g_siteCount; ++i)

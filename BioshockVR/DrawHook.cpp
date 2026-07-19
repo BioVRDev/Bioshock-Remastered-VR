@@ -860,18 +860,35 @@ void DrawHook_EndFrame()
     }
 
     // A menu is up if ANY group had ALL of its counts in this one frame.
+    // S34: record WHICH rule fired. Three false positives during ordinary play
+    // (01:57 log) and the log could not say whether it was a count group or the
+    // structural test -- so the next false positive names itself.
+    static char whyBuf[96] = {};
     bool all = false;
     for (int g = 0; g < g_menuGroupN; ++g)
     {
         MenuGroup& mg = g_menuGroups[g];
         const unsigned want = (mg.n > 0) ? ((1u << mg.n) - 1u) : 0u;
-        if (mg.n > 0 && mg.mask == want) all = true;
+        if (mg.n > 0 && mg.mask == want)
+        {
+            all = true;
+            if (!whyBuf[0])
+                _snprintf_s(whyBuf, sizeof(whyBuf), _TRUNCATE,
+                    "MenuIndexCounts group %d (first count %u)", g, mg.counts[0]);
+        }
         mg.mask = 0;
     }
 
     // Structural test: a frame with almost no indexed geometry is a menu.
     if (g_cfgMenuMaxIndexed > 0 &&
-        g_indexedThisFrame <= (unsigned)g_cfgMenuMaxIndexed) all = true;
+        g_indexedThisFrame <= (unsigned)g_cfgMenuMaxIndexed)
+    {
+        all = true;
+        if (!whyBuf[0])
+            _snprintf_s(whyBuf, sizeof(whyBuf), _TRUNCATE,
+                "MenuMaxIndexed (%u indexed <= %d)",
+                g_indexedThisFrame, g_cfgMenuMaxIndexed);
+    }
 
     // ...and menus drawn over a live world are the low-Draw-call frames.
     if (g_cfgMenuMaxDraw > 0 &&
@@ -911,7 +928,9 @@ void DrawHook_EndFrame()
     if (!g_menuUp && g_menuHits >= 8)
     {
         g_menuUp = true;
-        Log(">>> DRAWHOOK: MENU DETECTED");
+        Log(">>> DRAWHOOK: MENU DETECTED -- rule: %s",
+            whyBuf[0] ? whyBuf : "(unknown)");
+        whyBuf[0] = 0;
     }
     else if (g_menuUp && g_menuMiss >= 8)
     {

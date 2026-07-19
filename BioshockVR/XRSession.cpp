@@ -2,6 +2,7 @@
 #define XR_USE_PLATFORM_WIN32
 
 #include "XRSession.h"
+#include "InputHook.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -400,6 +401,10 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     }
     else Log(">>> XR: crosshair DISABLED by ini (EnableCrosshair=0)");
 
+    // Touch controllers -> virtual pad. MUST happen before the session is begun:
+    // xrAttachSessionActionSets is one-shot for the life of the session.
+    Input_XrCreate(g_inst, g_session);
+
     g_init = true;
     Log(">>> XR: INIT COMPLETE");
     return true;
@@ -501,6 +506,8 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     QPC(a); XrResult br = xrBeginFrame(g_session, &fbi); QPC(b);
     g_tb.beginFrame += MS(a, b);
     if (XR_FAILED(br)) return;
+
+    Input_XrSync(fs.predictedDisplayTime);
 
     XrCompositionLayerProjection layer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView pv[2] = {};
@@ -719,6 +726,8 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
     QPC(a); XrResult br = xrBeginFrame(g_session, &fbi); QPC(b);
     g_tb.beginFrame += MS(a, b);
     if (XR_FAILED(br)) return;
+
+    Input_XrSync(fs.predictedDisplayTime);
 
     XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     const XrCompositionLayerBaseHeader* layers[1] = { nullptr };

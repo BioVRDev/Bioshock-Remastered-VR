@@ -135,6 +135,21 @@ float g_cfgMenuDist = 1.75f;
 // roll axis is world-space rather than view-space, the error grows with pitch.
 bool g_cfgHeadRoll = true;
 
+// ---- Phase 15: Touch controllers as a virtual Xbox pad (InputHook.cpp) ----
+// ControllerMode 0 = merge (a REAL pad in slot 0 wins, we only fill in when
+// none is connected) / 1 = replace (always synthesize).
+// ControllerPitch stays 0: HeadAimMode=2 erases injected pitch every CalcView
+// and it reads as a fight. 1 only to A/B that artifact deliberately.
+bool  g_cfgController = true;
+int   g_cfgControllerMode  = 0;      // 0 merge, 1 replace
+bool  g_cfgControllerPitch = false;
+bool  g_cfgStickYToDpad    = false;
+float g_cfgStickDeadzone   = 0.15f;
+bool  g_cfgControllerLog   = true;
+int g_cfgDpadModifier = 1;   // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
+int g_cfgControllerLayout = 1;   // 0 literal Xbox / 1 jump on right-A
+
+
 static void InitLogPath()
 {
     char p[MAX_PATH] = {};
@@ -337,6 +352,41 @@ static void LoadConfig()
 
     g_cfgHeadRoll = (GetPrivateProfileIntA("VR", "EnableHeadRoll", 1, g_iniPath) != 0);
     Log("config: EnableHeadRoll     = %d", (int)g_cfgHeadRoll);
+
+    g_cfgController = (GetPrivateProfileIntA("VR", "EnableController", 1, g_iniPath) != 0);
+    g_cfgControllerMode = GetPrivateProfileIntA("VR", "ControllerMode", 0, g_iniPath);
+    if (g_cfgControllerMode < 0 || g_cfgControllerMode > 1) g_cfgControllerMode = 0;
+    g_cfgControllerPitch = (GetPrivateProfileIntA("VR", "ControllerPitch", 0, g_iniPath) != 0);
+    g_cfgStickYToDpad = (GetPrivateProfileIntA("VR", "ControllerStickYToDpad", 0, g_iniPath) != 0);
+    g_cfgControllerLog = (GetPrivateProfileIntA("VR", "ControllerLog", 1, g_iniPath) != 0);
+    g_cfgDpadModifier = GetPrivateProfileIntA("VR", "ControllerDpadModifier", 1, g_iniPath);
+    if (g_cfgDpadModifier < 0 || g_cfgDpadModifier > 3) g_cfgDpadModifier = 1;
+
+    Log("config: DpadModifier      = %d   %s", g_cfgDpadModifier,
+        g_cfgDpadModifier == 0 ? "(off)" :
+        g_cfgDpadModifier == 1 ? "(right thumbrest touch)" :
+        g_cfgDpadModifier == 2 ? "(right stick click)" : "(left grip)");
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "ControllerDeadzone", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v >= 0.0 && v < 0.9) g_cfgStickDeadzone = (float)v; }
+    }
+
+    Log("config: EnableController   = %d   mode=%s", (int)g_cfgController,
+        g_cfgControllerMode ? "replace" : "merge");
+    Log("config: ControllerPitch    = %d   %s", (int)g_cfgControllerPitch,
+        g_cfgControllerPitch ? "(right-stick Y PASSED THROUGH -- expect pitch fighting)"
+        : "(right-stick Y dropped -- correct for HeadAimMode=2)");
+    Log("config: ControllerDeadzone = %.2f   StickYToDpad=%d",
+        g_cfgStickDeadzone, (int)g_cfgStickYToDpad);
+
+    g_cfgControllerLayout = GetPrivateProfileIntA("VR", "ControllerLayout", 0, g_iniPath);
+    if (g_cfgControllerLayout < 0 || g_cfgControllerLayout > 1) g_cfgControllerLayout = 0;
+    Log("config: ControllerLayout  = %d   %s", g_cfgControllerLayout,
+        g_cfgControllerLayout ? "(jump on right-A, use on right-B)"
+        : "(literal Xbox: jump on left-Y, use on right-A)");
+
 }
 
 // Real init happens off the loader lock. DllMain is not a safe place to
