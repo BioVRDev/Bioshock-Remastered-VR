@@ -37,7 +37,8 @@
 extern void LogFile(const char* msg);
 extern bool  g_cfgGameState;      // EnableGameState, default 1
 extern int   g_cfgFgFovOffset;    // ForegroundFovOffset, 0 == off
-extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use GameFovDegrees
+extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use src/GameFovDegrees
+extern int   g_cfgFgFovSrc;       // ForegroundFovSrcOffset, 0 == off
 extern float g_cfgFovDeg;         // GameFovDegrees
 
 static void Log(const char* fmt, ...)
@@ -119,24 +120,49 @@ static ContextClass ClassifyContext(const char* s)
 // different text but the same layout, and a miss only leaves a harmless extra
 // candidate for the recheck pass to sort out.
 static const char* kKnownLocalized[] = {
-    // ShockPlayerController's own block
-    "HARVEST",
-    "RESCUE",
-    "Search Again",
-    "WHAT IS THIS?",
-    "Mapping=ShowContextHelp",
-    "HACK",
-    "Rescue",
-    // PlayerController's block -- MEASURED at +0x7A0..+0x7D0 in the 13:58 log.
-    // The derived class's data sits ABOVE these, so the highest one of these we
-    // find is a floor: LastPlayerInputContext cannot be below it.
+    // --- ShockPlayerController (found at +0x7A0..+0x7D0 on the controller) ---
     "Quick Saving",
     "Game is not pauseable",
     "Now viewing from",
     "Game Plus:",
+    // --- ShockPlayer, MEASURED on the pawn at 18:39 -----------------------
+    // These bracket the field we want: LastPlayerInputContext is the FIRST
+    // string in ShockPlayer's own block, so it sits between HandsClassString
+    // (the last ShockPawn string) and GPSDestinationArrivedMessage (the first
+    // ShockPlayer localized string).
+    "Arrived at goal destination.",
+    "No location information is available",
+    "This goal's location is on a different level.",
+    "Select a Plasmid to place",
+    "Select a Physical Tonic",
+    "Select an Engineering Tonic",
+    "Select a Combat Tonic",
+    "PLACE IN SLOT",
+    "SELECT PLASMID",
+    "SELECT TONIC",
+    "Replaced %s with %s.",
+    "The machine has OVERLOADED.",
+    "The machine has short circuited.",
+    "Bots released due to security alarm",
+    "No hack attempted.",
+    "Hack successful!",
+    "Your speed is bioShocking",
+    "A little sister can go faster",
+    "No Subject in view",
+    "Subject was mostly out of frame",
+    "Subject is friendly",
+    "Score too low",
+    "Subject research complete",
+    "Resistance To: ",
+    "Enemy weakness information",
 };
 static const int kNumKnownLocalized =
 (int)(sizeof(kKnownLocalized) / sizeof(kKnownLocalized[0]));
+
+// The LOW anchor. ShockPawn's HandsClassString is the last string before
+// ShockPlayer's block begins, and LastPlayerInputContext is the first string
+// inside it -- so the field we want is immediately above this one.
+static const char* kLowAnchor = "FirstPersonHands";
 
 static const char* MatchKnownLocalized(const char* s)
 {
@@ -257,14 +283,38 @@ static bool ReadFStringAt(const uint8_t* obj, size_t off, char* out, size_t outS
 
 static size_t g_offset = 0;
 static bool   g_scanDone = false;
+
 static int    g_observeCalls = 0;
 
 // Fields that survived elimination: string-shaped, not a known constant.
 // Watched until one holds a recognisable context name.
-static const int kMaxCand = 12;
+// S46: 12 was too few. The 18:49 scan found 64 empty slots in the window and
+// we watched only the lowest 12 -- LastPlayerInputContext (predicted +0x740 by
+// var arithmetic) was inside that range by luck, not by design. Watch them all;
+// the recheck is three reads per candidate, twice a second.
+static const int kMaxCand = 96;
 static size_t g_cand[kMaxCand] = {};
 static int    g_nCand = 0;
 static int    g_recheck = 0;
+
+// S44: ShockPlayer (the Pawn) declares LastPlayerInputContext as its 4th var.
+// The controller does not carry a live copy -- 16KB of scanning there found
+// only PlayerController's five localized strings. HandsProbe hands us the Pawn
+// once STAGE A resolves it, and we re-scan against that instead.
+static void* g_pawn = nullptr;
+
+void GameState_SetPawn(void* pawn)
+{
+    if (!pawn || pawn == g_pawn) return;
+    g_pawn = pawn;
+    Log(">>> GAMESTATE: Pawn 0x%08X received. Re-scanning there -- ShockPlayer "
+        "is where LastPlayerInputContext actually lives.", (unsigned)(uintptr_t)pawn);
+    _InterlockedExchange(&g_locked, 0);
+    _InterlockedExchange(&g_class, CTX_UNKNOWN);
+    g_scanDone = false;
+    g_observeCalls = 0;
+    g_nCand = 0;
+}
 
 // S38: 0x1000 was NOT enough. The 13:58 scan found PlayerController's localized
 // strings at +0x7A0..+0x7D0 and nothing above them -- ShockPlayerController's
@@ -273,82 +323,96 @@ static const size_t kScanMax = 0x2000;
 
 static void ScanForContextField(const uint8_t* obj)
 {
-    Log(">>> GAMESTATE: scanning controller 0x%08X for FString fields...",
-        (unsigned)(uintptr_t)obj);
+    Log(">>> GAMESTATE: scanning %s 0x%08X for FString fields...",
+        g_pawn ? "PAWN" : "controller", (unsigned)(uintptr_t)obj);
 
     int known = 0, live = 0, empties = 0;
-    size_t lastKnownOff = 0;
+    size_t loAnchor = 0;        // HandsClassString -- ShockPlayer's block starts here
+    size_t hiAnchor = 0;        // lowest known ShockPlayer localized constant
     g_nCand = 0;
 
-    // ---- PASS 1: live strings only. -------------------------------------
-    // Establishes the floor: the highest offset holding a KNOWN constant. Any
-    // string field below that belongs to a base class and cannot be the one we
-    // want, which is what stops us watching 500 slabs of zeroes.
+    // ---- PASS 1: live strings. Establishes the WINDOW. ------------------
     for (size_t off = 0; off + sizeof(FStringLike) <= kScanMax; off += 4)
     {
-        char val[96] = {};
+        char val[128] = {};
         if (!ReadFStringAt(obj, off, val, sizeof(val))) continue;
 
         ++live;
         const ContextClass c = ClassifyContext(val);
         const char* kn = MatchKnownLocalized(val);
+        const bool isLow = (strstr(val, kLowAnchor) != nullptr);
 
         Log(">>> GAMESTATE:   +0x%03X = \"%s\"%s", (unsigned)off, val,
             c != CTX_UNKNOWN ? "   <-- CONTEXT NAME"
+            : isLow ? "   (LOW anchor)"
             : kn ? "   (known constant)" : "");
 
-        if (kn) { ++known; if (off > lastKnownOff) lastKnownOff = off; continue; }
+        if (isLow) { loAnchor = off; continue; }
 
-        if (g_nCand < kMaxCand) g_cand[g_nCand++] = off;
+        if (kn)
+        {
+            ++known;
+            if (!hiAnchor || off < hiAnchor) hiAnchor = off;
+            continue;
+        }
 
         if (c != CTX_UNKNOWN && !g_locked)
         {
             g_offset = off;
             _InterlockedExchange(&g_locked, 1);
         }
+        else if (g_nCand < kMaxCand) g_cand[g_nCand++] = off;
     }
 
-    // ---- PASS 2: empty string fields, but only above the floor. ----------
+    // ---- PASS 2: empty fields, WINDOWED. --------------------------------
     // Twelve zero bytes look exactly like an empty FString, so an unbounded
-    // sweep produced 557 hits last run and buried the real field. Bounded, it
-    // is a short and useful list.
-    for (size_t off = lastKnownOff + 4; off + sizeof(FStringLike) <= kScanMax; off += 4)
+    // sweep produced 500+ hits and buried the real field. Bounded to the gap
+    // between the two anchors it is a very short list -- and LastPlayerInputContext
+    // is empty until the first context push, so this is the only way to see it.
+    if (loAnchor && hiAnchor && hiAnchor > loAnchor)
     {
-        if (!IsEmptyFString(obj, off)) continue;
-        ++empties;
-        if (g_nCand < kMaxCand)
+        Log(">>> GAMESTATE: window +0x%03X .. +0x%03X (between HandsClassString and "
+            "the first ShockPlayer localized string)",
+            (unsigned)loAnchor, (unsigned)hiAnchor);
+
+        for (size_t off = loAnchor + 4; off + sizeof(FStringLike) <= hiAnchor; off += 4)
         {
-            g_cand[g_nCand++] = off;
-            Log(">>> GAMESTATE:   +0x%03X = \"\"  (empty, watching)", (unsigned)off);
+            if (!IsEmptyFString(obj, off)) continue;
+            ++empties;
+            if (g_nCand < kMaxCand)
+            {
+                g_cand[g_nCand++] = off;
+                Log(">>> GAMESTATE:   +0x%03X = \"\"  (empty, IN WINDOW -- watching)",
+                    (unsigned)off);
+            }
         }
     }
+    else
+    {
+        Log(">>> GAMESTATE: !!! could not bracket the window "
+            "(lo +0x%03X, hi +0x%03X). Not watching empties.",
+            (unsigned)loAnchor, (unsigned)hiAnchor);
+    }
 
-    Log(">>> GAMESTATE: %d live string(s), %d known constant(s) "
-        "(highest +0x%03X), %d empty above it, %d candidate(s)",
-        live, known, (unsigned)lastKnownOff, empties, g_nCand);
+    Log(">>> GAMESTATE: %d live string(s), %d known constant(s), %d empty in "
+        "window, %d candidate(s)", live, known, empties, g_nCand);
 
     if (known >= 4)
-        Log(">>> GAMESTATE: layout CONFIRMED (found a localized constant block)");
+        Log(">>> GAMESTATE: layout CONFIRMED");
     else
-        Log(">>> GAMESTATE: !!! few known constants -- layout unconfirmed. "
-            "Treat any lock below with suspicion.");
+        Log(">>> GAMESTATE: !!! few known constants -- layout unconfirmed.");
 
     if (g_locked)
     {
-        char val[96] = {};
+        char val[128] = {};
         ReadFStringAt(obj, g_offset, val, sizeof(val));
         Log(">>> GAMESTATE: LOCKED on +0x%03X, context \"%s\"", (unsigned)g_offset, val);
     }
     else if (g_nCand)
-    {
-        Log(">>> GAMESTATE: no context name yet. Watching %d candidate(s) -- "
-            "open a menu and I will lock on the one that changes.", g_nCand);
-    }
+        Log(">>> GAMESTATE: watching %d candidate(s) -- open a menu and I will "
+            "lock on the one that changes.", g_nCand);
     else
-    {
-        Log(">>> GAMESTATE: !!! nothing to watch. Falling back to the "
-            "draw-signature menu path.");
-    }
+        Log(">>> GAMESTATE: !!! nothing to watch.");
 }
 
 // Poll the survivors until one holds a recognisable context name. This is what
@@ -380,15 +444,22 @@ static void ApplyForegroundFov(const uint8_t* obj);
 
 void GameState_Observe(void* playerController)
 {
-    if (!g_cfgGameState) return;
     if (!playerController) return;
 
-    const uint8_t* obj = (const uint8_t*)playerController;
+    // S49: the FOV probe and the ForegroundFovAngle write run REGARDLESS of
+    // EnableGameState. They only ever lived in this function because the
+    // controller pointer was handy here; gating them on the (dead) context scan
+    // meant EnableGameState=0 silently reverted the weapon to 60-degree
+    // foreground FOV. Different feature, different switch.
+    PollProbeKeys((const uint8_t*)playerController);
+    ApplyForegroundFov((const uint8_t*)playerController);
 
-    // The FOV probe and write are independent of the (dead) context-string
-    // hunt, so they run even when that never locks.
-    PollProbeKeys(obj);
-    ApplyForegroundFov(obj);
+    if (!g_cfgGameState) return;
+
+    // Prefer the Pawn once we have it: that is where the context string lives.
+    // The FOV floats stay on the CONTROLLER, so the probe below keeps using it.
+    const uint8_t* obj = g_pawn ? (const uint8_t*)g_pawn
+        : (const uint8_t*)playerController;
 
     if (!g_scanDone)
     {
@@ -553,14 +624,33 @@ static void ApplyForegroundFov(const uint8_t* obj)
     if (!Readable(obj + off, 4)) return;
 
     float* p = (float*)(obj + off);
-    const float want = (g_cfgFgFovValue > 1.0f) ? g_cfgFgFovValue : g_cfgFovDeg;
+
+    // Preference order:
+    //   1. COPY from another float in the same object (DesiredFOV / FovAngle).
+    //      MEASURED 16:01: world FOV is 75 and the foreground is 60 -- and the
+    //      world value is NOT the 110 in Bioshock.ini, which is BioShock's own
+    //      user setting in a different convention. Hardcoding 110 here would
+    //      overcorrect by miles. Copying also keeps zoom working: FadeFOV drives
+    //      the source, and the foreground follows it.
+    //   2. An explicit constant, for experimenting.
+    //   3. GameFovDegrees, which is almost certainly wrong -- last resort.
+    float want;
+    if (g_cfgFgFovSrc > 0 && Readable(obj + (size_t)g_cfgFgFovSrc, 4))
+        want = *(const float*)(obj + (size_t)g_cfgFgFovSrc);
+    else if (g_cfgFgFovValue > 1.0f)
+        want = g_cfgFgFovValue;
+    else
+        want = g_cfgFovDeg;
+
+    if (want < 5.0f || want > 170.0f) return;      // never write nonsense
 
     static bool announced = false;
     if (!announced)
     {
         announced = true;
-        Log(">>> FOVPROBE: writing ForegroundFov at +0x%03X = %.1f (was %.1f)",
-            (unsigned)off, want, *p);
+        Log(">>> FOVPROBE: writing ForegroundFov at +0x%03X = %.1f (was %.1f)%s",
+            (unsigned)off, want, *p,
+            g_cfgFgFovSrc > 0 ? "  [copied from src]" : "");
     }
 
     if (*p != want) *p = want;

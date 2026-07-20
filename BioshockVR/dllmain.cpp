@@ -160,6 +160,17 @@ int   g_cfgAimSource = 0;      // 0 head, 1 right controller
 float g_cfgAimClampDeg = 20.0f;
 float g_cfgAimSmooth = 0.35f;
 
+bool g_cfgHandsProbe = false;   // EnableHandsProbe
+
+float g_cfgHandsNudgeZ = 0.0f;   // HandsNudgeZ, cm. Displaces the Hands actor for the probe test.
+float g_cfgHandsNudgeYaw = 0.0f;   // HandsNudgeYaw, degrees
+int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
+float g_cfgHandsNudgePitch = 0.0f;   // HandsNudgePitch, degrees
+int g_cfgHandsPosOff = 0;   // HandsPosOffset, e.g. 0x1A0
+bool g_cfg6DofHands = false;   // Enable6DofHands
+float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // HandsGripOffset fwd,right,up (cm)
+float g_cfgHandsScale = 0.0f;   // HandsScale: DrawScale for the hands. 0 == leave alone.
+
 
 static void InitLogPath()
 {
@@ -430,6 +441,52 @@ static void LoadConfig()
     }
     Log("config: AimSource         = %d  clamp %.0f deg  smoothing %.2f",
         g_cfgAimSource, g_cfgAimClampDeg, g_cfgAimSmooth);
+
+    g_cfgHandsProbe = (GetPrivateProfileIntA("VR", "EnableHandsProbe", 0, g_iniPath) != 0);
+    Log("config: EnableHandsProbe  = %d", (int)g_cfgHandsProbe);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "HandsNudgeZ", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > -500.0 && v < 500.0) g_cfgHandsNudgeZ = (float)v; }
+    }
+    Log("config: HandsNudgeZ        = %.0f cm", g_cfgHandsNudgeZ);
+
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "HandsNudgeYaw", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > -180.0 && v < 180.0) g_cfgHandsNudgeYaw = (float)v; }
+        GetPrivateProfileStringA("VR", "HandsPtrOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgHandsPtrOff = (int)strtol(b, nullptr, 0);   // accepts 0x724
+        GetPrivateProfileStringA("VR", "HandsNudgePitch", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > -180.0 && v < 180.0) g_cfgHandsNudgePitch = (float)v; }
+        GetPrivateProfileStringA("VR", "HandsPosOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgHandsPosOff = (int)strtol(b, nullptr, 0);
+    }
+    Log("config: HandsPtrOffset    = 0x%X   NudgeYaw %.0f deg", g_cfgHandsPtrOff, g_cfgHandsNudgeYaw);
+
+    g_cfg6DofHands = (GetPrivateProfileIntA("VR", "Enable6DofHands", 0, g_iniPath) != 0);
+    Log("config: Enable6DofHands   = %d", (int)g_cfg6DofHands);
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "HandsGripOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0])
+        {
+            float f[3] = {};
+            if (sscanf_s(b, "%f,%f,%f", &f[0], &f[1], &f[2]) == 3)
+            {
+                g_cfgHandsGrip[0] = f[0]; g_cfgHandsGrip[1] = f[1]; g_cfgHandsGrip[2] = f[2];
+            }
+        }
+    }
+    Log("config: HandsGripOffset   = %.0f fwd, %.0f right, %.0f up (cm)",
+        g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+    {
+        char b[64] = {};
+        GetPrivateProfileStringA("VR", "HandsScale", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.05 && v < 5.0) g_cfgHandsScale = (float)v; }
+    }
+    Log("config: HandsScale        = %.2f", g_cfgHandsScale);
 
 }
 

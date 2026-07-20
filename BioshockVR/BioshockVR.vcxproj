@@ -147,6 +147,7 @@
     <ClCompile Include="DrawHook.cpp" />
     <ClCompile Include="GameIni.cpp" />
     <ClCompile Include="GameState.cpp" />
+    <ClCompile Include="HandsProbe.cpp" />
     <ClCompile Include="Hooks.cpp" />
     <ClCompile Include="InputHook.cpp" />
     <ClCompile Include="XRSession.cpp" />
@@ -156,6 +157,7 @@
     <ClInclude Include="DrawHook.h" />
     <ClInclude Include="GameIni.h" />
     <ClInclude Include="GameState.h" />
+    <ClInclude Include="HandsProbe.h" />
     <ClInclude Include="Hooks.h" />
     <ClInclude Include="InputHook.h" />
     <ClInclude Include="XRSession.h" />

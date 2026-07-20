@@ -18,6 +18,7 @@
 #include "CameraHook.h"
 #include "GameState.h"
 #include "InputHook.h"
+#include "HandsProbe.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -49,6 +50,9 @@ extern bool g_cfgHeadRoll;
 extern int   g_cfgAimSource;     // 0 head, 1 right controller
 extern float g_cfgAimClampDeg;   // max angle between aim and view
 extern float g_cfgAimSmooth;     // 0 none .. 0.95 heavy
+extern bool g_cfg6DofHands;   // Enable6DofHands
+extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
+extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
 bool DrawHook_MenuUp();   // DrawHook.cpp
 
@@ -60,6 +64,9 @@ static void Log(const char* fmt, ...)
     va_end(a);
     LogFile(b);
 }
+
+static float g_lastHeadPos[3] = {};
+static double g_lastCleanYaw = 0.0;
 
 // ---------------------------------------------------------------- types
 
@@ -98,6 +105,7 @@ static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
 static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
 static long           g_deepPops = 0;      // consecutive pops with depth > 1
 extern float g_cfgHeightOffset;   // CameraHeightOffset, cm
+static FVector g_lastCamCenter = {};
 
 // With head-aim the head reaches the view INDIRECTLY (we write the aim field,
 // the game derives CameraRotation from it NEXT call). So the image is rendered
@@ -695,6 +703,156 @@ static void ScanForRotation(void* pc, const FRotator& clean)
     if (!hits) Log("  ROTSCAN: nothing in the first 2KB. Widen the scan.");
 }
 
+// ---- 6-DOF HANDS (S54) --------------------------------------------------
+// The hands actor is at pawn+0x724 with Location +0x1D8 and Rotation +0x1E4,
+// all measured. At rest Hands.Location == the camera exactly and Hands.Rotation
+// == the view rotator exactly, so this is substitution, not correction.
+//
+// ABSOLUTE writes. The nudge tests proved the game does NOT rewrite either
+// field between our calls -- an incremental write accumulated the yaw into a
+// spin and lifted the arms out of the level. So every frame we compute the
+// target outright.
+//
+// Position: the controller pose RELATIVE TO THE HEAD, converted XR->game
+// (XR is +x right, +y up, -z forward; game is +X forward, +Y right, +Z up) and
+// rotated into the world by the same room yaw the head-position write uses.
+// Relative to the head, not to the origin, so recentring and CameraHeightOffset
+// come along for free.
+//
+// Rotation: the controller aim quaternion through the SAME conversion as the
+// head, composed onto the same mouse heading. Unclamped -- the clamp exists to
+// keep the gun on screen when the VIEW is driven from the aim field, and here
+// the two are finally independent.
+// MEASURED S59 (readback, ~10s of play):
+//   pitch drift 0.0-0.3 deg, yaw drift 0.0-1.2 deg  -> our writes HOLD
+//   roll  drift 5-102 deg, scaling with wrist twist -> the game ERASES roll
+//
+// So roll was never landing. Writing it anyway was actively harmful: the grip
+// correction rotated the offset by a roll the mesh never rendered with, which
+// swung the hand through an arc that grew with the twist. That was the residual
+// drift. We now write only what survives, and correct with the same values.
+//
+// AActor::DrawScale is at +0x2AC: the scan found four consecutive 1.0 floats
+// there, which is the standard `float DrawScale; vector DrawScale3D;` pair.
+static const size_t kActorDrawScale = 0x2AC;
+
+static void DriveHands(const FVector& camLoc, const float headPos[3])
+{
+    if (!g_cfg6DofHands) return;
+
+    void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
+    if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff)) return;
+
+    HandPose hp = {};
+    if (!Input_GetHandPose(HAND_RIGHT, &hp)) return;
+    if (!hp.aimValid && !hp.gripValid) return;
+
+    if (!IsMemoryWritable((uint8_t*)obj + locOff, sizeof(FVector))) return;
+    if (!IsMemoryWritable((uint8_t*)obj + rotOff, sizeof(FRotator))) return;
+
+    // ---- rotation: yaw and pitch only ------------------------------------
+    double cp, cy, cr;
+    HeadQuatToDeg(hp.aimQuat, cp, cy, cr);
+
+    FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfgHeadAimMode >= 2);
+    want.roll = g_aimBase.roll;      // NOT + controller roll -- see note above
+
+    // Readback: keep watching, so a future change that breaks pitch/yaw shows up
+    // immediately instead of being tuned around.
+    {
+        static FRotator lastWrote = {};
+        static bool  haveLast = false;
+        static DWORD lastLog = 0;
+
+        if (haveLast)
+        {
+            const FRotator now = *(const FRotator*)((const uint8_t*)obj + rotOff);
+            const double dP = RotDelta(now.pitch, lastWrote.pitch) / 182.0444;
+            const double dY = RotDelta(now.yaw, lastWrote.yaw) / 182.0444;
+            const double dR = RotDelta(now.roll, lastWrote.roll) / 182.0444;
+
+            const DWORD t = GetTickCount();
+            if (t - lastLog >= 1000)
+            {
+                lastLog = t;
+                Log(">>> 6DOF readback: p=%.1f y=%.1f r=%.1f deg since our write%s",
+                    dP, dY, dR,
+                    (fabs(dY) > 1.0 || fabs(dP) > 1.0)
+                    ? "   <-- PITCH/YAW BEING OVERWRITTEN" : "   (pitch/yaw held)");
+            }
+        }
+        lastWrote = want;
+        haveLast = true;
+    }
+
+    *(FRotator*)((uint8_t*)obj + rotOff) = want;
+
+    // ---- scale ----------------------------------------------------------
+    if (g_cfgHandsScale > 0.0f &&
+        IsMemoryWritable((uint8_t*)obj + kActorDrawScale, sizeof(float)))
+    {
+        *(float*)((uint8_t*)obj + kActorDrawScale) = g_cfgHandsScale;
+    }
+
+    // ---- position: from the GRIP pose -----------------------------------
+    const float* P = hp.gripValid ? hp.gripPos : hp.aimPos;
+
+    const double relRight = ((double)P[0] - headPos[0]) * 100.0;
+    const double relUp = ((double)P[1] - headPos[1]) * 100.0;
+    const double relFwd = -((double)P[2] - headPos[2]) * 100.0;
+
+    const double roomYaw = UnitsToRad(
+        (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
+    const double cs = cos(roomYaw), sn = sin(roomYaw);
+
+    double wx = camLoc.x + (relFwd * cs - relRight * sn);
+    double wy = camLoc.y + (relFwd * sn + relRight * cs);
+    double wz = camLoc.z + relUp;
+
+    // The Hands actor origin sits at the EYE (PlayerViewOffset is 0,0,0), with
+    // the arm authored extending forward and down from there. Subtract where the
+    // hand sits in mesh space, rotated by the orientation that will ACTUALLY be
+    // rendered -- which is `want`, now that we no longer ask for a roll the game
+    // refuses to keep.
+    if (g_cfgHandsGrip[0] || g_cfgHandsGrip[1] || g_cfgHandsGrip[2])
+    {
+        const double gp = UnitsToRad(want.pitch);
+        const double gy = UnitsToRad(want.yaw);
+        const double gr = UnitsToRad(want.roll);
+
+        const double CP = cos(gp), SP = sin(gp);
+        const double CY = cos(gy), SY = sin(gy);
+        const double CR = cos(gr), SR = sin(gr);
+
+        const double Fx = CP * CY, Fy = CP * SY, Fz = SP;
+        const double Rx = SR * SP * CY - CR * SY, Ry = SR * SP * SY + CR * CY, Rz = -SR * CP;
+        const double Ux = -(CR * SP * CY + SR * SY), Uy = CY * SR - CR * SP * SY, Uz = CR * CP;
+
+        const double gX = g_cfgHandsGrip[0];
+        const double gY = g_cfgHandsGrip[1];
+        const double gZ = g_cfgHandsGrip[2];
+
+        wx -= (Fx * gX + Rx * gY + Ux * gZ);
+        wy -= (Fy * gX + Ry * gY + Uy * gZ);
+        wz -= (Fz * gX + Rz * gY + Uz * gZ);
+    }
+
+    FVector* L = (FVector*)((uint8_t*)obj + locOff);
+    L->x = (float)wx;
+    L->y = (float)wy;
+    L->z = (float)wz;
+
+    static bool announced = false;
+    if (!announced)
+    {
+        announced = true;
+        Log(">>> 6DOF HANDS ARMED on 0x%08X  (loc +0x%03X, rot +0x%03X, scale +0x%03X)",
+            (unsigned)(uintptr_t)obj, locOff, rotOff, (unsigned)kActorDrawScale);
+        Log(">>> 6DOF: %s pose, %+.0f fwd %+.0f right %+.0f up (cm) from the head",
+            hp.gripValid ? "GRIP" : "aim", relFwd, relRight, relUp);
+    }
+}
+
 static void __fastcall hkCalcView(void* pThis, void* edx,
     void** ViewActor,
     FVector* CameraLocation,
@@ -707,6 +865,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
     // The game's own UI state, read off the controller we already have in hand.
     GameState_Observe(pThis);
+
+    GameState_Observe(pThis);
+    HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
 
     void* ret = _ReturnAddress();
 
@@ -845,6 +1006,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
         float hp[3];
         XR_GetHeadPos(hp);
+
+        // Kept for the 6-DOF hands write, which needs the controller pose
+        // relative to the HEAD rather than to the recentre origin.
+        g_lastHeadPos[0] = hp[0]; g_lastHeadPos[1] = hp[1]; g_lastHeadPos[2] = hp[2];
 
         // Recenter: first real (nonzero) sample, or Numpad-Del re-captures.
         static bool prevDec = false;
@@ -1092,6 +1257,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             if (g_cfgHeightOffset != 0.0f)
                 CameraLocation->z += g_cfgHeightOffset;
 
+            // S57: the hands must sit at ONE world position for both eyes. The
+            // per-eye IPD offset below moves the camera +-EyeSeparation, and if
+            // the hands are placed relative to THAT they travel with the eye --
+            // which cancels their disparity exactly. Result: correct in each eye
+            // alone, painted flat onto the world with both open, and read as
+            // huge because zero parallax means "very far away".
+            g_lastCamCenter = *CameraLocation;
             double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
             if (g_cfgSwapEyes) s = -s;
 
@@ -1168,6 +1340,11 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     g_aimLastWrote = want;
                 }
             }
+
+            // Hands last: the camera is final by now, and the hands are
+            // positioned relative to it.
+            g_lastCleanYaw = (double)cleanRot.yaw;
+            DriveHands(g_lastCamCenter, g_lastHeadPos);
 
             if (eye == 0) ++g_wLeft; else ++g_wRight;
 

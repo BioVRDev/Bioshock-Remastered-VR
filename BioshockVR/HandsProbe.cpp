@@ -1,0 +1,776 @@
+// BioshockVR/HandsProbe.cpp
+//
+// S42. The first version PREDICTED AActor::Location at +0x1D8, reasoning from
+// the aim field at +0x1E4. That was wrong -- +0x1D8 held a position 141 m from
+// the camera. The mistake was reasoning from +0x1E4 at all: it is one of two
+// GUESSED candidates in CameraHook (kAimOffsets = { 0x1E4, 0x328 }) that
+// happened to work for aiming. Working for aiming does not make it the actor
+// member, so nothing could be derived from its neighbours.
+//
+// So: search, do not predict.
+//
+// STAGE A  Find AActor::Location AND the Pawn in one pass. For every aligned
+//          pointer in the controller, look inside the target for three
+//          consecutive floats near the camera. Camera coordinates are large and
+//          distinctive (-6344.7, 4467.8, 2627.3) -- a three-axis match within a
+//          few metres does not happen by accident. When several different
+//          objects report a hit at the SAME internal offset, that offset is
+//          AActor::Location, confirmed by agreement rather than by assumption.
+//
+// STAGE B  Find Hands. Using the discovered Location offset, look for an object
+//          hanging off the Pawn that sits essentially ON the camera -- Hands
+//          does SetLocation(~camera) every frame, so it is far closer than the
+//          Pawn itself (which is an eye-height below).
+//
+// STAGE C  NUDGE TEST. Write Location, see whether the arms move. This is the
+//          question the whole route depends on and it is worth reaching quickly.
+//
+// PERFORMANCE: Readable() is a VirtualQuery and is expensive. It is called ONCE
+// per candidate object for a whole block, never per triple -- doing it per
+// triple would be a quarter of a million VirtualQuery calls per scan and would
+// hitch the game thread visibly.
+
+#include "HandsProbe.h"
+
+#include <windows.h>
+#include <intrin.h>
+#include <cstdint>
+#include <cstdio>
+#include <cstdarg>
+#include <cmath>
+
+extern void LogFile(const char* msg);
+extern bool  g_cfgHandsProbe;    // EnableHandsProbe, default 0
+extern float g_cfgHandsNudgeZ;   // HandsNudgeZ, cm. 0 == off.
+extern float g_cfgHandsNudgeYaw;   // HandsNudgeYaw, degrees. 0 == off.
+extern float g_cfgHandsNudgePitch; // HandsNudgePitch, degrees. 0 == off.
+extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE.
+extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
+// the Hands object. 0 == use g_locOff.
+extern int   g_cfgHandsPtrOff;   // HandsPtrOffset: which pawn pointer to treat
+// as Hands. 0 == none.
+
+void GameState_SetPawn(void* pawn);   // GameState.cpp
+
+static void Log(const char* fmt, ...)
+{
+    char b[512];
+    va_list a; va_start(a, fmt);
+    _vsnprintf_s(b, sizeof(b), _TRUNCATE, fmt, a);
+    va_end(a);
+    LogFile(b);
+}
+
+struct AVec { float x, y, z; };
+
+// AActor::Location is DISCOVERED at runtime (g_locOff) -- measured at +0x1A0.
+// Rotation is predicted to sit immediately after it, since UE2 lays Location
+// then Rotation. Note this means +0x1E4 -- the aim field the camera hook writes
+// -- is NOT AActor::Rotation but some other rotator on the controller, which is
+// why deriving Location from it back in S42 failed. Predicted, not measured:
+// STAGE B tests it, and a wall of large/absent rotation errors means this
+// number is wrong rather than meaning Hands is unfindable.
+// MEASURED S50, three turns, four objects, err 0.0-0.2 deg: the yaw component
+// tracks at +0x1E8, so the rotator STARTS at +0x1E4. That is the offset the
+// camera hook has written as the aim field since Phase 8 -- my original guess
+// was right, and "correcting" it to +0x1AC (by assuming Rotation follows
+// Location) is what made the last two probes find nothing.
+static const size_t kActorRotation = 0x1E4;
+
+static bool Readable(const void* p, size_t n)
+{
+    if (!p || !n) return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
+
+    switch (mbi.Protect & 0xFF)
+    {
+    case PAGE_READONLY: case PAGE_READWRITE: case PAGE_WRITECOPY:
+    case PAGE_EXECUTE_READ: case PAGE_EXECUTE_READWRITE: case PAGE_EXECUTE_WRITECOPY:
+        break;
+    default: return false;
+    }
+
+    const uint8_t* rs = (const uint8_t*)mbi.BaseAddress;
+    const uint8_t* re = rs + mbi.RegionSize;
+    const uint8_t* a = (const uint8_t*)p;
+    return (a >= rs) && (a + n <= re);
+}
+
+// Every UObject begins with a pointer to its vtable.
+//
+// S48: the first version of this test required the VTABLE POINTER to land in
+// executable memory. It does not -- a vtable is DATA. It lives in .rdata, which
+// is PAGE_READONLY, and it CONTAINS pointers to code. Checking one level too
+// shallow rejected nearly every real object: the 19:11 scan of a whole
+// ShockPlayer reported "1 real object", when the pawn points at Hands, seven
+// Holdables, and half a dozen managers. Pass 2 was then testing an empty room.
+//
+// Two levels: object -> vtable (readable) -> first virtual function (executable).
+static bool LooksLikeObject(const void* p)
+{
+    if (!p || ((uintptr_t)p & 3) != 0 || (uintptr_t)p < 0x10000) return false;
+    if (!Readable(p, 4)) return false;
+
+    const void* vt = *(const void* const*)p;
+    if (!vt || ((uintptr_t)vt & 3) != 0) return false;
+    if (!Readable(vt, 4)) return false;                 // .rdata, read-only
+
+    const void* fn = *(const void* const*)vt;           // first virtual function
+    if (!fn) return false;
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(fn, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+
+    switch (mbi.Protect & 0xFF)
+    {
+    case PAGE_EXECUTE_READ: case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE: case PAGE_EXECUTE_WRITECOPY: return true;
+    default: return false;
+    }
+}
+
+static bool Writable(const void* p, size_t n)
+{
+    if (!p || !n) return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return false;
+    switch (mbi.Protect & 0xFF)
+    {
+    case PAGE_READWRITE: case PAGE_WRITECOPY:
+    case PAGE_EXECUTE_READWRITE: case PAGE_EXECUTE_WRITECOPY: break;
+    default: return false;
+    }
+    const uint8_t* rs = (const uint8_t*)mbi.BaseAddress;
+    const uint8_t* re = rs + mbi.RegionSize;
+    const uint8_t* a = (const uint8_t*)p;
+    return (a >= rs) && (a + n <= re);
+}
+
+// Largest readable block at p, up to want. One VirtualQuery, not many.
+static size_t ReadableBlock(const void* p, size_t want)
+{
+    while (want >= 0x40)
+    {
+        if (Readable(p, want)) return want;
+        want >>= 1;
+    }
+    return 0;
+}
+
+static double Dist(const AVec* v, const float c[3])
+{
+    if (v->x != v->x || v->y != v->y || v->z != v->z) return -1.0;   // NaN
+    const double dx = (double)v->x - c[0];
+    const double dy = (double)v->y - c[1];
+    const double dz = (double)v->z - c[2];
+    return sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Closest camera-like float triple inside an already-validated block.
+static bool FindVecNear(const uint8_t* obj, size_t blockSz, const float cam[3],
+    double maxCm, size_t* outOff, double* outDist)
+{
+    bool got = false;
+    double best = 1e18;
+    size_t bestOff = 0;
+
+    for (size_t off = 0; off + sizeof(AVec) <= blockSz; off += 4)
+    {
+        const double d = Dist((const AVec*)(obj + off), cam);
+        if (d < 0.0 || d > maxCm) continue;
+        if (d < best) { best = d; bestOff = off; got = true; }
+    }
+
+    if (got) { *outOff = bestOff; *outDist = best; }
+    return got;
+}
+
+// ---------------------------------------------------------------- state
+
+static size_t g_locOff = 0;          // AActor::Location, discovered
+static void* g_pawn = nullptr;
+static void* g_hands = nullptr;
+static int   g_calls = 0;
+static int   g_retry = 0;
+
+static const size_t kPtrScan = 0x1000;  // controller: how far to look for pointers
+static const size_t kObjScan = 0x400;   // how far into a target to look
+// S43: ShockPlayer is a BIG class (ShockPawn + Pawn + Actor beneath it, plus its
+// own long var block), and Hands sits somewhere in there. 0x1000 found nothing;
+// 0x4000 is a guess in the right direction, and cheap because it runs once.
+static const size_t kPawnScan = 0x4000;
+
+void* HandsProbe_Get() { return g_hands; }
+void* HandsProbe_GetPawn() { return g_pawn; }
+
+// ---------------------------------------------------------------- live tuning
+//
+// S56: HandsGripOffset is three numbers whose only test is "does the gun pivot
+// about the grip when I twist my wrist" -- a visual judgement that cannot be
+// made from a log and takes one rebuild per guess. So tune it in the headset.
+//
+// These keys belonged to XRSession's PollFovKeys (foreground FOV tuning), which
+// ForegroundFovValue superseded. REMOVE THE CALL TO PollFovKeys or the two
+// handlers will fight over the same presses.
+//
+//   Numpad 8 / 2   forward / back   (X)
+//   Numpad 6 / 4   right / left     (Y)
+//   Numpad 0 / 5   up / down        (Z)
+//   Numpad 7       cycle step: 0.5 -> 2 -> 5 cm
+//
+// Every change logs the full line, ready to paste into BioshockVR.ini.
+static void PollGripKeys()
+{
+    struct Bind { int vk; int axis; float sign; };
+    static const Bind kBinds[6] = {
+        { VK_NUMPAD8, 0, +1.0f }, { VK_NUMPAD2, 0, -1.0f },
+        { VK_NUMPAD6, 1, +1.0f }, { VK_NUMPAD4, 1, -1.0f },
+        { VK_NUMPAD0, 2, +1.0f }, { VK_NUMPAD5, 2, -1.0f },
+    };
+
+    static bool  prev[6] = {};
+    static bool  prevStep = false;
+    static float step = 2.0f;
+
+    const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
+    if (stepDown && !prevStep)
+    {
+        step = (step > 4.0f) ? 0.5f : (step > 1.0f ? 5.0f : 2.0f);
+        Log(">>> GRIP: step = %.1f cm", step);
+    }
+    prevStep = stepDown;
+
+    bool changed = false;
+    for (int i = 0; i < 6; ++i)
+    {
+        const bool down = (GetAsyncKeyState(kBinds[i].vk) & 0x8000) != 0;
+        if (down && !prev[i])
+        {
+            g_cfgHandsGrip[kBinds[i].axis] += kBinds[i].sign * step;
+            changed = true;
+        }
+        prev[i] = down;
+    }
+
+    if (changed)
+        Log(">>> GRIP: HandsGripOffset=%.1f,%.1f,%.1f   (fwd, right, up cm)",
+            g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+}
+
+bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff)
+{
+    if (!g_hands) return false;
+    const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+    if (obj)    *obj = g_hands;
+    if (locOff) *locOff = (unsigned)po;
+    if (rotOff) *rotOff = (unsigned)kActorRotation;
+    return true;
+}
+
+// ---------------------------------------------------------------- stage A
+
+static void FindLocationAndPawn(const void* pc, const float cam[3])
+{
+    // S51: version stamp. Three separate sessions have now been spent judging
+    // results produced by a stale HandsProbe.cpp -- the file links fine when it
+    // is out of date, because it simply never references the newer globals. If
+    // this line does not say S51, nothing below it is worth reading.
+    Log(">>> HANDS: probe build S58  (built %s %s)", __DATE__, __TIME__);
+    Log(">>> HANDS: STAGE A  searching for AActor::Location + Pawn...");
+    Log(">>> HANDS:   camera = %.1f %.1f %.1f", cam[0], cam[1], cam[2]);
+
+    // Does the controller itself carry a camera-like position?
+    {
+        const size_t blk = ReadableBlock(pc, kObjScan);
+        size_t off; double d;
+        if (blk && FindVecNear((const uint8_t*)pc, blk, cam, 800.0, &off, &d))
+            Log(">>> HANDS:   controller SELF has a position at +0x%03X (%.0f cm)",
+                (unsigned)off, d);
+        else
+            Log(">>> HANDS:   controller SELF has no camera-like position "
+                "(normal -- a Controller need not track its pawn)");
+    }
+
+    // S45: TWO PASSES, and the second only trusts objects that AGREE.
+    //
+    // The first version took "closest object wins" and picked 0x42700000 --
+    // which is not a pointer at all, it is the float bit pattern for 60.0f
+    // (DefaultForegroundFOV, sitting in the controller). Reading +0x100 of that
+    // address happened to look like a position 10cm from the camera, so it beat
+    // the real pawn at 57cm and every later stage scanned garbage.
+    //
+    // The tell was in the log: the fake reported its position at +0x100 while
+    // the three real hits all agreed on +0x1A0. Requiring agreement with the
+    // consensus offset excludes it for nothing.
+    struct Tally { size_t off; int n; };
+    Tally tally[32] = {};
+    int nTally = 0;
+
+    struct Hit { void* obj; size_t off; double d; };
+    Hit hitList[24] = {};
+    int hits = 0;
+
+    for (size_t po = 0; po + 4 <= kPtrScan; po += 4)
+    {
+        if (!Readable((const uint8_t*)pc + po, 4)) continue;
+        void* t = *(void**)((const uint8_t*)pc + po);
+        if (!t || t == pc) continue;
+        if (((uintptr_t)t & 3) != 0) continue;
+        if ((uintptr_t)t < 0x10000) continue;
+
+        const size_t blk = ReadableBlock(t, kObjScan);
+        if (!blk) continue;
+
+        size_t lo; double d;
+        if (!FindVecNear((const uint8_t*)t, blk, cam, 800.0, &lo, &d)) continue;
+
+        Log(">>> HANDS:   ptr +0x%03X -> 0x%08X   position at +0x%03X, %.0f cm",
+            (unsigned)po, (unsigned)(uintptr_t)t, (unsigned)lo, d);
+
+        int found = -1;
+        for (int i = 0; i < nTally; ++i) if (tally[i].off == lo) { found = i; break; }
+        if (found < 0) { if (nTally < 32) { tally[nTally].off = lo; tally[nTally].n = 1; ++nTally; } }
+        else ++tally[found].n;
+
+        if (hits < 24) { hitList[hits].obj = t; hitList[hits].off = lo; hitList[hits].d = d; }
+        ++hits;
+        if (hits >= 24) { Log(">>> HANDS:   ...stopping at 24 hits"); break; }
+    }
+
+    if (!hits)
+    {
+        Log(">>> HANDS: !!! STAGE A found nothing within 8 m of the camera.");
+        Log(">>> HANDS: !!! Either the Pawn is not a direct pointer in the first "
+            "0x%X bytes, or positions are not stored as plain float triples.",
+            (unsigned)kPtrScan);
+        return;
+    }
+
+    // Most-agreed offset wins. Then, among objects that USE that offset, take
+    // the closest -- never across offsets, which is what let a float in.
+    int bestN = 0; size_t agreed = 0;
+    for (int i = 0; i < nTally; ++i)
+        if (tally[i].n > bestN) { bestN = tally[i].n; agreed = tally[i].off; }
+
+    void* bestObj = nullptr;
+    double bestDist = 1e18;
+    for (int i = 0; i < hits && i < 24; ++i)
+    {
+        if (hitList[i].off != agreed) continue;          // disagrees -> not an actor
+        if (hitList[i].d < bestDist) { bestDist = hitList[i].d; bestObj = hitList[i].obj; }
+    }
+
+    if (!bestObj)
+    {
+        Log(">>> HANDS: !!! no object agreed on the consensus offset. Aborting.");
+        return;
+    }
+
+    g_locOff = agreed;
+    g_pawn = bestObj;
+
+    Log(">>> HANDS: STAGE A: %d hit(s); offset +0x%03X agreed by %d.",
+        hits, (unsigned)agreed, bestN);
+    Log(">>> HANDS: AActor::Location = +0x%03X    Pawn = 0x%08X (%.0f cm)",
+        (unsigned)g_locOff, (unsigned)(uintptr_t)g_pawn, bestDist);
+
+    // ShockPlayer carries LastPlayerInputContext -- the controller does not.
+    GameState_SetPawn(g_pawn);
+
+    if (bestN < 2)
+        Log(">>> HANDS: !!! only one object agreed -- treat the offset as "
+            "provisional until STAGE B corroborates it.");
+}
+
+// ---------------------------------------------------------------- stage B
+
+// Largest per-axis rotator disagreement in degrees, or -1 if unreadable.
+static double RotErrDeg(const void* obj, size_t rotOff, const int camRot[3])
+{
+    if (!Readable((const uint8_t*)obj + rotOff, 12)) return -1.0;
+    const int32_t* R = (const int32_t*)((const uint8_t*)obj + rotOff);
+
+    double worst = 0.0;
+    for (int i = 0; i < 3; ++i)
+    {
+        int32_t d = (int32_t)(((uint32_t)R[i] - (uint32_t)camRot[i]) & 0xFFFF);
+        if (d > 32768) d -= 65536;
+        const double deg = fabs((double)d) / 182.0444;
+        if (deg > worst) worst = deg;
+    }
+    return worst;
+}
+
+// S47: DIFFERENTIAL rotation search.
+//
+// MEASURED 19:02: single-sample matching reported 132 "matches" because the view
+// rotator happened to be near zero (-295, -582, 0), so "within 5 degrees of the
+// view" meant "within 5 degrees of zero" and every zeroed rotator passed.
+//
+// The property we actually want is not "equals the view right now" but "TRACKS
+// the view". Nothing static can fake that. So: sample once, wait until the view
+// has turned at least ~20 degrees, sample again, keep only what moved with us.
+//
+// Position matching stays in as a free passenger -- it costs one subtraction and
+// three scans of the correct pawn have now reported zero objects within 60cm,
+// which is itself the finding.
+
+// S49: find the ROTATION OFFSET and the object TOGETHER.
+//
+// MEASURED 19:22: with the vtable filter fixed, 31 real objects were examined
+// and NONE tracked the view at +0x1AC -- and none sat near the camera either.
+// Position was already dead; +0x1AC was a guess, made the same way +0x1D8 was,
+// and it is very likely wrong for the same reason.
+//
+// So stop guessing the offset. Snapshot every 4-byte slot of every reachable
+// object, wait for a large turn, and look for ANY integer that changed by the
+// SAME amount the view changed. That finds the object AND the offset at once --
+// which is exactly how Location was found, and the only method here that has
+// actually worked.
+static const int    kMaxObj = 96;
+static const size_t kObjSnap = 0x400;          // 256 dwords per object
+static const int    kSnapDw = (int)(kObjSnap / 4);
+
+static void* g_objs[kMaxObj] = {};
+static int32_t g_snap[kMaxObj][kSnapDw] = {};
+static size_t  g_objPtrOff[kMaxObj] = {};
+static int     g_nObjs = 0;
+static int32_t g_sampleYaw = 0;
+static bool    g_haveSample = false;
+
+// Returns TRUE if a real sample was taken (so the caller can spend an attempt).
+static bool FindHands(const void* pawn, const float cam[3], const int camRot[3])
+{
+    if (!g_haveSample)
+    {
+        Log(">>> HANDS: STAGE B pass 1  snapshotting Pawn 0x%08X to +0x%X ...",
+            (unsigned)(uintptr_t)pawn, (unsigned)kPawnScan);
+
+        g_nObjs = 0;
+        int nearCam = 0;
+
+        for (size_t po = 0; po + 4 <= kPawnScan && g_nObjs < kMaxObj; po += 4)
+        {
+            if (!Readable((const uint8_t*)pawn + po, 4)) continue;
+            void* t = *(void**)((const uint8_t*)pawn + po);
+            if (t == pawn || !LooksLikeObject(t)) continue;
+
+            bool dup = false;
+            for (int i = 0; i < g_nObjs; ++i) if (g_objs[i] == t) { dup = true; break; }
+            if (dup) continue;
+
+            const size_t blk = ReadableBlock(t, kObjSnap);
+            if (blk < 0x40) continue;
+
+            const double d = Dist((const AVec*)((const uint8_t*)t + g_locOff), cam);
+            if (d >= 0.0 && d <= 60.0)
+            {
+                ++nearCam;
+                Log(">>> HANDS:   +0x%04X -> 0x%08X  %.1f cm   <-- NEAR CAMERA",
+                    (unsigned)po, (unsigned)(uintptr_t)t, d);
+            }
+
+            g_objs[g_nObjs] = t;
+            g_objPtrOff[g_nObjs] = po;
+            const int dw = (int)(blk / 4);
+            for (int j = 0; j < kSnapDw; ++j)
+                g_snap[g_nObjs][j] = (j < dw) ? ((const int32_t*)t)[j] : 0;
+            ++g_nObjs;
+        }
+
+        g_sampleYaw = camRot[1];
+        g_haveSample = true;
+
+        Log(">>> HANDS: pass 1: %d object(s) snapshotted (%d dwords each), "
+            "%d near the camera. View yaw %d.",
+            g_nObjs, kSnapDw, nearCam, (int)g_sampleYaw);
+        Log(">>> HANDS: >>> NOW TURN AT LEAST 45 DEGREES. <<<");
+        return true;
+    }
+
+    int32_t dView = (int32_t)(((uint32_t)camRot[1] - (uint32_t)g_sampleYaw) & 0xFFFF);
+    if (dView > 32768) dView -= 65536;
+    const double dViewDeg = fabs((double)dView) / 182.0444;
+
+    if (dViewDeg < 25.0)
+    {
+        Log(">>> HANDS: pass 2 waiting -- view turned %.1f deg, need 25+.", dViewDeg);
+        return false;
+    }
+
+    Log(">>> HANDS: STAGE B pass 2  view turned %.1f deg. Scanning %d object(s) "
+        "x %d dwords for anything that turned with us...",
+        dViewDeg, g_nObjs, kSnapDw);
+
+    int hits = 0;
+    for (int i = 0; i < g_nObjs; ++i)
+    {
+        void* t = g_objs[i];
+        const size_t blk = ReadableBlock(t, kObjSnap);
+        if (!blk) continue;
+        const int dw = (int)(blk / 4);
+
+        for (int j = 0; j < dw && j < kSnapDw; ++j)
+        {
+            const int32_t now = ((const int32_t*)t)[j];
+            const int32_t was = g_snap[i][j];
+            if (now == was) continue;
+
+            int32_t d = (int32_t)(((uint32_t)now - (uint32_t)was) & 0xFFFF);
+            if (d > 32768) d -= 65536;
+
+            const double err = fabs((double)(d - dView)) / 182.0444;
+            if (err > 3.0) continue;
+
+            ++hits;
+            if (hits <= 40)
+                Log(">>> HANDS:   obj 0x%08X (pawn+0x%04X)  +0x%03X  turned %.1f deg "
+                    "(view %.1f, err %.1f)",
+                    (unsigned)(uintptr_t)t, (unsigned)g_objPtrOff[i],
+                    (unsigned)(j * 4), (double)d / 182.0444, dViewDeg, err);
+        }
+    }
+
+    Log(">>> HANDS: pass 2: %d field(s) turned with the view.", hits);
+    if (!hits)
+        Log(">>> HANDS: !!! NOTHING in %d objects tracks the view. The hands "
+            "transform is not stored as a rotator on anything reachable from "
+            "the Pawn -- it is composed natively at render time.", g_nObjs);
+
+    g_haveSample = false;
+    return true;
+}
+
+// ---------------------------------------------------------------- stage C
+//
+//   arms move while held, snap back      UpdateLocation recomputes each frame
+//                                        and our write wins -> 6-DOF is on
+//   arms move and stay                   nothing recomputes them -> even easier
+//   arms do not move                     wrong object, or the transform is
+//                                        native downstream of Location -> dead
+//
+// HOME deliberately. A full audit of the codebase found EVERY numpad key
+// already bound: XRSession owns 0/2/4/5/6/7/8 (FOV tuning), DrawHook owns
+// 1/3/-/*//, CameraHook owns 9/+/. -- so the earlier nudge attempts on 6 and 0
+// were silently driving fovScaleH and the FOV-mode toggle instead.
+
+// S52: ABSOLUTE rotation write, not incremental.
+//
+// MEASURED: pawn+0x724 IS the hands -- writing its rotator visibly moves the
+// arm. But the first version did `R[1] += nudge` on every CalcView, ~120-240
+// times a second, so the yaw was being SPUN and wrapping through 65536 units
+// rather than offset by the requested angle. That is why 60 "worked", 45 did
+// nothing, and 60 again put the arm somewhere impossible: the result depended
+// on where in the spin each frame happened to land.
+//
+// Absolute instead. The rotator tracks the view (measured, err 0.0 deg over
+// three turns), so we sample the hands-to-view BIAS once, before writing
+// anything, and then each frame drive it to view + bias + nudge. Idempotent, and
+// it is the same shape the real 6-DOF write needs: a target orientation.
+// S53: find the hands POSITION field.
+//
+// Every earlier scan only ever tested +0x1A0 on this object -- the offset that
+// was measured on the PAWN. Rotation turned out to live at +0x1E4 on both, but
+// there is no guarantee position does, and "no object near the camera" may have
+// meant "not at +0x1A0" rather than "not stored anywhere".
+//
+// So look at every offset in the object we now know is the hands, and report
+// anything that reads as a position near the camera. Runs once.
+static void ScanHandsForPosition(const void* hands, const float cam[3])
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    const size_t blk = ReadableBlock(hands, 0x400);
+    if (!blk) { Log(">>> HANDS: position scan: object unreadable."); return; }
+
+    Log(">>> HANDS: position scan of 0x%08X (camera %.1f %.1f %.1f)...",
+        (unsigned)(uintptr_t)hands, cam[0], cam[1], cam[2]);
+
+    int hits = 0;
+    double best = 1e18; size_t bestOff = 0;
+
+    for (size_t off = 0; off + sizeof(AVec) <= blk; off += 4)
+    {
+        const double d = Dist((const AVec*)((const uint8_t*)hands + off), cam);
+        if (d < 0.0 || d > 800.0) continue;
+
+        ++hits;
+        if (d < best) { best = d; bestOff = off; }
+
+        const AVec* v = (const AVec*)((const uint8_t*)hands + off);
+        Log(">>> HANDS:   +0x%03X = %.1f %.1f %.1f   (%.1f cm from camera)%s",
+            (unsigned)off, v->x, v->y, v->z, d,
+            (d <= 60.0) ? "   <-- HANDS-LIKE" : "");
+
+        if (hits >= 20) { Log(">>> HANDS:   ...stopping at 20"); break; }
+    }
+
+    // S58: DrawScale hunt. The weapon renders too large, and AActor carries a
+    // DrawScale float that will be sitting at exactly 1.0. There are usually
+    // only a handful of exact 1.0s in an object, so listing them is enough to
+    // try them one at a time.
+    {
+        int n1 = 0;
+        for (size_t off = 0; off + 4 <= blk; off += 4)
+        {
+            const float f = *(const float*)((const uint8_t*)hands + off);
+            if (f != 1.0f) continue;
+            Log(">>> HANDS:   +0x%03X = 1.0   (DrawScale candidate)", (unsigned)off);
+            if (++n1 >= 16) { Log(">>> HANDS:   ...stopping at 16"); break; }
+        }
+        Log(">>> HANDS: %d float(s) exactly 1.0 -- one of these is DrawScale.", n1);
+    }
+
+    if (hits)
+        Log(">>> HANDS: position scan: %d candidate(s), closest +0x%03X at %.1f cm. "
+            "Set HandsPosOffset=0x%X and HandsNudgeZ=100 to test it.",
+            hits, (unsigned)bestOff, best, (unsigned)bestOff);
+    else
+        Log(">>> HANDS: !!! position scan found NOTHING within 8 m anywhere in "
+            "the hands object. The world position is not stored here -- it is "
+            "composed at render time from the rotator plus PlayerViewOffset.");
+}
+
+static void NudgeTest(void* hands, const float cam[3], const int camRot[3])
+{
+    ScanHandsForPosition(hands, cam);
+
+    if (!hands) return;
+    if (g_cfgHandsNudgeYaw == 0.0f && g_cfgHandsNudgePitch == 0.0f &&
+        g_cfgHandsNudgeZ == 0.0f) return;
+
+    if ((g_cfgHandsNudgeYaw != 0.0f || g_cfgHandsNudgePitch != 0.0f) &&
+        Writable((uint8_t*)hands + kActorRotation, 12))
+    {
+        int32_t* R = (int32_t*)((uint8_t*)hands + kActorRotation);
+
+        // Sample the offset between the hands rotator and the view rotator ONCE,
+        // before we have written anything. It may not be zero, and assuming it
+        // is would bake a constant error into every write from here on.
+        static bool  haveBias = false;
+        static int32_t biasP = 0, biasY = 0;
+        if (!haveBias)
+        {
+            haveBias = true;
+            biasP = (int32_t)(((uint32_t)R[0] - (uint32_t)camRot[0]) & 0xFFFF);
+            biasY = (int32_t)(((uint32_t)R[1] - (uint32_t)camRot[1]) & 0xFFFF);
+            if (biasP > 32768) biasP -= 65536;
+            if (biasY > 32768) biasY -= 65536;
+
+            Log(">>> HANDS: NUDGE ABSOLUTE on 0x%08X (rotator +0x%03X)",
+                (unsigned)(uintptr_t)hands, (unsigned)kActorRotation);
+            Log(">>> HANDS:   hands p=%d y=%d r=%d   view p=%d y=%d r=%d",
+                R[0], R[1], R[2], camRot[0], camRot[1], camRot[2]);
+            Log(">>> HANDS:   bias  pitch %.1f deg  yaw %.1f deg   -> applying "
+                "pitch %+.0f  yaw %+.0f",
+                (double)biasP / 182.0444, (double)biasY / 182.0444,
+                g_cfgHandsNudgePitch, g_cfgHandsNudgeYaw);
+        }
+
+        if (g_cfgHandsNudgeYaw != 0.0f)
+            R[1] = camRot[1] + biasY + (int32_t)(g_cfgHandsNudgeYaw * 182.0444f);
+        if (g_cfgHandsNudgePitch != 0.0f)
+            R[0] = camRot[0] + biasP + (int32_t)(g_cfgHandsNudgePitch * 182.0444f);
+    }
+
+    if (g_cfgHandsNudgeZ != 0.0f)
+    {
+        // Use the offset the position scan found, if one was given; otherwise
+        // fall back to the pawn's Location offset, which is what every earlier
+        // (fruitless) attempt used.
+        const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+        if (Writable((uint8_t*)hands + po, sizeof(AVec)))
+        {
+            static bool announced = false;
+            if (!announced)
+            {
+                announced = true;
+                const AVec* v = (const AVec*)((const uint8_t*)hands + po);
+                Log(">>> HANDS: NUDGE Z %+.0f cm at +0x%03X (currently %.1f %.1f %.1f)",
+                    g_cfgHandsNudgeZ, (unsigned)po, v->x, v->y, v->z);
+            }
+            ((AVec*)((uint8_t*)hands + po))->z += g_cfgHandsNudgeZ;
+        }
+    }
+}
+
+// ---------------------------------------------------------------- driver
+
+void HandsProbe_Observe(void* playerController,
+    const float camLoc[3], const int camRot[3])
+{
+    if (!g_cfgHandsProbe) return;
+    if (!playerController || !camLoc || !camRot) return;
+
+    PollGripKeys();          // always live, even before the probe locks
+
+    if (++g_calls < 600) return;     // let the level finish loading
+
+    if (!g_locOff)
+    {
+        if (++g_retry < 600) return; // ~5s between attempts; the scan is not cheap
+        g_retry = 0;
+        FindLocationAndPawn(playerController, camLoc);
+        return;
+    }
+
+    // Explicit selection wins: pass 2 reports several view-tracking objects and
+    // only you can see which one is the arms. HandsPtrOffset picks one.
+    if (g_cfgHandsPtrOff > 0 && g_pawn)
+    {
+        const size_t po = (size_t)g_cfgHandsPtrOff;
+        if (Readable((const uint8_t*)g_pawn + po, 4))
+        {
+            void* t = *(void**)((const uint8_t*)g_pawn + po);
+            if (LooksLikeObject(t) && t != g_hands)
+            {
+                g_hands = t;
+                Log(">>> HANDS: using pawn+0x%04X -> 0x%08X (HandsPtrOffset)",
+                    (unsigned)po, (unsigned)(uintptr_t)t);
+            }
+        }
+    }
+
+    if (!g_hands)
+    {
+        // S45: CAP IT. Stage B walks 0x4000 bytes with a VirtualQuery per
+        // candidate pointer; running that every ~0.35s on the game thread is
+        // what made run 1 unplayable. Three attempts, well spaced, then stop.
+        static int attempts = 0;
+        if (attempts >= 6) return;
+        if (++g_retry < 1200) return;          // ~10s apart
+        g_retry = 0;
+        if (FindHands(g_pawn, camLoc, camRot)) ++attempts;
+        if (attempts >= 6 && !g_hands)
+            Log(">>> HANDS: STAGE B gave up after 6 attempts. Not retrying "
+                "(the scan is expensive and the answer is not changing).");
+        return;
+    }
+
+    // Stale check: after a level load or respawn the object is gone.
+    if (!Readable((const uint8_t*)g_hands + g_locOff, sizeof(AVec)))
+    {
+        Log(">>> HANDS: candidate unreadable. Re-searching.");
+        g_hands = nullptr; g_pawn = nullptr; g_locOff = 0; g_retry = 0;
+        return;
+    }
+
+    NudgeTest(g_hands, camLoc, camRot);
+}
+
+void HandsProbe_Reset()
+{
+    g_locOff = 0;
+    g_pawn = nullptr;
+    g_hands = nullptr;
+    g_calls = 0;
+    g_retry = 0;
+}
