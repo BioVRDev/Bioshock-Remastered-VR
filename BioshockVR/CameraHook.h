@@ -43,3 +43,7 @@ bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);
 // Returns false when motion aim is off or the controller is untracked --
 // caller should draw the crosshair straight ahead.
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
+
+// Re-applies the hands rotator from the RENDER thread, after the game tick has
+// had its say. Call once per Present.
+void CameraHook_LateHandsWrite();

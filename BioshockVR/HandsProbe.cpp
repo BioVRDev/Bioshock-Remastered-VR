@@ -45,10 +45,27 @@ extern float g_cfgHandsNudgeZ;   // HandsNudgeZ, cm. 0 == off.
 extern float g_cfgHandsNudgeYaw;   // HandsNudgeYaw, degrees. 0 == off.
 extern float g_cfgHandsNudgePitch; // HandsNudgePitch, degrees. 0 == off.
 extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE.
+extern float g_cfgHandsScale;      // HandsScale: value to sweep. 0 == no sweep.
 extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
 // the Hands object. 0 == use g_locOff.
 extern int   g_cfgHandsPtrOff;   // HandsPtrOffset: which pawn pointer to treat
 // as Hands. 0 == none.
+
+// ---- S64: the weapon's own actor -----------------------------------------
+extern float g_cfgGunScale;      // GunScale: DrawScale to write on the weapon.
+// 0 == off (no sweep, no write).
+extern int   g_cfgGunPtrOff;     // GunPtrOffset: offset of the pointer to the
+// weapon actor. 0 == unknown, run the sweep.
+extern int   g_cfgGunPtrBase;    // GunPtrBase: 0 == pawn, 1 == Hands. Which
+// object GunPtrOffset is relative to.
+
+// ---- S65: the weapon's own children --------------------------------------
+// MEASURED S64: hands+0x45C is the weapon actor, and writing 0.50 into its
+// DrawScale halved the gun -- but NOT the cylinder. So part of the weapon is a
+// further actor attached to it, carrying its own scale. Same hunt, one level
+// down.
+extern int   g_cfgGunChildren;   // GunChildren: 0 == off, 1 == sweep them one
+// at a time, 2 == scale all of them at once.
 
 void GameState_SetPawn(void* pawn);   // GameState.cpp
 
@@ -76,6 +93,25 @@ struct AVec { float x, y, z; };
 // was right, and "correcting" it to +0x1AC (by assuming Rotation follows
 // Location) is what made the last two probes find nothing.
 static const size_t kActorRotation = 0x1E4;
+
+// MEASURED S63, by writing 0.50 and watching the arm:
+//
+//   +0x2AC  DrawScale        uniform -- the whole arm got half sized
+//   +0x2B0  DrawScale3D.X    the arm got thin
+//   +0x2B4  DrawScale3D.Y    the arm got squashed vertically
+//   +0x2B8  DrawScale3D.Z    the arm got shorter / stopped reaching as far
+//
+// That is exactly `float DrawScale; vector DrawScale3D;` -- the standard AActor
+// pair -- confirmed one axis at a time rather than inferred. S58 wrote 0.70 to
+// this same offset and reported "no change", which we now know was a stale
+// build, not a wrong offset. Check the build stamp.
+//
+// This is a CLASS layout, so it is the same number on every actor in the game,
+// including the weapon. That is the whole basis of the S64 hunt below.
+static const size_t kActorDrawScale = 0x2AC;
+
+// AActor::Location on the Hands object, measured at 0.0 cm from the camera.
+static const size_t kActorLocation = 0x1D8;
 
 static bool Readable(const void* p, size_t n)
 {
@@ -281,7 +317,7 @@ static void FindLocationAndPawn(const void* pc, const float cam[3])
     // results produced by a stale HandsProbe.cpp -- the file links fine when it
     // is out of date, because it simply never references the newer globals. If
     // this line does not say S51, nothing below it is worth reading.
-    Log(">>> HANDS: probe build S58  (built %s %s)", __DATE__, __TIME__);
+    Log(">>> HANDS: probe build S65  (built %s %s)", __DATE__, __TIME__);
     Log(">>> HANDS: STAGE A  searching for AActor::Location + Pawn...");
     Log(">>> HANDS:   camera = %.1f %.1f %.1f", cam[0], cam[1], cam[2]);
 
@@ -582,13 +618,321 @@ static bool FindHands(const void* pawn, const float cam[3], const int camRot[3])
 //
 // So look at every offset in the object we now know is the hands, and report
 // anything that reads as a position near the camera. Runs once.
+// S61: SWEEP the DrawScale candidates instead of guessing one per rebuild.
+//
+// +0x2AC was inferred from four consecutive 1.0 floats (the standard
+// `float DrawScale; vector DrawScale3D;` pair) and writing 0.70 there changed
+// nothing -- so the inference was wrong, and eleven candidates is eleven
+// launches at one guess per build.
+//
+// Instead: write HandsScale into each candidate in turn, three seconds each,
+// logging which one is live. One run, and you just note when the gun changes
+// size. Each candidate is restored to 1.0 before moving on, so at most one is
+// modified at a time and nothing is left altered.
+// S64: THE OFFSET IS NO LONGER THE UNKNOWN. THE OBJECT IS.
+//
+// S63 swept 16 offsets on the Hands actor and four of them were live: +0x2AC
+// scaled the whole arm, +0x2B0/B4/B8 scaled it per-axis. So DrawScale is found,
+// and `HandsScale` is now a real setting rather than a probe -- it is written
+// persistently below.
+//
+// But the GUN did not change size in that sweep, at any offset. The gun is a
+// separate Holdable actor attached at bone R_Grip; it carries its OWN DrawScale,
+// at the same +0x2AC, on an object we do not have a pointer to yet.
+//
+// So the sweep flips around. One offset, known and known-safe. Many candidate
+// objects, walked three seconds each. Candidates are every distinct pointer
+// hanging off the Pawn or off Hands that:
+//
+//   - passes LooksLikeObject (object -> vtable -> executable first method)
+//   - is big enough to contain +0x2AC
+//   - currently reads EXACTLY 1.0 at +0x2AC   (a real actor at default scale;
+//     also a cheap sanity check that the field is what we think it is)
+//
+// and they are ordered by how close their Location sits to the camera, because
+// a held weapon is attached to your hand and everything else in the pawn's
+// pointer soup is a manager, an inventory entry, or a component.
+//
+// Restoring to exactly 1.0 afterwards is lossless, and a single float store into
+// a field we have already proven is a scale cannot do what the S62 16-byte
+// writes did.
+static const int kMaxGunCand = 24;
+
+struct GunCand
+{
+    void* obj;
+    unsigned base;      // 0 == pawn, 1 == hands
+    unsigned off;
+    double   dist;      // cm from the camera at collection time
+};
+
+static GunCand g_gunCand[kMaxGunCand] = {};
+static int     g_nGunCand = 0;
+static bool    g_gunCollected = false;
+static void* g_gun = nullptr;     // pinned by GunPtrOffset, once known
+
+// S65: children of the weapon actor. Same shape, one level down.
+static GunCand g_kidCand[kMaxGunCand] = {};
+static int     g_nKidCand = 0;
+static bool    g_kidCollected = false;
+
+static const char* BaseName(unsigned b)
+{
+    return (b == 0) ? "pawn" : (b == 1) ? "hands" : "gun";
+}
+
+// Keep HandsScale applied. Idempotent, and cheap enough to do every call: the
+// game re-authors this actor constantly and a one-shot write does not survive.
+static void ApplyHandsScale(void* hands)
+{
+    if (g_cfgHandsScale <= 0.0f || !hands) return;
+    float* p = (float*)((uint8_t*)hands + kActorDrawScale);
+    if (!Writable(p, 4)) return;
+    if (*p != g_cfgHandsScale) *p = g_cfgHandsScale;
+}
+
+// One qualifying test, used for both the weapon hunt and the child hunt.
+// maxDist caps how far from the camera a candidate may sit: unlimited for the
+// weapon hunt (we sort instead), tight for children, because anything actually
+// attached to a gun in your hand is by definition next to your hand.
+static void AddCand(GunCand* list, int* n, void* obj, unsigned base,
+    unsigned off, const float cam[3], double maxDist)
+{
+    if (*n >= kMaxGunCand) return;
+    if (!LooksLikeObject(obj)) return;
+    if (obj == g_pawn || obj == g_hands || obj == g_gun) return;
+
+    for (int i = 0; i < *n; ++i)
+        if (list[i].obj == obj) return;                    // dedupe
+
+    if (ReadableBlock(obj, kActorDrawScale + 4) < kActorDrawScale + 4) return;
+
+    const float sc = *(const float*)((const uint8_t*)obj + kActorDrawScale);
+    if (sc != 1.0f) return;                                // not an actor at rest
+
+    double d = 1e9;
+    if (Readable((const uint8_t*)obj + kActorLocation, sizeof(AVec)))
+    {
+        const double t = Dist((const AVec*)((const uint8_t*)obj + kActorLocation), cam);
+        if (t >= 0.0) d = t;
+    }
+    if (d > maxDist) return;
+
+    list[*n].obj = obj;
+    list[*n].base = base;
+    list[*n].off = off;
+    list[*n].dist = d;
+    ++(*n);
+}
+
+static void SortByDistance(GunCand* list, int n)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        int best = i;
+        for (int j = i + 1; j < n; ++j)
+            if (list[j].dist < list[best].dist) best = j;
+        if (best != i) { GunCand t = list[i]; list[i] = list[best]; list[best] = t; }
+    }
+}
+
+static void LogCandList(const char* tag, const GunCand* list, int n)
+{
+    Log(">>> %s: %d candidate actor(s) at DrawScale 1.0, nearest first:", tag, n);
+    for (int i = 0; i < n; ++i)
+    {
+        char d[32];
+        if (list[i].dist > 1e8) _snprintf_s(d, sizeof(d), _TRUNCATE, "no position");
+        else                    _snprintf_s(d, sizeof(d), _TRUNCATE, "%.0f cm", list[i].dist);
+        Log(">>> %s:   [%2d] 0x%08X  %s+0x%03X   %s",
+            tag, i + 1, (unsigned)(uintptr_t)list[i].obj,
+            BaseName(list[i].base), list[i].off, d);
+    }
+}
+
+static void CollectGunCandidates(const float cam[3])
+{
+    if (g_gunCollected) return;
+    g_gunCollected = true;
+    g_nGunCand = 0;
+
+    // Hands FIRST. A Holdable is attached to the hand, and Hands is where the
+    // script keeps the active one, so the answer is more likely here than in the
+    // pawn's much larger pointer soup.
+    struct { void* obj; unsigned base; size_t span; } roots[2] = {
+        { g_hands, 1, 0x800 },
+        { g_pawn,  0, 0xC00 },
+    };
+
+    for (int r = 0; r < 2; ++r)
+    {
+        if (!roots[r].obj) continue;
+        const size_t blk = ReadableBlock(roots[r].obj, roots[r].span);
+        if (!blk) continue;
+
+        for (size_t off = 0; off + 4 <= blk; off += 4)
+        {
+            void* t = *(void**)((uint8_t*)roots[r].obj + off);
+            AddCand(g_gunCand, &g_nGunCand, t, roots[r].base, (unsigned)off, cam, 1e18);
+            if (g_nGunCand >= kMaxGunCand) break;
+        }
+    }
+
+    SortByDistance(g_gunCand, g_nGunCand);
+    LogCandList("GUN", g_gunCand, g_nGunCand);
+
+    if (!g_nGunCand)
+        Log(">>> GUN: !!! nothing qualified. The weapon actor is not a direct "
+            "pointer on the pawn or on Hands -- it is reached through an "
+            "inventory list, and we need to walk that instead.");
+}
+
+// S65: everything the WEAPON points at that is itself an actor sitting next to
+// you. The cylinder, and whatever else the gun is built from.
+static void CollectGunChildren(const float cam[3])
+{
+    if (g_kidCollected || !g_gun) return;
+    g_kidCollected = true;
+    g_nKidCand = 0;
+
+    const size_t blk = ReadableBlock(g_gun, 0x800);
+    if (!blk)
+    {
+        Log(">>> KID: weapon object unreadable.");
+        return;
+    }
+
+    for (size_t off = 0; off + 4 <= blk; off += 4)
+    {
+        void* t = *(void**)((uint8_t*)g_gun + off);
+        AddCand(g_kidCand, &g_nKidCand, t, 2, (unsigned)off, cam, 300.0);
+        if (g_nKidCand >= kMaxGunCand) break;
+    }
+
+    SortByDistance(g_kidCand, g_nKidCand);
+    LogCandList("KID", g_kidCand, g_nKidCand);
+
+    if (!g_nKidCand)
+        Log(">>> KID: !!! the weapon points at no other actor within 3 m. The "
+            "cylinder is not a child actor -- it is a second mesh on the same "
+            "actor, and needs a different handle entirely.");
+}
+
+// GunChildren=2. Scale everything at once -- this is the shape the finished
+// feature wants, since the goal is "the whole gun is smaller", not "identify one
+// object". The list was logged at collection time, so if something you did not
+// expect changes size you can see exactly what did it.
+static void ApplyGunChildren()
+{
+    for (int i = 0; i < g_nKidCand; ++i)
+    {
+        float* p = (float*)((uint8_t*)g_kidCand[i].obj + kActorDrawScale);
+        if (Writable(p, 4) && *p != g_cfgGunScale) *p = g_cfgGunScale;
+    }
+}
+
+// GunChildren=1. One at a time, three seconds each, in case mode 2 scales
+// something it should not and we need to know which entry did it.
+static void SweepGunChildren()
+{
+    if (!g_nKidCand) return;
+
+    static int   idx = -1;
+    static DWORD nextAt = 0;
+
+    const DWORD now = GetTickCount();
+    if (now < nextAt) return;
+    nextAt = now + 3000;
+
+    if (idx >= 0 && idx < g_nKidCand)
+    {
+        float* prev = (float*)((uint8_t*)g_kidCand[idx].obj + kActorDrawScale);
+        if (Writable(prev, 4)) *prev = 1.0f;
+    }
+
+    if (++idx >= g_nKidCand)
+    {
+        idx = -1;
+        Log(">>> KID SWEEP: pass complete, everything restored to 1.0. Looping.");
+        return;
+    }
+
+    float* p = (float*)((uint8_t*)g_kidCand[idx].obj + kActorDrawScale);
+    if (!Writable(p, 4)) return;
+    *p = g_cfgGunScale;
+
+    Log(">>> KID SWEEP: [%d/%d] 0x%08X (gun+0x%03X) DrawScale = %.2f   <-- watch "
+        "the CYLINDER now",
+        idx + 1, g_nKidCand, (unsigned)(uintptr_t)g_kidCand[idx].obj,
+        g_kidCand[idx].off, g_cfgGunScale);
+}
+
+// Walk the candidate objects, three seconds each, writing GunScale into
+// +0x2AC and putting the previous one back. You are watching for the GUN to
+// change size -- the arm will already be scaled by HandsScale and will not move.
+static void SweepGunScale(const float cam[3])
+{
+    if (g_cfgGunScale <= 0.0f) return;
+
+    // Pinned: we already know which object it is. Keep the value applied, and
+    // deal with whatever the weapon itself is built from.
+    if (g_gun)
+    {
+        float* p = (float*)((uint8_t*)g_gun + kActorDrawScale);
+        if (Writable(p, 4) && *p != g_cfgGunScale) *p = g_cfgGunScale;
+
+        if (g_cfgGunChildren)
+        {
+            CollectGunChildren(cam);
+            if (g_cfgGunChildren == 1) SweepGunChildren();
+            else                       ApplyGunChildren();
+        }
+        return;
+    }
+
+    CollectGunCandidates(cam);
+    if (!g_nGunCand) return;
+
+    static int   idx = -1;
+    static DWORD nextAt = 0;
+
+    const DWORD now = GetTickCount();
+    if (now < nextAt) return;
+    nextAt = now + 3000;
+
+    if (idx >= 0 && idx < g_nGunCand)
+    {
+        float* prev = (float*)((uint8_t*)g_gunCand[idx].obj + kActorDrawScale);
+        if (Writable(prev, 4)) *prev = 1.0f;
+    }
+
+    if (++idx >= g_nGunCand)
+    {
+        idx = -1;
+        Log(">>> GUN SWEEP: pass complete, everything restored to 1.0. Looping. "
+            "If the gun never changed size it is not a direct pointer on the "
+            "pawn or Hands.");
+        return;
+    }
+
+    float* p = (float*)((uint8_t*)g_gunCand[idx].obj + kActorDrawScale);
+    if (!Writable(p, 4)) return;
+    *p = g_cfgGunScale;
+
+    Log(">>> GUN SWEEP: [%d/%d] 0x%08X (%s+0x%03X) DrawScale = %.2f   <-- watch "
+        "the GUN now. If it shrank: GunPtrBase=%d GunPtrOffset=0x%03X",
+        idx + 1, g_nGunCand, (unsigned)(uintptr_t)g_gunCand[idx].obj,
+        g_gunCand[idx].base ? "hands" : "pawn", g_gunCand[idx].off,
+        g_cfgGunScale, g_gunCand[idx].base, g_gunCand[idx].off);
+}
+
 static void ScanHandsForPosition(const void* hands, const float cam[3])
 {
     static bool done = false;
     if (done) return;
     done = true;
 
-    const size_t blk = ReadableBlock(hands, 0x400);
+    const size_t blk = ReadableBlock(hands, 0x800);   // S62: 0x400 may have been short
     if (!blk) { Log(">>> HANDS: position scan: object unreadable."); return; }
 
     Log(">>> HANDS: position scan of 0x%08X (camera %.1f %.1f %.1f)...",
@@ -613,20 +957,19 @@ static void ScanHandsForPosition(const void* hands, const float cam[3])
         if (hits >= 20) { Log(">>> HANDS:   ...stopping at 20"); break; }
     }
 
-    // S58: DrawScale hunt. The weapon renders too large, and AActor carries a
-    // DrawScale float that will be sitting at exactly 1.0. There are usually
-    // only a handful of exact 1.0s in an object, so listing them is enough to
-    // try them one at a time.
+    // S64: the 1.0-float listing is retired. DrawScale is MEASURED at +0x2AC
+    // and DrawScale3D at +0x2B0 (see kActorDrawScale). Just report what the
+    // block currently holds, so a wrong object announces itself immediately.
+    if (blk >= kActorDrawScale + 16)
     {
-        int n1 = 0;
-        for (size_t off = 0; off + 4 <= blk; off += 4)
-        {
-            const float f = *(const float*)((const uint8_t*)hands + off);
-            if (f != 1.0f) continue;
-            Log(">>> HANDS:   +0x%03X = 1.0   (DrawScale candidate)", (unsigned)off);
-            if (++n1 >= 16) { Log(">>> HANDS:   ...stopping at 16"); break; }
-        }
-        Log(">>> HANDS: %d float(s) exactly 1.0 -- one of these is DrawScale.", n1);
+        const float* s = (const float*)((const uint8_t*)hands + kActorDrawScale);
+        Log(">>> HANDS: DrawScale +0x2AC = %.3f   DrawScale3D = %.3f %.3f %.3f",
+            s[0], s[1], s[2], s[3]);
+    }
+    else
+    {
+        Log(">>> HANDS: !!! object too small to hold DrawScale at +0x2AC (%u "
+            "bytes readable). Wrong object?", (unsigned)blk);
     }
 
     if (hits)
@@ -755,6 +1098,33 @@ void HandsProbe_Observe(void* playerController,
         return;
     }
 
+    ScanHandsForPosition(g_hands, camLoc);
+    ApplyHandsScale(g_hands);
+
+    // Re-read the weapon pointer EVERY call, not once. Switching weapons swaps
+    // the Holdable, so a pointer captured at lock time goes stale the first time
+    // you press a number key -- and a stale one would leave the new gun full
+    // size while we kept scaling something you are no longer holding.
+    if (g_cfgGunPtrOff > 0)
+    {
+        void* root = g_cfgGunPtrBase ? g_hands : g_pawn;
+        if (root && Readable((const uint8_t*)root + g_cfgGunPtrOff, 4))
+        {
+            void* t = *(void**)((const uint8_t*)root + g_cfgGunPtrOff);
+            if (LooksLikeObject(t) && t != g_gun)
+            {
+                g_gun = t;
+                g_kidCollected = false;     // new weapon, new children
+                g_nKidCand = 0;
+                Log(">>> GUN: using %s+0x%03X -> 0x%08X (GunPtrOffset)",
+                    g_cfgGunPtrBase ? "hands" : "pawn",
+                    (unsigned)g_cfgGunPtrOff, (unsigned)(uintptr_t)t);
+            }
+        }
+    }
+
+    SweepGunScale(camLoc);
+
     // Stale check: after a level load or respawn the object is gone.
     if (!Readable((const uint8_t*)g_hands + g_locOff, sizeof(AVec)))
     {
@@ -771,6 +1141,11 @@ void HandsProbe_Reset()
     g_locOff = 0;
     g_pawn = nullptr;
     g_hands = nullptr;
+    g_gun = nullptr;
+    g_gunCollected = false;
+    g_nGunCand = 0;
+    g_kidCollected = false;
+    g_nKidCand = 0;
     g_calls = 0;
     g_retry = 0;
 }

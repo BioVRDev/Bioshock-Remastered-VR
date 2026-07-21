@@ -171,6 +171,11 @@ bool g_cfg6DofHands = false;   // Enable6DofHands
 float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // HandsGripOffset fwd,right,up (cm)
 float g_cfgHandsScale = 0.0f;   // HandsScale: DrawScale for the hands. 0 == leave alone.
 
+float g_cfgGunScale = 0.0f;   // GunScale: DrawScale for the weapon actor. 0 == off.
+int   g_cfgGunPtrOff = 0;      // GunPtrOffset: 0 == unknown, run the sweep
+int   g_cfgGunPtrBase = 1;      // GunPtrBase: 0 == pawn, 1 == Hands
+int   g_cfgGunChildren = 0;     // GunChildren: 0 off, 1 sweep, 2 scale all
+
 
 static void InitLogPath()
 {
@@ -483,10 +488,23 @@ static void LoadConfig()
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
     {
         char b[64] = {};
+
         GetPrivateProfileStringA("VR", "HandsScale", "", b, sizeof(b), g_iniPath);
         if (b[0]) { double v = atof(b); if (v > 0.05 && v < 5.0) g_cfgHandsScale = (float)v; }
+
+        GetPrivateProfileStringA("VR", "GunScale", "", b, sizeof(b), g_iniPath);
+        if (b[0]) { double v = atof(b); if (v > 0.05 && v < 5.0) g_cfgGunScale = (float)v; }
+
+        GetPrivateProfileStringA("VR", "GunPtrOffset", "", b, sizeof(b), g_iniPath);
+        if (b[0]) g_cfgGunPtrOff = (int)strtol(b, nullptr, 0);
+
+        g_cfgGunPtrBase = GetPrivateProfileIntA("VR", "GunPtrBase", 1, g_iniPath);
+        g_cfgGunChildren = GetPrivateProfileIntA("VR", "GunChildren", 0, g_iniPath);
     }
     Log("config: HandsScale        = %.2f", g_cfgHandsScale);
+    Log("config: GunScale          = %.2f   ptr %s+0x%03X",
+        g_cfgGunScale, g_cfgGunPtrBase ? "hands" : "pawn", (unsigned)g_cfgGunPtrOff);
+    Log("config: GunChildren       = %d", g_cfgGunChildren);
 
 }
 

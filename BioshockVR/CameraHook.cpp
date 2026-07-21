@@ -731,10 +731,29 @@ static void ScanForRotation(void* pc, const FRotator& clean)
 // correction rotated the offset by a roll the mesh never rendered with, which
 // swung the hand through an arc that grew with the twist. That was the residual
 // drift. We now write only what survives, and correct with the same values.
+
+// ---- S60: LATE ROTATION WRITE -------------------------------------------
+// MEASURED S59: pitch and yaw survive our CalcView write; roll was erased every
+// frame by 5-102 degrees, scaling with wrist twist. That is the game tick
+// running AFTER us and resetting the rotator to the view rotation.
 //
-// AActor::DrawScale is at +0x2AC: the scan found four consecutive 1.0 floats
-// there, which is the standard `float DrawScale; vector DrawScale3D;` pair.
-static const size_t kActorDrawScale = 0x2AC;
+// So write again later. Present is the last thing in the frame, well past the
+// game tick, so a re-apply there lands after theirs. Published on the game
+// thread, consumed on the render thread; a torn read would cost one frame of a
+// slightly wrong angle, which is not worth a lock.
+static void* g_hwObj = nullptr;
+static unsigned g_hwRotOff = 0;
+static FRotator g_hwWant = {};
+static bool     g_hwValid = false;
+
+void CameraHook_LateHandsWrite()
+{
+    if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
+
+    FRotator* R = (FRotator*)((uint8_t*)g_hwObj + g_hwRotOff);
+    if (!IsMemoryWritable(R, sizeof(FRotator))) return;
+    *R = g_hwWant;
+}
 
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
@@ -755,7 +774,9 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     HeadQuatToDeg(hp.aimQuat, cp, cy, cr);
 
     FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfgHeadAimMode >= 2);
-    want.roll = g_aimBase.roll;      // NOT + controller roll -- see note above
+    // Roll restored. The game tick erases it, so CameraHook_LateHandsWrite
+    // re-applies the whole rotator from Present, after they are done.
+    want.roll = g_aimBase.roll + (int32_t)(cr * 182.0444);
 
     // Readback: keep watching, so a future change that breaks pitch/yaw shows up
     // immediately instead of being tuned around.
@@ -786,13 +807,7 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     }
 
     *(FRotator*)((uint8_t*)obj + rotOff) = want;
-
-    // ---- scale ----------------------------------------------------------
-    if (g_cfgHandsScale > 0.0f &&
-        IsMemoryWritable((uint8_t*)obj + kActorDrawScale, sizeof(float)))
-    {
-        *(float*)((uint8_t*)obj + kActorDrawScale) = g_cfgHandsScale;
-    }
+    g_hwObj = obj; g_hwRotOff = rotOff; g_hwWant = want; g_hwValid = true;
 
     // ---- position: from the GRIP pose -----------------------------------
     const float* P = hp.gripValid ? hp.gripPos : hp.aimPos;
@@ -846,8 +861,6 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     if (!announced)
     {
         announced = true;
-        Log(">>> 6DOF HANDS ARMED on 0x%08X  (loc +0x%03X, rot +0x%03X, scale +0x%03X)",
-            (unsigned)(uintptr_t)obj, locOff, rotOff, (unsigned)kActorDrawScale);
         Log(">>> 6DOF: %s pose, %+.0f fwd %+.0f right %+.0f up (cm) from the head",
             hp.gripValid ? "GRIP" : "aim", relFwd, relRight, relUp);
     }

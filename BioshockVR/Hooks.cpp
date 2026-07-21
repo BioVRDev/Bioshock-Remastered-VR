@@ -269,6 +269,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
 
     DrawHook_EndFrame();
     Input_Tick();
+    CameraHook_LateHandsWrite();
 
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
