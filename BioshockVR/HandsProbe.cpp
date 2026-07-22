@@ -311,13 +311,29 @@ bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff)
 
 // ---------------------------------------------------------------- stage A
 
+// Is `pawn` the one we can actually drive? The real player pawn is the object
+// whose Hands child (pawn + HandsPtrOffset) sits ON the camera every frame
+// (Hands.UpdateLocation pins it there). Other actors do not. Stable across
+// levels; the consensus-offset vote in STAGE A is not.
+static bool PawnHasHandsOnCamera(void* pawn, const float cam[3])
+{
+    if (!pawn || g_cfgHandsPtrOff <= 0) return false;
+    if (!Readable((const uint8_t*)pawn + g_cfgHandsPtrOff, 4)) return false;
+    void* h = *(void**)((const uint8_t*)pawn + g_cfgHandsPtrOff);
+    if (!LooksLikeObject(h)) return false;
+    const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : 0x1D8;
+    if (!Readable((const uint8_t*)h + po, sizeof(AVec))) return false;
+    const double d = Dist((const AVec*)((const uint8_t*)h + po), cam);
+    return (d >= 0.0 && d < 60.0);
+}
+
 static void FindLocationAndPawn(const void* pc, const float cam[3])
 {
     // S51: version stamp. Three separate sessions have now been spent judging
     // results produced by a stale HandsProbe.cpp -- the file links fine when it
     // is out of date, because it simply never references the newer globals. If
     // this line does not say S51, nothing below it is worth reading.
-    Log(">>> HANDS: probe build S65  (built %s %s)", __DATE__, __TIME__);
+    Log(">>> HANDS: probe build S66-RELOCK  (built %s %s)", __DATE__, __TIME__);
     Log(">>> HANDS: STAGE A  searching for AActor::Location + Pawn...");
     Log(">>> HANDS:   camera = %.1f %.1f %.1f", cam[0], cam[1], cam[2]);
 
@@ -406,6 +422,27 @@ static void FindLocationAndPawn(const void* pc, const float cam[3])
     {
         Log(">>> HANDS: !!! no object agreed on the consensus offset. Aborting.");
         return;
+    }
+
+    // The consensus vote is not stable across levels: on some maps unrelated
+    // actors outvote the real pawn (measured: +0x1D8 beat the real pawn's +0x1A0
+    // 6-to-2, locking an actor 476 cm away). Prefer whichever candidate actually
+    // has its Hands on the camera.
+    if (g_cfgHandsPtrOff > 0 && !PawnHasHandsOnCamera(bestObj, cam))
+    {
+        for (int i = 0; i < hits && i < 24; ++i)
+        {
+            if (PawnHasHandsOnCamera(hitList[i].obj, cam))
+            {
+                Log(">>> HANDS: consensus pawn 0x%08X has no hands on camera; "
+                    "using verified pawn 0x%08X (+0x%03X) instead.",
+                    (unsigned)(uintptr_t)bestObj,
+                    (unsigned)(uintptr_t)hitList[i].obj, (unsigned)hitList[i].off);
+                bestObj = hitList[i].obj;
+                agreed = hitList[i].off;
+                break;
+            }
+        }
     }
 
     g_locOff = agreed;
@@ -1125,12 +1162,43 @@ void HandsProbe_Observe(void* playerController,
 
     SweepGunScale(camLoc);
 
-    // Stale check: after a level load or respawn the object is gone.
-    if (!Readable((const uint8_t*)g_hands + g_locOff, sizeof(AVec)))
+    // Re-lock after a level load, teleport, or respawn. The pawn/hands/gun are
+    // rebuilt at NEW addresses, but the OLD memory usually stays readable, so a
+    // readability test never fires. Two triggers, either one re-locks:
+    //   (1) the camera teleports a long way in one step (load / respawn);
+    //   (2) the hands actor drifts off the camera (we hold a dead object).
     {
-        Log(">>> HANDS: candidate unreadable. Re-searching.");
-        g_hands = nullptr; g_pawn = nullptr; g_locOff = 0; g_retry = 0;
-        return;
+        static float lastCam[3] = { 0.f, 0.f, 0.f };
+        static bool  haveLastCam = false;
+        double jump = 0.0;
+        if (haveLastCam)
+        {
+            const double dx = (double)camLoc[0] - lastCam[0];
+            const double dy = (double)camLoc[1] - lastCam[1];
+            const double dz = (double)camLoc[2] - lastCam[2];
+            jump = sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        lastCam[0] = camLoc[0]; lastCam[1] = camLoc[1]; lastCam[2] = camLoc[2];
+        haveLastCam = true;
+
+        const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+        double d = -1.0;
+        if (Readable((const uint8_t*)g_hands + po, sizeof(AVec)))
+            d = Dist((const AVec*)((const uint8_t*)g_hands + po), camLoc);
+
+        static int staleFrames = 0;
+        if (d < 0.0 || d > 800.0) ++staleFrames;
+        else                      staleFrames = 0;
+
+        if (jump > 5000.0 || staleFrames >= 8)
+        {
+            Log(">>> HANDS: RE-LOCK (camera jump %.0f cm, hands %.0f cm off camera). "
+                "Dropping stale pawn/hands/gun.", jump, d);
+            g_pawn = nullptr; g_hands = nullptr; g_gun = nullptr;
+            g_locOff = 0; g_retry = 0;
+            staleFrames = 0;
+            return;
+        }
     }
 
     NudgeTest(g_hands, camLoc, camRot);

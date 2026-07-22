@@ -27,6 +27,7 @@ extern bool  g_cfgCrosshair;
 extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
 extern float g_cfgXhDist;
 extern float g_cfgMenuHeight;
+extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controller)
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 
@@ -468,6 +469,18 @@ static void PublishHead(const XrView views[2])
     _InterlockedIncrement(&g_headSeq);          // even == done
 }
 
+// Rotate vector v by unit quaternion q (x,y,z,w).
+static void XhQuatRotate(const float q[4], const float v[3], float out[3])
+{
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float tx = 2.f * (y * v[2] - z * v[1]);
+    const float ty = 2.f * (z * v[0] - x * v[2]);
+    const float tz = 2.f * (x * v[1] - y * v[0]);
+    out[0] = v[0] + w * tx + (y * tz - z * ty);
+    out[1] = v[1] + w * ty + (z * tx - x * tz);
+    out[2] = v[2] + w * tz + (x * ty - y * tx);
+}
+
 // ONE full XR frame cycle. Every OpenXR call individually timed.
 static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 {
@@ -611,7 +624,8 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             layerCount = 1;
             ++g_xrSubmitted;
 
-            // ---- crosshair quad, ON TOP, head-locked ----------------------
+            // ---- crosshair quad: head-locked, aim offset computed HERE on the
+            //      render thread from fresh poses so head motion can't drag it --
             if (g_cfgCrosshair && g_xhReady)
             {
                 uint32_t xi = 0;
@@ -626,33 +640,53 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     XrSwapchainImageReleaseInfo xri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
                     xrReleaseSwapchainImage(g_xhSc, &xri);
 
-                    // VIEW space == head-locked. Straight ahead at CrosshairDistance.
                     const float edge = g_cfgXhSize / kXhDotFrac;
                     xh.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                         XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
-                    xh.space = g_viewSpace;
+                    xh.space = g_viewSpace;                 // head-locked
                     xh.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                     xh.subImage.swapchain = g_xhSc;
                     xh.subImage.imageRect.offset = { 0, 0 };
                     xh.subImage.imageRect.extent = { kXhPx, kXhPx };
                     xh.subImage.imageArrayIndex = 0;
-                    // Still VIEW space, but swung by the aim offset so the dot
-                    // sits where the GUN points, not where the head points.
-                    // Origin stays at the head deliberately: the game hitscans
-                    // from the pawn's eye, so a dot cast from the head along the
-                    // aim direction is what actually agrees with where shots go.
-                    float axd = 0.f, apd = 0.f;
-                    CameraHook_GetAimOffset(&axd, &apd);
-                    const float ry = axd * 0.01745329f;
-                    const float rp = apd * 0.01745329f;
+                    xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+                    xh.size = { edge, edge };
+
                     const float xd = g_cfgXhDist;
 
-                    xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
-                    xh.pose.position = {
-                        xd * sinf(ry) * cosf(rp),
-                        xd * sinf(rp),
-                        -xd * cosf(ry) * cosf(rp) };
-                    xh.size = { edge, edge };
+                    // Direction the gun points, expressed in HEAD-LOCAL space:
+                    //   aim_world = controller aim quat * forward(-Z)
+                    //   aim_local = conj(head quat) * aim_world
+                    // Both quaternions are read on THIS thread, THIS frame, so the
+                    // head term matches the pose the runtime reprojects against --
+                    // no stale game-thread head, so the dot stops sliding.
+                    static float lastX = 0.f, lastY = 0.f, lastZ = -1.f;
+                    float dl[3] = { lastX, lastY, lastZ };
+
+                    HandPose hp = {};
+                    const bool haveAim = (g_cfgAimSource == 1) &&
+                        Input_GetHandPose(HAND_RIGHT, &hp) && hp.aimValid;
+                    if (haveAim)
+                    {
+                        const float fwd[3] = { 0.f, 0.f, -1.f };
+                        float aw[3];
+                        XhQuatRotate(hp.aimQuat, fwd, aw);           // aim in world
+
+                        const XrQuaternionf& Q = views[0].pose.orientation;
+                        const float hc[4] = { -Q.x, -Q.y, -Q.z, Q.w };  // conjugate
+                        XhQuatRotate(hc, aw, dl);                    // aim in head-local
+
+                        float n = sqrtf(dl[0] * dl[0] + dl[1] * dl[1] + dl[2] * dl[2]);
+                        if (n > 1e-4f) { dl[0] /= n; dl[1] /= n; dl[2] /= n; }
+                        lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
+                    }
+                    else if (g_cfgAimSource != 1)
+                    {
+                        dl[0] = 0.f; dl[1] = 0.f; dl[2] = -1.f;      // motion aim off
+                    }
+                    // else: motion aim on but a one-frame tracking blip -- hold last.
+
+                    xh.pose.position = { xd * dl[0], xd * dl[1], xd * dl[2] };
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
                     layerCount = 2;
                 }

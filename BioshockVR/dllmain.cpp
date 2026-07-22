@@ -1,6 +1,10 @@
 // BioshockVR/dllmain.cpp
 //
-// Entry point + logging
+// Entry point + logging + config.
+//
+// The config loader is split into two halves so it reads cleanly: a block of
+// terse Cfg* reads that fill the globals, then a single grouped, aligned echo.
+// Every key, default and range is the same as before -- only the shape changed.
 
 #include <windows.h>
 #include <cstdio>
@@ -18,164 +22,91 @@ static CRITICAL_SECTION  g_logLock;
 static char              g_logPath[MAX_PATH] = {};
 static char              g_iniPath[MAX_PATH] = {};
 
-// Non-static: Hooks.cpp / CameraHook.cpp extern these.
+// ============================================================================
+//  CONFIG GLOBALS  (non-static: other .cpp files extern these)
+// ============================================================================
 
-// BSR's live FOV slider can't be read from memory, so the user declares it.
-// MUST equal Bioshock.ini HorizontalFOV (§10) or turn-warp returns.
-float g_cfgFovDeg = 100.0f;
+// core -----------------------------------------------------------------------
+float g_cfgFovDeg = 100.0f;      // MUST equal Bioshock.ini HorizontalFOV
+int   g_cfgResX = 0;             // written to WindowedViewportX/Y; 0 = leave
+int   g_cfgResY = 0;
+float g_cfgEyeSep = 3.2f;        // half-IPD, game units == cm. 3.2 = 64mm IPD
+bool  g_cfgSwapEyes = false;     // flip if depth is inverted
+bool  g_cfgDisableVSync = true;
+bool  g_cfgSyncGameIni = true;   // push FOV/res into Bioshock.ini; 0 = leave
 
-// Phase 5 kill switch: if the camera hook crashes the game, set 0. No rebuild.
-bool g_cfgCameraHook = true;
+// camera & comfort -----------------------------------------------------------
+bool  g_cfgCameraHook = true;    // install the camera hook at all
+bool  g_cfgCameraWrite = false;  // let it MODIFY the camera (Phase 6 switch)
+bool  g_cfgHeadTracking = false; // compose HMD orientation onto the camera
+bool  g_cfgHeadPosition = false; // apply the head's translation
+bool  g_cfgHeadRoll = true;
+bool  g_cfgHeadAim = false;      // make Controller.Rotation follow the aim
+int   g_cfgHeadAimMode = 1;      // 0 additive, 1 local compose, 2 pitch-decoupled
+bool  g_cfgPairLock = true;      // render both eyes from the same instant
+float g_cfgHeightOffset = 0.0f;  // CameraHeightOffset, cm, +up
 
-// Phase 6 kill switch, SEPARATE from the above. This is the one that lets the
-// hook actually MODIFY the game's camera.
-bool g_cfgCameraWrite = false;
+// weapon & arm rendering -----------------------------------------------------
+int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
+float g_cfgFgFovValue = 0.0f;    // ForegroundFovValue, 0 == use GameFovDegrees
+int   g_cfgFgFovSrc = 0;         // ForegroundFovSrcOffset, 0 == off
+float g_cfgHandsScale = 0.0f;    // DrawScale for the arms. 0 == leave alone
+float g_cfgGunScale = 0.0f;      // DrawScale for the weapon actor. 0 == off
+int   g_cfgGunPtrOff = 0;        // GunPtrOffset. 0 == run the sweep
+int   g_cfgGunPtrBase = 1;       // 0 == pawn, 1 == Hands
+int   g_cfgGunChildren = 0;      // 0 off, 1 sweep, 2 scale all
 
-// Half-IPD in game units. 1 unit == 1 cm, MEASURED (§6b-note). 3.2 == 64mm IPD.
-float g_cfgEyeSep = 3.2f;
+// 6-DOF hands ----------------------------------------------------------------
+bool  g_cfg6DofHands = false;
+bool  g_cfgHandsProbe = false;
+int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
+int   g_cfgHandsPosOff = 0;      // HandsPosOffset, e.g. 0x1D8
+float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // fwd,right,up cm
+float g_cfgHandsNudgeZ = 0.0f;     // probe only
+float g_cfgHandsNudgeYaw = 0.0f;   // probe only
+float g_cfgHandsNudgePitch = 0.0f; // probe only
 
-// If depth comes out INVERTED (world feels like a hollow mask), flip this.
-bool g_cfgSwapEyes = false;
+// aiming / crosshair ---------------------------------------------------------
+int   g_cfgAimSource = 0;        // 0 head, 1 right controller
+float g_cfgAimClampDeg = 20.0f;
+float g_cfgAimSmooth = 0.35f;
+bool  g_cfgCrosshair = true;
+float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
+float g_cfgXhDist = 2.0f;
 
-// Phase 11 kill switch: compose HMD head orientation onto the camera. Default OFF
-// so a fresh deploy is known-good stereo; set EnableHeadTracking=1 to test.
-bool g_cfgHeadTracking = false;
+// controller -----------------------------------------------------------------
+bool  g_cfgController = true;
+int   g_cfgControllerMode = 0;   // 0 merge (real pad wins), 1 replace
+int   g_cfgControllerLayout = 1; // 0 literal Xbox, 1 jump on right-A
+bool  g_cfgControllerPitch = false;
+bool  g_cfgStickYToDpad = false;
+float g_cfgStickDeadzone = 0.15f;
+bool  g_cfgControllerLog = true;
+int   g_cfgDpadModifier = 1;     // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
 
-// 6DOF positional tracking: apply the head's translation to the camera.
-bool g_cfgHeadPosition = false;
+// menus ----------------------------------------------------------------------
+bool  g_cfgMenuScreen = true;
+float g_cfgMenuSize = 1.5f;
+float g_cfgMenuDist = 1.75f;
+float g_cfgMenuHeight = 0.0f;
+int   g_cfgMenuMaxIndexed = 8;
+int   g_cfgMenuMaxDraw = 0;      // RETRACTED (S31), default 0
+char  g_cfgMenuList[256] = {};
 
-// The game presents with SyncInterval=1. Overriding it to 0 turned out NOT to be
-// the framerate limiter, but the monitor is meaningless in VR, so we keep it off.
-bool g_cfgDisableVSync = true;
-
-// Push our FOV/resolution into the game's Bioshock.ini so the two files can
-// never drift. 0 = leave Bioshock.ini strictly alone.
-bool g_cfgSyncGameIni = true;
-
-// Game render resolution, written to WindowedViewportX/Y. 0 = don't touch.
-// Match the runtime's recommended per-eye size (logged at XR_Init).
-int g_cfgResX = 0;
-int g_cfgResY = 0;
-
-// Draw-call fingerprinting / HUD suppression.
-bool g_cfgDrawHook = true;
-char g_cfgSuppressList[256] = {};
-char g_cfgMenuList[256] = {};
-
-// Isolate stepper (S18): the shortlist Numpad - walks, one count at a time.
-// Default = the counts that appeared exactly ONCE PER FRAME in 100% of frames
-// across two independent gameplay samples from the same spot. That is the
-// signature of a singleton object (weapon, reticle, HUD root) rather than
-// scenery, which varies with facing.
-char g_cfgIsolateList[256] = {};
-
-// S23: which draws are the first-person weapon, and how much to shrink their
-// projection. MEASURED: the weapon renders at 44.3 deg horizontal FOV while the
-// world renders at 110, so it appears 3.5x too large. 0 == leave it alone.
+// debug / probe --------------------------------------------------------------
+bool  g_cfgDrawHook = true;
+bool  g_cfgGameState = true;     // read the game's own input context
+bool  g_cfgHookInstanced = false;
+char  g_cfgSuppressList[256] = {};
+char  g_cfgIsolateList[256] = {};
 char  g_cfgWeaponList[256] = {};
 float g_cfgWeaponScale = 0.0f;
-
-// S25: health (23d) and EVE (11d) sit in the top-left corner of a 110-degree
-// frame, outside where a headset can comfortably look. A viewport scaled about
-// the centre pulls corner elements inward. 0 == leave them where they are.
 char  g_cfgHudList[256] = {};
 float g_cfgHudScale = 0.0f;
 
-// Manual nudge for the menu quad's height, metres. The Quest accessibility
-// height setting moves the LOCAL space origin, so the automatic anchor can sit
-// low or high relative to where you actually are.
-float g_cfgMenuHeight = 0.0f;
-
-// Frames with this few DrawIndexed calls are a menu. Pre-game menus are pure
-// Scaleform (ONE indexed draw); gameplay runs hundreds. 0 == off.
-int g_cfgMenuMaxIndexed = 8;
-
-// RETRACTED (S31). The "menus draw fewer calls" figure came from summing dump
-// columns that DumpTable truncates at 64 rows, so it was a lower bound treated
-// as exact. Measured properly with the untruncated per-frame counters:
-//     gameplay    Draw 116-120   Indexed 387-399
-//     pause menu  Draw 145-150   Indexed 382-386
-// The menu draws MORE, not fewer, and Indexed is identical because the world
-// renders behind it. A 25-call gap that moves with subtitles and pickup prompts
-// is not a discriminator. OFF by default; do not re-enable without new data.
-int g_cfgMenuMaxDraw = 0;
-
-// S26: hooking DrawIndexedInstanced/DrawInstanced needs vtable slots 20 and 21.
-// Slots 14/15 are Map/Unmap, and detouring THOSE with draw-shaped handlers
-// crashed the game the moment a menu streamed textures. Off by default: the
-// cursor turned out to be 5 Draw, so these were never needed.
-bool g_cfgHookInstanced = false;
-
-// Our own reticle: a head-locked quad layer, not a game draw call.
-bool  g_cfgCrosshair = true;
-float g_cfgXhSize = 0.012f;   // DOT diameter in metres at CrosshairDistance
-float g_cfgXhDist = 2.0f;
-
-// Menus/loading shown as a head-locked virtual screen (quad layer) instead of
-// the wall-sized projection. Kill switch if it misbehaves.
-bool g_cfgMenuScreen = true;
-
-// Pair-lock (§14): render both eyes of a pair from the same camera instant.
-bool g_cfgPairLock = true;
-
-// Head-aim (§15): make Controller.Rotation follow the head. Default OFF -- it
-// also steers movement direction in UE, so it changes how walking feels.
-bool g_cfgHeadAim = false;
-
-// S19 head-aim composition. 0 = legacy euler ADDITION (has the turn artifact),
-// 1 = compose in the base's local frame, 2 = also drop mouse pitch so the
-// horizon stays level and ALL pitch comes from the head.
-int g_cfgHeadAimMode = 1;
-
-// Menu quad geometry, metres. Angular size = 2*atan(size/2 / dist).
-float g_cfgMenuSize = 1.5f;
-float g_cfgMenuDist = 1.75f;
-
-// Head roll onto the view. Suspect for the pitched-turn swivel (§16): if the
-// roll axis is world-space rather than view-space, the error grows with pitch.
-bool g_cfgHeadRoll = true;
-
-// ---- Phase 15: Touch controllers as a virtual Xbox pad (InputHook.cpp) ----
-// ControllerMode 0 = merge (a REAL pad in slot 0 wins, we only fill in when
-// none is connected) / 1 = replace (always synthesize).
-// ControllerPitch stays 0: HeadAimMode=2 erases injected pitch every CalcView
-// and it reads as a fight. 1 only to A/B that artifact deliberately.
-bool  g_cfgController = true;
-int   g_cfgControllerMode  = 0;      // 0 merge, 1 replace
-bool  g_cfgControllerPitch = false;
-bool  g_cfgStickYToDpad    = false;
-float g_cfgStickDeadzone   = 0.15f;
-bool  g_cfgControllerLog   = true;
-int g_cfgDpadModifier = 1;   // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
-int g_cfgControllerLayout = 1;   // 0 literal Xbox / 1 jump on right-A
-
-int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
-float g_cfgFgFovValue = 0.0f;   // ForegroundFovValue, 0 == use GameFovDegrees
-bool g_cfgGameState = true;   // read the game's own input context (GameState.cpp)
-int g_cfgFgFovSrc = 0;   // ForegroundFovSrcOffset, 0 == off
-float g_cfgHeightOffset = 0.0f;   // CameraHeightOffset, cm. +up.
-
-// Motion controls
-int   g_cfgAimSource = 0;      // 0 head, 1 right controller
-float g_cfgAimClampDeg = 20.0f;
-float g_cfgAimSmooth = 0.35f;
-
-bool g_cfgHandsProbe = false;   // EnableHandsProbe
-
-float g_cfgHandsNudgeZ = 0.0f;   // HandsNudgeZ, cm. Displaces the Hands actor for the probe test.
-float g_cfgHandsNudgeYaw = 0.0f;   // HandsNudgeYaw, degrees
-int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
-float g_cfgHandsNudgePitch = 0.0f;   // HandsNudgePitch, degrees
-int g_cfgHandsPosOff = 0;   // HandsPosOffset, e.g. 0x1A0
-bool g_cfg6DofHands = false;   // Enable6DofHands
-float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // HandsGripOffset fwd,right,up (cm)
-float g_cfgHandsScale = 0.0f;   // HandsScale: DrawScale for the hands. 0 == leave alone.
-
-float g_cfgGunScale = 0.0f;   // GunScale: DrawScale for the weapon actor. 0 == off.
-int   g_cfgGunPtrOff = 0;      // GunPtrOffset: 0 == unknown, run the sweep
-int   g_cfgGunPtrBase = 1;      // GunPtrBase: 0 == pawn, 1 == Hands
-int   g_cfgGunChildren = 0;     // GunChildren: 0 off, 1 sweep, 2 scale all
-
+// ============================================================================
+//  LOGGING
+// ============================================================================
 
 static void InitLogPath()
 {
@@ -217,302 +148,262 @@ static void Log(const char* fmt, ...)
     LogFile(b);
 }
 
+// ============================================================================
+//  CONFIG READERS  (one call per key; range-checked)
+// ============================================================================
+
+static bool CfgBool(const char* key, bool def)
+{
+    return GetPrivateProfileIntA("VR", key, def ? 1 : 0, g_iniPath) != 0;
+}
+
+static int CfgInt(const char* key, int def)
+{
+    return GetPrivateProfileIntA("VR", key, def, g_iniPath);
+}
+
+// Integer with a valid range; out-of-range falls back to def.
+static int CfgIntRange(const char* key, int def, int lo, int hi)
+{
+    int v = GetPrivateProfileIntA("VR", key, def, g_iniPath);
+    return (v < lo || v > hi) ? def : v;
+}
+
+// Decimal or 0x-hex. Absent key -> cur unchanged.
+static int CfgHex(const char* key, int cur)
+{
+    char b[64] = {};
+    GetPrivateProfileStringA("VR", key, "", b, sizeof(b), g_iniPath);
+    return b[0] ? (int)strtol(b, nullptr, 0) : cur;
+}
+
+// Float in [lo,hi]. Absent -> cur unchanged. Present-but-out-of-range warns.
+static float CfgFloat(const char* key, float cur, float lo, float hi)
+{
+    char b[64] = {};
+    GetPrivateProfileStringA("VR", key, "", b, sizeof(b), g_iniPath);
+    if (!b[0]) return cur;
+    double v = atof(b);
+    if (v < lo || v > hi)
+    {
+        Log("config: %s '%s' out of range [%.3g..%.3g] -- keeping %.3g",
+            key, b, (double)lo, (double)hi, (double)cur);
+        return cur;
+    }
+    return (float)v;
+}
+
+static void CfgStr(const char* key, const char* def, char* out, size_t sz)
+{
+    GetPrivateProfileStringA("VR", key, def, out, (DWORD)sz, g_iniPath);
+}
+
+// "fwd,right,up" -> out[3]; only assigns when all three parse.
+static void CfgVec3(const char* key, float out[3])
+{
+    char b[64] = {};
+    GetPrivateProfileStringA("VR", key, "", b, sizeof(b), g_iniPath);
+    if (!b[0]) return;
+    float f[3] = {};
+    if (sscanf_s(b, "%f,%f,%f", &f[0], &f[1], &f[2]) == 3)
+    {
+        out[0] = f[0]; out[1] = f[1]; out[2] = f[2];
+    }
+}
+
+// One echo line: indent, fixed-width name, value text.
+static void CfgEcho(const char* name, const char* fmt, ...)
+{
+    char val[256];
+    va_list a; va_start(a, fmt);
+    _vsnprintf_s(val, sizeof(val), _TRUNCATE, fmt, a);
+    va_end(a);
+    Log("  %-20s %s", name, val);
+}
+
+// ============================================================================
+//  LOAD
+// ============================================================================
 // Read-only. We never WRITE the ini -- Program Files is UAC-protected and a
-// write gets silently redirected to VirtualStore (a debugging nightmare, §8).
+// write gets silently redirected to VirtualStore.
 static void LoadConfig()
 {
     if (!g_iniPath[0]) { Log("config: no ini path. Using defaults."); return; }
 
-    char buf[64] = {};
+    // ---- read ----
+    // core
+    g_cfgFovDeg = CfgFloat("GameFovDegrees", g_cfgFovDeg, 30.f, 170.f);
+    g_cfgResX = CfgIntRange("ResolutionX", 0, 0, 16384);
+    g_cfgResY = CfgIntRange("ResolutionY", 0, 0, 16384);
+    g_cfgEyeSep = CfgFloat("EyeSeparation", g_cfgEyeSep, 0.f, 20.f);
+    g_cfgSwapEyes = CfgBool("SwapEyes", false);
+    g_cfgDisableVSync = CfgBool("DisableVSync", true);
+    g_cfgSyncGameIni = CfgBool("SyncGameIni", true);
 
-    GetPrivateProfileStringA("VR", "GameFovDegrees", "", buf, sizeof(buf), g_iniPath);
-    bool got = false;
-    if (buf[0])
-    {
-        double v = atof(buf);
-        if (v > 30.0 && v < 170.0) { g_cfgFovDeg = (float)v; got = true; }
-        else Log("config: GameFovDegrees '%s' is out of range. Ignoring.", buf);
-    }
-    Log("config: GameFovDegrees   = %.1f   (%s)", g_cfgFovDeg,
-        got ? "from BioshockVR.ini" : "DEFAULT");
+    // camera & comfort
+    g_cfgCameraHook = CfgBool("EnableCameraHook", true);
+    g_cfgCameraWrite = CfgBool("EnableCameraWrite", false);
+    g_cfgHeadTracking = CfgBool("EnableHeadTracking", false);
+    g_cfgHeadPosition = CfgBool("EnableHeadPosition", false);
+    g_cfgHeadRoll = CfgBool("EnableHeadRoll", true);
+    g_cfgHeadAim = CfgBool("EnableHeadAim", false);
+    g_cfgHeadAimMode = CfgIntRange("HeadAimMode", 1, 0, 2);
+    g_cfgPairLock = CfgBool("PairLockCamera", true);
+    g_cfgHeightOffset = CfgFloat("CameraHeightOffset", g_cfgHeightOffset, -100.f, 100.f);
 
-    g_cfgCameraHook = (GetPrivateProfileIntA("VR", "EnableCameraHook", 1, g_iniPath) != 0);
-    Log("config: EnableCameraHook  = %d", (int)g_cfgCameraHook);
+    // weapon & arm rendering
+    g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
+    g_cfgFgFovValue = CfgFloat("ForegroundFovValue", g_cfgFgFovValue, 0.f, 360.f);
+    g_cfgFgFovSrc = CfgHex("ForegroundFovSrcOffset", g_cfgFgFovSrc);
+    g_cfgHandsScale = CfgFloat("HandsScale", g_cfgHandsScale, 0.05f, 5.f);
+    g_cfgGunScale = CfgFloat("GunScale", g_cfgGunScale, 0.05f, 5.f);
+    g_cfgGunPtrOff = CfgHex("GunPtrOffset", g_cfgGunPtrOff);
+    g_cfgGunPtrBase = CfgInt("GunPtrBase", 1);
+    g_cfgGunChildren = CfgInt("GunChildren", 0);
 
-    g_cfgCameraWrite = (GetPrivateProfileIntA("VR", "EnableCameraWrite", 0, g_iniPath) != 0);
-    Log("config: EnableCameraWrite = %d   %s", (int)g_cfgCameraWrite,
-        g_cfgCameraWrite ? "(the camera WILL be modified)" : "(read-only, no stereo)");
+    // 6-DOF hands
+    g_cfg6DofHands = CfgBool("Enable6DofHands", false);
+    g_cfgHandsProbe = CfgBool("EnableHandsProbe", false);
+    g_cfgHandsPtrOff = CfgHex("HandsPtrOffset", g_cfgHandsPtrOff);
+    g_cfgHandsPosOff = CfgHex("HandsPosOffset", g_cfgHandsPosOff);
+    CfgVec3("HandsGripOffset", g_cfgHandsGrip);
+    g_cfgHandsNudgeZ = CfgFloat("HandsNudgeZ", g_cfgHandsNudgeZ, -500.f, 500.f);
+    g_cfgHandsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfgHandsNudgeYaw, -180.f, 180.f);
+    g_cfgHandsNudgePitch = CfgFloat("HandsNudgePitch", g_cfgHandsNudgePitch, -180.f, 180.f);
 
-    buf[0] = 0;
-    GetPrivateProfileStringA("VR", "EyeSeparation", "", buf, sizeof(buf), g_iniPath);
-    got = false;
-    if (buf[0])
-    {
-        double v = atof(buf);
-        if (v >= 0.0 && v <= 20.0) { g_cfgEyeSep = (float)v; got = true; }
-        else Log("config: EyeSeparation '%s' is out of range (0..20). Ignoring.", buf);
-    }
-    Log("config: EyeSeparation     = %.2f units (cm)   (%s)", g_cfgEyeSep,
-        got ? "from BioshockVR.ini" : "DEFAULT");
+    // aiming / crosshair
+    g_cfgAimSource = CfgInt("AimSource", 0);
+    g_cfgAimClampDeg = CfgFloat("AimClampDeg", g_cfgAimClampDeg, 1.f, 80.f);
+    g_cfgAimSmooth = CfgFloat("AimSmoothing", g_cfgAimSmooth, 0.f, 0.95f);
+    g_cfgCrosshair = CfgBool("EnableCrosshair", true);
+    g_cfgXhSize = CfgFloat("CrosshairSize", g_cfgXhSize, 0.0005f, 0.5f);
+    g_cfgXhDist = CfgFloat("CrosshairDistance", g_cfgXhDist, 0.2f, 50.f);
 
-    g_cfgSwapEyes = (GetPrivateProfileIntA("VR", "SwapEyes", 0, g_iniPath) != 0);
-    Log("config: SwapEyes          = %d", (int)g_cfgSwapEyes);
+    // controller
+    g_cfgController = CfgBool("EnableController", true);
+    g_cfgControllerMode = CfgIntRange("ControllerMode", 0, 0, 1);
+    g_cfgControllerLayout = CfgIntRange("ControllerLayout", 0, 0, 1);
+    g_cfgControllerPitch = CfgBool("ControllerPitch", false);
+    g_cfgStickDeadzone = CfgFloat("ControllerDeadzone", g_cfgStickDeadzone, 0.f, 0.9f);
+    g_cfgDpadModifier = CfgIntRange("ControllerDpadModifier", 1, 0, 3);
+    g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
+    g_cfgControllerLog = CfgBool("ControllerLog", true);
 
-    g_cfgHeadTracking = (GetPrivateProfileIntA("VR", "EnableHeadTracking", 0, g_iniPath) != 0);
-    Log("config: EnableHeadTracking = %d   %s", (int)g_cfgHeadTracking,
-        g_cfgHeadTracking ? "(head-look composed onto camera)" : "(off -- stereo only)");
+    // menus
+    g_cfgMenuScreen = CfgBool("EnableMenuScreen", true);
+    g_cfgMenuSize = CfgFloat("MenuScreenSize", g_cfgMenuSize, 0.2f, 10.f);
+    g_cfgMenuDist = CfgFloat("MenuScreenDistance", g_cfgMenuDist, 0.3f, 20.f);
+    g_cfgMenuHeight = CfgFloat("MenuScreenHeight", g_cfgMenuHeight, -3.f, 3.f);
+    g_cfgMenuMaxIndexed = CfgIntRange("MenuMaxIndexed", 8, 0, 100000);
+    g_cfgMenuMaxDraw = CfgIntRange("MenuMaxDraw", 0, 0, 100000);
+    CfgStr("MenuIndexCounts", "1769,63,49,95,21,87", g_cfgMenuList, sizeof(g_cfgMenuList));
 
-    g_cfgHeadPosition = (GetPrivateProfileIntA("VR", "EnableHeadPosition", 0, g_iniPath) != 0);
-    Log("config: EnableHeadPosition = %d", (int)g_cfgHeadPosition);
-
-    g_cfgDisableVSync = (GetPrivateProfileIntA("VR", "DisableVSync", 1, g_iniPath) != 0);
-    Log("config: DisableVSync      = %d", (int)g_cfgDisableVSync);
-
-    g_cfgMenuScreen = (GetPrivateProfileIntA("VR", "EnableMenuScreen", 1, g_iniPath) != 0);
-    Log("config: EnableMenuScreen  = %d", (int)g_cfgMenuScreen);
-
-    g_cfgSyncGameIni = (GetPrivateProfileIntA("VR", "SyncGameIni", 1, g_iniPath) != 0);
-    Log("config: SyncGameIni       = %d", (int)g_cfgSyncGameIni);
-
-    g_cfgResX = GetPrivateProfileIntA("VR", "ResolutionX", 0, g_iniPath);
-    g_cfgResY = GetPrivateProfileIntA("VR", "ResolutionY", 0, g_iniPath);
-
-    if (g_cfgResX < 0 || g_cfgResY < 0 || g_cfgResX > 16384 || g_cfgResY > 16384)
-    {
-        Log("config: Resolution out of range. Ignoring.");
-        g_cfgResX = g_cfgResY = 0;
-    }
-
-    Log("config: Resolution        = %d x %d   (%s)", g_cfgResX, g_cfgResY,
-        (g_cfgResX && g_cfgResY) ? "will be written to Bioshock.ini" : "not managed");
-
-    g_cfgDrawHook = (GetPrivateProfileIntA("VR", "EnableDrawHook", 1, g_iniPath) != 0);
-    Log("config: EnableDrawHook     = %d", (int)g_cfgDrawHook);
-
-    GetPrivateProfileStringA("VR", "SuppressIndexCounts", "",
-        g_cfgSuppressList, sizeof(g_cfgSuppressList), g_iniPath);
-    Log("config: SuppressIndexCounts = '%s'", g_cfgSuppressList);
-
-    GetPrivateProfileStringA("VR", "MenuIndexCounts", "1769,63,49,95,21,87",
-        g_cfgMenuList, sizeof(g_cfgMenuList), g_iniPath);
-    Log("config: MenuIndexCounts    = '%s'", g_cfgMenuList);
-
-    GetPrivateProfileStringA("VR", "IsolateCounts",
+    // debug / probe
+    g_cfgDrawHook = CfgBool("EnableDrawHook", true);
+    g_cfgGameState = CfgBool("EnableGameState", true);
+    g_cfgHookInstanced = CfgBool("HookInstanced", false);
+    CfgStr("SuppressIndexCounts", "", g_cfgSuppressList, sizeof(g_cfgSuppressList));
+    CfgStr("IsolateCounts",
         "7425,3360,600,381,297,174,153,144,129,33,63021,9,105,139,83,7,2,17,23",
-        g_cfgIsolateList, sizeof(g_cfgIsolateList), g_iniPath);
-    Log("config: IsolateCounts      = '%s'", g_cfgIsolateList);
+        g_cfgIsolateList, sizeof(g_cfgIsolateList));
+    CfgStr("WeaponCounts", "", g_cfgWeaponList, sizeof(g_cfgWeaponList));
+    g_cfgWeaponScale = CfgFloat("WeaponScale", g_cfgWeaponScale, 0.f, 4.f);
+    CfgStr("HudCounts", "", g_cfgHudList, sizeof(g_cfgHudList));
+    g_cfgHudScale = CfgFloat("HudScale", g_cfgHudScale, 0.f, 4.f);
 
-    GetPrivateProfileStringA("VR", "WeaponCounts", "",
-        g_cfgWeaponList, sizeof(g_cfgWeaponList), g_iniPath);
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "WeaponScale", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 4.0) g_cfgWeaponScale = (float)v; }
-    }
-    Log("config: WeaponCounts       = '%s'  scale %.3f %s", g_cfgWeaponList,
-        g_cfgWeaponScale, g_cfgWeaponScale > 0.0f ? "" : "(OFF)");
+    // ---- echo ----
+    Log("=== BioshockVR config ===");
 
-    GetPrivateProfileStringA("VR", "HudCounts", "",
-        g_cfgHudList, sizeof(g_cfgHudList), g_iniPath);
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "HudScale", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 4.0) g_cfgHudScale = (float)v; }
-    }
-    Log("config: HudCounts          = '%s'  scale %.3f %s", g_cfgHudList,
-        g_cfgHudScale, g_cfgHudScale > 0.0f ? "" : "(OFF)");
+    Log("[core]");
+    CfgEcho("GameFovDegrees", "%.1f", g_cfgFovDeg);
+    CfgEcho("Resolution", "%d x %d  (%s)", g_cfgResX, g_cfgResY,
+        (g_cfgResX && g_cfgResY) ? "written to Bioshock.ini" : "not managed");
+    CfgEcho("EyeSeparation", "%.2f cm  (%.0f mm IPD)", g_cfgEyeSep, g_cfgEyeSep * 20.f);
+    CfgEcho("SwapEyes", "%d", (int)g_cfgSwapEyes);
+    CfgEcho("DisableVSync", "%d", (int)g_cfgDisableVSync);
+    CfgEcho("SyncGameIni", "%d", (int)g_cfgSyncGameIni);
 
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "MenuScreenHeight", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > -3.0 && v < 3.0) g_cfgMenuHeight = (float)v; }
-        Log("config: MenuScreenHeight  = %+.2f m", g_cfgMenuHeight);
-    }
-
-    g_cfgHookInstanced = (GetPrivateProfileIntA("VR", "HookInstanced", 0, g_iniPath) != 0);
-    Log("config: HookInstanced      = %d", (int)g_cfgHookInstanced);
-
-    g_cfgMenuMaxDraw = GetPrivateProfileIntA("VR", "MenuMaxDraw", 0, g_iniPath);
-    if (g_cfgMenuMaxDraw < 0 || g_cfgMenuMaxDraw > 100000) g_cfgMenuMaxDraw = 60;
-    Log("config: MenuMaxDraw        = %d", g_cfgMenuMaxDraw);
-
-    g_cfgMenuMaxIndexed = GetPrivateProfileIntA("VR", "MenuMaxIndexed", 8, g_iniPath);
-    if (g_cfgMenuMaxIndexed < 0 || g_cfgMenuMaxIndexed > 100000) g_cfgMenuMaxIndexed = 8;
-    Log("config: MenuMaxIndexed     = %d", g_cfgMenuMaxIndexed);
-
-    g_cfgCrosshair = (GetPrivateProfileIntA("VR", "EnableCrosshair", 1, g_iniPath) != 0);
-    Log("config: EnableCrosshair    = %d", (int)g_cfgCrosshair);
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "CrosshairSize", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.0005 && v < 0.5) g_cfgXhSize = (float)v; }
-        b[0] = 0;
-        GetPrivateProfileStringA("VR", "CrosshairDistance", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.2 && v < 50.0) g_cfgXhDist = (float)v; }
-        Log("config: Crosshair         = %.1f mm dot at %.2f m",
-            g_cfgXhSize * 1000.f, g_cfgXhDist);
-    }
-
-    g_cfgPairLock = (GetPrivateProfileIntA("VR", "PairLockCamera", 1, g_iniPath) != 0);
-    Log("config: PairLockCamera    = %d", (int)g_cfgPairLock);
-
-    g_cfgHeadAim = (GetPrivateProfileIntA("VR", "EnableHeadAim", 0, g_iniPath) != 0);
-    Log("config: EnableHeadAim      = %d", (int)g_cfgHeadAim);
-
-    g_cfgHeadAimMode = GetPrivateProfileIntA("VR", "HeadAimMode", 1, g_iniPath);
-    if (g_cfgHeadAimMode < 0 || g_cfgHeadAimMode > 2) g_cfgHeadAimMode = 1;
-    Log("config: HeadAimMode        = %d   %s", g_cfgHeadAimMode,
-        g_cfgHeadAimMode == 0 ? "(LEGACY additive -- turn artifact expected)" :
+    Log("[camera]");
+    CfgEcho("EnableCameraHook", "%d", (int)g_cfgCameraHook);
+    CfgEcho("EnableCameraWrite", "%d  %s", (int)g_cfgCameraWrite,
+        g_cfgCameraWrite ? "(camera WILL be modified)" : "(read-only, no stereo)");
+    CfgEcho("EnableHeadTracking", "%d", (int)g_cfgHeadTracking);
+    CfgEcho("EnableHeadPosition", "%d", (int)g_cfgHeadPosition);
+    CfgEcho("EnableHeadRoll", "%d", (int)g_cfgHeadRoll);
+    CfgEcho("EnableHeadAim", "%d", (int)g_cfgHeadAim);
+    CfgEcho("HeadAimMode", "%d  %s", g_cfgHeadAimMode,
+        g_cfgHeadAimMode == 0 ? "(legacy additive -- turn artifact)" :
         g_cfgHeadAimMode == 1 ? "(local compose, mouse pitch kept)" :
         "(local compose, PITCH DECOUPLED)");
+    CfgEcho("PairLockCamera", "%d", (int)g_cfgPairLock);
+    CfgEcho("CameraHeightOffset", "%.1f cm", g_cfgHeightOffset);
 
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "MenuScreenSize", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.2 && v < 10.0) g_cfgMenuSize = (float)v; }
-        b[0] = 0;
-        GetPrivateProfileStringA("VR", "MenuScreenDistance", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.3 && v < 20.0) g_cfgMenuDist = (float)v; }
-        Log("config: MenuScreen        = %.2f m at %.2f m", g_cfgMenuSize, g_cfgMenuDist);
-    }
+    Log("[weapon]");
+    CfgEcho("ForegroundFov", "offset 0x%X  value %.1f", g_cfgFgFovOffset, g_cfgFgFovValue);
+    CfgEcho("HandsScale", "%.2f", g_cfgHandsScale);
+    CfgEcho("GunScale", "%.2f  ptr %s+0x%03X", g_cfgGunScale,
+        g_cfgGunPtrBase ? "hands" : "pawn", (unsigned)g_cfgGunPtrOff);
+    CfgEcho("GunChildren", "%d", g_cfgGunChildren);
 
-    g_cfgHeadRoll = (GetPrivateProfileIntA("VR", "EnableHeadRoll", 1, g_iniPath) != 0);
-    Log("config: EnableHeadRoll     = %d", (int)g_cfgHeadRoll);
-
-    g_cfgController = (GetPrivateProfileIntA("VR", "EnableController", 1, g_iniPath) != 0);
-    g_cfgControllerMode = GetPrivateProfileIntA("VR", "ControllerMode", 0, g_iniPath);
-    if (g_cfgControllerMode < 0 || g_cfgControllerMode > 1) g_cfgControllerMode = 0;
-    g_cfgControllerPitch = (GetPrivateProfileIntA("VR", "ControllerPitch", 0, g_iniPath) != 0);
-    g_cfgStickYToDpad = (GetPrivateProfileIntA("VR", "ControllerStickYToDpad", 0, g_iniPath) != 0);
-    g_cfgControllerLog = (GetPrivateProfileIntA("VR", "ControllerLog", 1, g_iniPath) != 0);
-    g_cfgDpadModifier = GetPrivateProfileIntA("VR", "ControllerDpadModifier", 1, g_iniPath);
-    if (g_cfgDpadModifier < 0 || g_cfgDpadModifier > 3) g_cfgDpadModifier = 1;
-
-    Log("config: DpadModifier      = %d   %s", g_cfgDpadModifier,
-        g_cfgDpadModifier == 0 ? "(off)" :
-        g_cfgDpadModifier == 1 ? "(right thumbrest touch)" :
-        g_cfgDpadModifier == 2 ? "(right stick click)" : "(left grip)");
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "ControllerDeadzone", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v >= 0.0 && v < 0.9) g_cfgStickDeadzone = (float)v; }
-    }
-
-    Log("config: EnableController   = %d   mode=%s", (int)g_cfgController,
-        g_cfgControllerMode ? "replace" : "merge");
-    Log("config: ControllerPitch    = %d   %s", (int)g_cfgControllerPitch,
-        g_cfgControllerPitch ? "(right-stick Y PASSED THROUGH -- expect pitch fighting)"
-        : "(right-stick Y dropped -- correct for HeadAimMode=2)");
-    Log("config: ControllerDeadzone = %.2f   StickYToDpad=%d",
-        g_cfgStickDeadzone, (int)g_cfgStickYToDpad);
-
-    g_cfgControllerLayout = GetPrivateProfileIntA("VR", "ControllerLayout", 0, g_iniPath);
-    if (g_cfgControllerLayout < 0 || g_cfgControllerLayout > 1) g_cfgControllerLayout = 0;
-    Log("config: ControllerLayout  = %d   %s", g_cfgControllerLayout,
-        g_cfgControllerLayout ? "(jump on right-A, use on right-B)"
-        : "(literal Xbox: jump on left-Y, use on right-A)");
-
-    g_cfgGameState = (GetPrivateProfileIntA("VR", "EnableGameState", 1, g_iniPath) != 0);
-    Log("config: EnableGameState   = %d", (int)g_cfgGameState);
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "ForegroundFovOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgFgFovOffset = (int)strtol(b, nullptr, 0);   // accepts 0x1A4
-        GetPrivateProfileStringA("VR", "ForegroundFovValue", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgFgFovValue = (float)atof(b);
-        GetPrivateProfileStringA("VR", "ForegroundFovSrcOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgFgFovSrc = (int)strtol(b, nullptr, 0);
-    }
-    Log("config: ForegroundFov     = offset 0x%X  value %.1f",
-        g_cfgFgFovOffset, g_cfgFgFovValue);
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "CameraHeightOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > -100.0 && v < 100.0) g_cfgHeightOffset = (float)v; }
-    }
-    Log("config: CameraHeightOffset = %.1f cm", g_cfgHeightOffset);
-
-    g_cfgAimSource = GetPrivateProfileIntA("VR", "AimSource", 0, g_iniPath);
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "AimClampDeg", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v >= 1.0 && v <= 80.0) g_cfgAimClampDeg = (float)v; }
-        GetPrivateProfileStringA("VR", "AimSmoothing", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v >= 0.0 && v <= 0.95) g_cfgAimSmooth = (float)v; }
-    }
-    Log("config: AimSource         = %d  clamp %.0f deg  smoothing %.2f",
-        g_cfgAimSource, g_cfgAimClampDeg, g_cfgAimSmooth);
-
-    g_cfgHandsProbe = (GetPrivateProfileIntA("VR", "EnableHandsProbe", 0, g_iniPath) != 0);
-    Log("config: EnableHandsProbe  = %d", (int)g_cfgHandsProbe);
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "HandsNudgeZ", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > -500.0 && v < 500.0) g_cfgHandsNudgeZ = (float)v; }
-    }
-    Log("config: HandsNudgeZ        = %.0f cm", g_cfgHandsNudgeZ);
-
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "HandsNudgeYaw", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > -180.0 && v < 180.0) g_cfgHandsNudgeYaw = (float)v; }
-        GetPrivateProfileStringA("VR", "HandsPtrOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgHandsPtrOff = (int)strtol(b, nullptr, 0);   // accepts 0x724
-        GetPrivateProfileStringA("VR", "HandsNudgePitch", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > -180.0 && v < 180.0) g_cfgHandsNudgePitch = (float)v; }
-        GetPrivateProfileStringA("VR", "HandsPosOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgHandsPosOff = (int)strtol(b, nullptr, 0);
-    }
-    Log("config: HandsPtrOffset    = 0x%X   NudgeYaw %.0f deg", g_cfgHandsPtrOff, g_cfgHandsNudgeYaw);
-
-    g_cfg6DofHands = (GetPrivateProfileIntA("VR", "Enable6DofHands", 0, g_iniPath) != 0);
-    Log("config: Enable6DofHands   = %d", (int)g_cfg6DofHands);
-    {
-        char b[64] = {};
-        GetPrivateProfileStringA("VR", "HandsGripOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0])
-        {
-            float f[3] = {};
-            if (sscanf_s(b, "%f,%f,%f", &f[0], &f[1], &f[2]) == 3)
-            {
-                g_cfgHandsGrip[0] = f[0]; g_cfgHandsGrip[1] = f[1]; g_cfgHandsGrip[2] = f[2];
-            }
-        }
-    }
-    Log("config: HandsGripOffset   = %.0f fwd, %.0f right, %.0f up (cm)",
+    Log("[hands 6dof]");
+    CfgEcho("Enable6DofHands", "%d", (int)g_cfg6DofHands);
+    CfgEcho("EnableHandsProbe", "%d", (int)g_cfgHandsProbe);
+    CfgEcho("HandsPtrOffset", "0x%X", g_cfgHandsPtrOff);
+    CfgEcho("HandsPosOffset", "0x%X", g_cfgHandsPosOff);
+    CfgEcho("HandsGripOffset", "%.0f fwd, %.0f right, %.0f up (cm)",
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
-    {
-        char b[64] = {};
 
-        GetPrivateProfileStringA("VR", "HandsScale", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.05 && v < 5.0) g_cfgHandsScale = (float)v; }
+    Log("[aim]");
+    CfgEcho("AimSource", "%d  %s", g_cfgAimSource,
+        g_cfgAimSource == 1 ? "(right controller)" : "(head)");
+    CfgEcho("AimClampDeg", "%.0f", g_cfgAimClampDeg);
+    CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
+    CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
+        g_cfgXhSize * 1000.f, g_cfgXhDist);
 
-        GetPrivateProfileStringA("VR", "GunScale", "", b, sizeof(b), g_iniPath);
-        if (b[0]) { double v = atof(b); if (v > 0.05 && v < 5.0) g_cfgGunScale = (float)v; }
+    Log("[controller]");
+    CfgEcho("EnableController", "%d  mode=%s", (int)g_cfgController,
+        g_cfgControllerMode ? "replace" : "merge");
+    CfgEcho("ControllerLayout", "%d  %s", g_cfgControllerLayout,
+        g_cfgControllerLayout ? "(jump right-A, use right-B)"
+        : "(literal Xbox: jump left-Y, use right-A)");
+    CfgEcho("ControllerPitch", "%d  %s", (int)g_cfgControllerPitch,
+        g_cfgControllerPitch ? "(right-stick Y passed -- expect pitch fight)"
+        : "(right-stick Y dropped -- correct for HeadAimMode=2)");
+    CfgEcho("ControllerDeadzone", "%.2f", g_cfgStickDeadzone);
+    CfgEcho("DpadModifier", "%d  %s", g_cfgDpadModifier,
+        g_cfgDpadModifier == 0 ? "(off)" :
+        g_cfgDpadModifier == 1 ? "(right thumbrest)" :
+        g_cfgDpadModifier == 2 ? "(right stick click)" : "(left grip)");
+    CfgEcho("StickYToDpad / Log", "%d / %d", (int)g_cfgStickYToDpad, (int)g_cfgControllerLog);
 
-        GetPrivateProfileStringA("VR", "GunPtrOffset", "", b, sizeof(b), g_iniPath);
-        if (b[0]) g_cfgGunPtrOff = (int)strtol(b, nullptr, 0);
+    Log("[menus]");
+    CfgEcho("EnableMenuScreen", "%d", (int)g_cfgMenuScreen);
+    CfgEcho("MenuScreen", "%.2f m at %.2f m  (height %+.2f)",
+        g_cfgMenuSize, g_cfgMenuDist, g_cfgMenuHeight);
+    CfgEcho("MenuMaxIndexed", "%d", g_cfgMenuMaxIndexed);
+    CfgEcho("MenuIndexCounts", "'%s'", g_cfgMenuList);
 
-        g_cfgGunPtrBase = GetPrivateProfileIntA("VR", "GunPtrBase", 1, g_iniPath);
-        g_cfgGunChildren = GetPrivateProfileIntA("VR", "GunChildren", 0, g_iniPath);
-    }
-    Log("config: HandsScale        = %.2f", g_cfgHandsScale);
-    Log("config: GunScale          = %.2f   ptr %s+0x%03X",
-        g_cfgGunScale, g_cfgGunPtrBase ? "hands" : "pawn", (unsigned)g_cfgGunPtrOff);
-    Log("config: GunChildren       = %d", g_cfgGunChildren);
+    Log("[debug/probe]");
+    CfgEcho("EnableDrawHook", "%d", (int)g_cfgDrawHook);
+    CfgEcho("EnableGameState", "%d", (int)g_cfgGameState);
+    CfgEcho("HookInstanced", "%d", (int)g_cfgHookInstanced);
+    CfgEcho("SuppressIndexCounts", "'%s'", g_cfgSuppressList);
+    CfgEcho("WeaponCounts", "'%s'  scale %.2f", g_cfgWeaponList, g_cfgWeaponScale);
+    CfgEcho("HudCounts", "'%s'  scale %.2f", g_cfgHudList, g_cfgHudScale);
 
+    Log("=========================");
 }
 
+// ============================================================================
+//  INIT
+// ============================================================================
 // Real init happens off the loader lock. DllMain is not a safe place to
 // allocate, hook, or touch other modules.
 static DWORD WINAPI InitThread(LPVOID)
 {
     Log("=== BioshockVR ===");
+    Log("dllmain build: cleaned config  (%s %s)", __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
