@@ -23,6 +23,9 @@
 // never assumed. If nothing matches, we log every string field we did find and
 // fall back to the old draw-signature path with nothing lost.
 
+// A full-screen UI is up, read from Level.Pauser (the game's own pause test).
+bool GameState_Paused();
+
 // Call from hkCalcView with `pThis`. Cheap once locked (three reads).
 void GameState_Observe(void* playerController);
 

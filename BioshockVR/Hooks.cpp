@@ -23,6 +23,7 @@
 
 #pragma comment(lib, "d3d11.lib")
 
+bool GameState_Paused();   // GameState.cpp
 extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;
 extern bool  g_cfgCameraHook;
@@ -176,7 +177,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             QueryPerformanceCounter(&x0);
 
             static bool menuMode = false;
-            if (g_cfgMenuScreen && (CameraHook_Starved() || DrawHook_MenuUp()))
+            if (g_cfgMenuScreen && (CameraHook_Starved() || GameState_Paused()))
             {
                 if (!menuMode)
                 {

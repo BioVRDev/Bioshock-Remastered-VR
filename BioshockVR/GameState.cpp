@@ -442,6 +442,110 @@ static void RecheckCandidates(const uint8_t* obj)
 static void PollProbeKeys(const uint8_t* obj);
 static void ApplyForegroundFov(const uint8_t* obj);
 
+// ============================================================================
+// PAUSE / FULL-MENU DETECTION via Level.Pauser  (S67)
+//   Level : Actor::Level is a LevelInfo shared by every actor, and a LevelInfo's
+//           own Level member points to ITSELF -- so the offset Lo where
+//           *(controller+Lo) == *(pawn+Lo) == L and *(L+Lo) == L pins both.
+//   Pauser: null in play, an object while paused; found by watching for the slot
+//           that goes null -> object -> null across one open/close of a menu.
+// ============================================================================
+static bool GsLooksLikeObject(const void* p)
+{
+    if (!p || ((uintptr_t)p & 3) || (uintptr_t)p < 0x10000) return false;
+    if (!Readable(p, 4)) return false;
+    const void* vt = *(const void* const*)p;
+    if (!vt || ((uintptr_t)vt & 3) || !Readable(vt, 4)) return false;
+    const void* fn = *(const void* const*)vt;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!fn || VirtualQuery(fn, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    switch (mbi.Protect & 0xFF) {
+    case PAGE_EXECUTE_READ: case PAGE_EXECUTE_READWRITE:
+    case PAGE_EXECUTE: case PAGE_EXECUTE_WRITECOPY: return true;
+    default: return false;
+    }
+}
+
+static void* g_level = nullptr;
+static size_t g_levelOff = 0;
+static size_t g_pauserOff = 0x668;
+static volatile long g_paused = 0;
+
+static const size_t kLvlScan = 0x1000;
+static void* g_lvlSnap[kLvlScan / 4] = {};
+static bool g_lvlBaseline = false;
+static int  g_lvlMiss = 0;
+
+static void FindLevel(const void* controller, const void* pawn)
+{
+    if (!pawn) return;
+    for (size_t off = 0; off + 4 <= kLvlScan; off += 4)
+    {
+        if (!Readable((const uint8_t*)controller + off, 4)) continue;
+        if (!Readable((const uint8_t*)pawn + off, 4)) continue;
+        void* pc = *(void**)((const uint8_t*)controller + off);
+        if (!pc || pc != *(void**)((const uint8_t*)pawn + off)) continue;
+        if (!GsLooksLikeObject(pc)) continue;
+        if (!Readable((const uint8_t*)pc + off, 4)) continue;
+        if (*(void**)((const uint8_t*)pc + off) != pc) continue;   // self-referential
+        g_level = pc; g_levelOff = off;
+        Log(">>> PAUSE: Level = 0x%08X  (Actor::Level = +0x%X, self-referential)",
+            (unsigned)(uintptr_t)pc, (unsigned)off);
+        return;
+    }
+    if (++g_lvlMiss == 300)
+        Log(">>> PAUSE: no self-referential Level pointer found yet -- still trying.");
+}
+
+static void HuntPauser()
+{
+    const uint8_t* L = (const uint8_t*)g_level;
+    if (!g_lvlBaseline)
+    {
+        for (size_t off = 0; off + 4 <= kLvlScan; off += 4)
+        {
+            g_lvlSnap[off / 4] = nullptr;
+            if (Readable(L + off, 4)) g_lvlSnap[off / 4] = *(void**)(L + off);
+        }
+        g_lvlBaseline = true;
+        Log(">>> PAUSE: baseline set over 0x%X bytes. Open a full menu, then close it.",
+            (unsigned)kLvlScan);
+        return;
+    }
+    for (size_t off = 0; off + 4 <= kLvlScan; off += 4)
+    {
+        if (!Readable(L + off, 4)) continue;
+        void* v = *(void**)(L + off);
+        if (v == g_lvlSnap[off / 4]) continue;
+        if (v && GsLooksLikeObject(v))
+            Log(">>> PAUSE: slot +0x%X changed 0x%08X -> 0x%08X",
+                (unsigned)off, (unsigned)(uintptr_t)g_lvlSnap[off / 4], (unsigned)(uintptr_t)v);
+        g_lvlSnap[off / 4] = v;
+    }
+}
+
+static void ObservePause(const void* controller)
+{
+    if (!g_level) { FindLevel(controller, g_pawn); return; }
+    // Level is recreated on a level load; re-find if the self-ref invariant breaks.
+    if (!Readable((const uint8_t*)g_level + g_levelOff, 4) ||
+        *(void**)((const uint8_t*)g_level + g_levelOff) != g_level)
+    {
+        g_level = nullptr; g_lvlBaseline = false; return;
+    }   // keep g_pauserOff (class const)
+
+    if (!g_pauserOff) { HuntPauser(); return; }
+
+    bool paused = Readable((const uint8_t*)g_level + g_pauserOff, 4) &&
+        *(void**)((const uint8_t*)g_level + g_pauserOff) != nullptr;
+    const long prev = g_paused;
+    _InterlockedExchange(&g_paused, paused ? 1 : 0);
+    if (paused != (prev != 0)) Log(">>> PAUSE: %s", paused ? "PAUSED" : "unpaused");
+}
+
+bool GameState_Paused() { return g_paused != 0; }
+
 void GameState_Observe(void* playerController)
 {
     if (!playerController) return;
@@ -455,74 +559,7 @@ void GameState_Observe(void* playerController)
     ApplyForegroundFov((const uint8_t*)playerController);
 
     if (!g_cfgGameState) return;
-
-    // Prefer the Pawn once we have it: that is where the context string lives.
-    // The FOV floats stay on the CONTROLLER, so the probe below keeps using it.
-    const uint8_t* obj = g_pawn ? (const uint8_t*)g_pawn
-        : (const uint8_t*)playerController;
-
-    if (!g_scanDone)
-    {
-        // Let the game settle. A controller observed on the very first CalcView
-        // may not have run an input-context push yet.
-        if (++g_observeCalls < 300) return;
-        g_scanDone = true;
-        ScanForContextField(obj);
-    }
-
-    if (!g_locked)
-    {
-        // ~every 2s at 118Hz. Cheap, and it means you only have to open a menu
-        // once for us to find the field.
-        if (++g_recheck >= 240) { g_recheck = 0; RecheckCandidates(obj); }
-        return;
-    }
-
-    char val[96] = {};
-    if (!ReadFStringAt(obj, g_offset, val, sizeof(val)))
-    {
-        // Unreadable -- most likely a different controller instance after a
-        // level load. Re-scan rather than publish stale state.
-        static int misses = 0;
-        if (++misses > 240)
-        {
-            misses = 0;
-            Log(">>> GAMESTATE: context field unreadable; re-scanning.");
-            _InterlockedExchange(&g_locked, 0);
-            _InterlockedExchange(&g_class, CTX_UNKNOWN);
-            g_scanDone = false;
-            g_observeCalls = 0;
-        }
-        return;
-    }
-
-    const ContextClass c = ClassifyContext(val);
-    const long prev = g_class;
-
-    if (c == CTX_UNKNOWN)
-    {
-        // Live field, unrecognised value. Log once so a missing context name
-        // gets added to the table instead of silently passing as gameplay.
-        static char lastUnknown[96] = {};
-        if (strcmp(lastUnknown, val) != 0)
-        {
-            strncpy_s(lastUnknown, val, _TRUNCATE);
-            Log(">>> GAMESTATE: unknown context \"%s\" -- treating as gameplay", val);
-        }
-        _InterlockedExchange(&g_class, CTX_GAMEPLAY);
-    }
-    else
-    {
-        _InterlockedExchange(&g_class, (long)c);
-    }
-
-    PublishName(val);
-
-    if ((long)c != prev && c != CTX_UNKNOWN)
-    {
-        static const char* kClsName[] = { "UNKNOWN", "GAMEPLAY", "RADIAL", "SCRIPTED", "MENU" };
-        Log(">>> GAMESTATE: context -> \"%s\"  [%s]", val, kClsName[c]);
-    }
+    ObservePause(playerController);
 }
 
 // ============================================================================
