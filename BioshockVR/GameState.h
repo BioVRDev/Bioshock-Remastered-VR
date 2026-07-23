@@ -52,3 +52,5 @@ bool GameState_RadialOpen();
 bool GameState_ScriptedSequence();
 
 void GameState_Reset();
+bool GameState_Cutscene();
+bool GameState_InGame();

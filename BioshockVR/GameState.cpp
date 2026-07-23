@@ -527,7 +527,15 @@ static void HuntPauser()
 
 static void ObservePause(const void* controller)
 {
-    if (!g_level) { FindLevel(controller, g_pawn); return; }
+    if (!g_level)
+    {
+        // Throttle: during a level load there IS no Level yet, and FindLevel is
+        // a 0x1000-byte double scan. Running it every CalcView cost ~35ms/frame
+        // (~30fps) for the whole load. Once every 30 calls is plenty.
+        static int s_findTick = 0;
+        if (++s_findTick >= 30) { s_findTick = 0; FindLevel(controller, g_pawn); }
+        return;
+    }
     // Level is recreated on a level load; re-find if the self-ref invariant breaks.
     if (!Readable((const uint8_t*)g_level + g_levelOff, 4) ||
         *(void**)((const uint8_t*)g_level + g_levelOff) != g_level)
@@ -546,6 +554,202 @@ static void ObservePause(const void* controller)
 
 bool GameState_Paused() { return g_paused != 0; }
 
+// TRUE only while a gameplay Level is locked (a player pawn exists). On the main
+// menu there is no pawn, so this is false -- which is how we tell a real full-
+// screen menu from a false draw-signature hit during play.
+bool GameState_InGame() { return g_level != nullptr; }
+
+// ============================================================================
+// CUTSCENE DETECTION via PlayerController.ViewTarget  (S68)
+//   During play ViewTarget == Pawn. During a scripted camera / bathysphere it
+//   points at a different actor while Pawn is unchanged. So the controller slot
+//   that matched the pawn but diverges to another object is ViewTarget. We watch
+//   only those slots -> a handful of reads, no lag.
+// ============================================================================
+static size_t g_vtCand[48] = {};
+static int    g_nVtCand = 0;
+static void* g_vtPawn = nullptr;
+static size_t g_viewTargetOff = 0;        // pin here once the log shows it
+static volatile long g_cutscene = 0;
+
+// ============================================================================
+// CUTSCENE FOV HOLD  (S69)
+// A cutscene scripts a narrow view FOV, so the backbuffer we reproject looks
+// zoomed. Learn the steady FOV-band floats during play (throttled -> no scan
+// lag), then on the first cutscene pin the ONE that zoomed the most as the world
+// FOV and hold it for the duration. One targeted write; only during cutscenes.
+// ============================================================================
+static const size_t kFovScan = 0x1000;
+static float         g_fovBase[kFovScan / 4] = {};
+static unsigned char g_fovHold[kFovScan / 4] = {};   // consecutive steady samples
+static size_t        g_fovOff = 0;                   // the world FOV field
+static float         g_fovVal = 0.0f;
+static int           g_fovTick = 0;
+
+// ============================================================================
+// CUTSCENE FOV HOLD  (S70)
+// MEASURED: the world FOV lives on the controller at +0x45C and +0x648 -- both
+// read 75.0 at rest and both drop to 55.0 when the pistol zooms. A scripted
+// camera narrows them, which zooms the backbuffer we reproject. Two reads while
+// playing, two writes during a cutscene. No scan.
+// ============================================================================
+static const size_t kFovA = 0x45C;
+static const size_t kFovB = 0x648;
+static float g_fovRest = 0.0f;
+
+static void CutsceneFovHold(const uint8_t* obj)
+{
+    if (!Readable(obj + kFovA, 4)) return;
+    float* a = (float*)(obj + kFovA);
+
+    if (!g_cutscene)
+    {
+        // Learn the resting FOV: the LARGEST sane value seen, so an ADS dip
+        // never becomes the baseline.
+        const float v = *a;
+        if (v > 40.0f && v < 140.0f && v > g_fovRest) g_fovRest = v;
+        return;
+    }
+
+    if (g_fovRest < 40.0f) return;                  // never learned -- do nothing
+    if (*a < g_fovRest - 0.5f) *a = g_fovRest;      // undo the zoom only
+    if (Readable(obj + kFovB, 4))
+    {
+        float* b = (float*)(obj + kFovB);
+        if (*b < g_fovRest - 0.5f) *b = g_fovRest;
+    }
+}
+
+static void ObserveCutscene(const void* controller)
+{
+    if (!g_pawn) return;
+
+    // (Re)baseline when the pawn changes: collect the controller slots that
+    // currently point AT the pawn (Pawn, ViewTarget, and their aliases). During
+    // a scripted camera one or more of these swings to the camera actor.
+    // Find the slots ONCE. They are class offsets, so they survive level loads
+    // and pawn changes -- and re-scanning during a cutscene poisoned the list
+    // (the slots point at the camera actor then, not the pawn) which silently
+    // cancelled the cutscene handling partway through.
+    if (g_vtPawn != g_pawn)
+    {
+        g_vtPawn = g_pawn;
+        g_nVtCand = 0;
+        for (size_t off = 0x100; off + 4 <= 0x1000 && g_nVtCand < 48; off += 4)
+            if (Readable((const uint8_t*)controller + off, 4) &&
+                *(void**)((const uint8_t*)controller + off) == g_pawn)
+                g_vtCand[g_nVtCand++] = off;
+        Log(">>> CUTSCENE: watching %d controller slot(s) at the pawn.", g_nVtCand);
+        _InterlockedExchange(&g_cutscene, 0);
+        return;
+    }
+
+    // Cutscene == any of those slots has left the pawn for another live actor.
+    bool cut = false;
+    for (int i = 0; i < g_nVtCand; ++i)
+    {
+        if (!Readable((const uint8_t*)controller + g_vtCand[i], 4)) continue;
+        void* v = *(void**)((const uint8_t*)controller + g_vtCand[i]);
+        if (v && v != g_pawn && GsLooksLikeObject(v)) { cut = true; break; }
+    }
+    // S72: the ViewTarget signal is DEAD. Measured across a full session
+    // covering the bathysphere AND the balcony: +0x450, +0x620 and +0x914 all
+    // track the pawn exactly and never diverge, so this test can never fire.
+    // The flag is now driven by injected pitch -- see GameState_PitchSample.
+    // Kept as a diagnostic only: it no longer writes g_cutscene.
+    static bool loggedDivergence = false;
+    if (cut && !loggedDivergence)
+    {
+        loggedDivergence = true;
+        Log(">>> CUTSCENE: a watched slot diverged from the pawn (diagnostic only).");
+    }
+
+    // 1 Hz diagnostic: what the watched slots actually hold. Delete once the
+    // cutscene signal is confirmed.
+    {
+        static DWORD lastLog = 0;
+        const DWORD t = GetTickCount();
+        if (t - lastLog >= 1000)
+        {
+            lastLog = t;
+            char b[256]; int n = 0;
+            n += _snprintf_s(b + n, sizeof(b) - n, _TRUNCATE,
+                "pawn 0x%08X", (unsigned)(uintptr_t)g_pawn);
+            for (int i = 0; i < g_nVtCand; ++i)
+            {
+                void* v = nullptr;
+                if (Readable((const uint8_t*)controller + g_vtCand[i], 4))
+                    v = *(void**)((const uint8_t*)controller + g_vtCand[i]);
+                n += _snprintf_s(b + n, sizeof(b) - n, _TRUNCATE,
+                    "  +0x%X=0x%08X", (unsigned)g_vtCand[i], (unsigned)(uintptr_t)v);
+            }
+            Log(">>> CUTSCENE dbg: %s", b);
+        }
+    }
+}
+
+bool GameState_Cutscene() { return g_cutscene != 0; }
+
+// ============================================================================
+// CUTSCENE DETECTION via INJECTED PITCH  (S72 -- HANDOFF_6 section 8, "Plan B")
+// MEASURED, one session, both cutscenes:
+//   normal play           0.0 deg/s, worst stray sample 9.4
+//   bathysphere          17.4 .. 67.6 deg/s for 11 consecutive seconds
+//   balcony              17.9 .. 57.1 deg/s for 10 consecutive seconds
+// The bands do not overlap, so 12 deg/s separates them with margin. Two
+// consecutive samples in each direction, so one stray second cannot flip it.
+// Called once a second from the camera heartbeat. No scan, two ints.
+// ============================================================================
+void GameState_PitchSample(double degThisSecond)
+{
+    static int hi = 0, lo = 0;
+
+    if (degThisSecond > 12.0) { ++hi; lo = 0; }
+    else { ++lo; hi = 0; }
+
+    const long prev = g_cutscene;
+
+    if (hi >= 2 && !prev)
+    {
+        _InterlockedExchange(&g_cutscene, 1);
+        Log(">>> CUTSCENE: ON  (injected pitch %.1f deg/s)", degThisSecond);
+    }
+    else if (lo >= 2 && prev)
+    {
+        _InterlockedExchange(&g_cutscene, 0);
+        Log(">>> CUTSCENE: off  (injected pitch %.1f deg/s)", degThisSecond);
+    }
+}
+
+// ============================================================================
+// PAWN FRESHNESS (S71)
+// MEASURED: AController::Pawn is controller+0x450 (STAGE A found it; the 1 Hz
+// dbg confirms it tracks the pawn exactly). Loading a save rebuilds the pawn and
+// the Level, but our cached copies did not follow -- g_pawn read 0x3FF114E0
+// while the controller read 0x9CDD2AB0, which pinned CUTSCENE ON and PAUSE
+// PAUSED forever and left the menu quad over everything. Read the pawn from the
+// controller every call and reset everything downstream the moment it changes.
+// ============================================================================
+void HandsProbe_Reset();          // HandsProbe.cpp
+
+static const size_t kPawnSlot = 0x450;
+
+static void RefreshPawn(const void* controller)
+{
+    if (!Readable((const uint8_t*)controller + kPawnSlot, 4)) return;
+    void* p = *(void**)((const uint8_t*)controller + kPawnSlot);
+    if (!p || p == g_pawn || !GsLooksLikeObject(p)) return;
+
+    Log(">>> GAMESTATE: pawn changed 0x%08X -> 0x%08X. Resetting level, cutscene, "
+        "hands.", (unsigned)(uintptr_t)g_pawn, (unsigned)(uintptr_t)p);
+    GameState_SetPawn(p);                   // sets g_pawn AND resets the context. scan, so it re-runs on the NEW pawn
+    g_level = nullptr;                      // force Level re-find; Pauser was stale
+    _InterlockedExchange(&g_paused, 0);
+    _InterlockedExchange(&g_cutscene, 0);
+    g_fovRest = 0.0f;
+    HandsProbe_Reset();                     // re-lock hands/gun on the new pawn
+}
+
 void GameState_Observe(void* playerController)
 {
     if (!playerController) return;
@@ -559,7 +763,44 @@ void GameState_Observe(void* playerController)
     ApplyForegroundFov((const uint8_t*)playerController);
 
     if (!g_cfgGameState) return;
+    RefreshPawn(playerController);
+
+    // S76: DRIVE THE CONTEXT SCAN. ScanForContextField and RecheckCandidates
+    // have existed since S38 with NO CALLER -- which is why the "definitive"
+    // detector never produced one line of log. The decompile confirms
+    // ShockPlayer declares LastPlayerInputContext, and kContexts already maps
+    // "NullInput" to CTX_SCRIPTED. This only ever needed to be run.
+    {
+        const uint8_t* target = (const uint8_t*)(g_pawn ? g_pawn : playerController);
+        if (!g_scanDone)
+        {
+            if (++g_observeCalls >= 600)          // let the level settle first
+            {
+                g_scanDone = true;
+                ScanForContextField(target);
+            }
+        }
+        else if (!g_locked && g_nCand)
+        {
+            if ((++g_observeCalls & 0x3F) == 0)   // ~4x/sec, not per frame
+                RecheckCandidates(target);
+        }
+        else if (g_locked)
+        {
+            static char lastCtx[96] = {};
+            char val[96] = {};
+            if (ReadFStringAt(target, g_offset, val, sizeof(val)) &&
+                strcmp(val, lastCtx) != 0)
+            {
+                strncpy_s(lastCtx, val, _TRUNCATE);
+                Log(">>> CONTEXT: \"%s\"", val);
+            }
+        }
+    }
+
     ObservePause(playerController);
+    ObserveCutscene(playerController);
+    CutsceneFovHold((const uint8_t*)playerController);
 }
 
 // ============================================================================
@@ -611,14 +852,14 @@ static void SnapshotFloats(const uint8_t* obj)
     }
     g_snapValid = true;
     Log(">>> FOVPROBE: snapshot taken (%d plausible floats). Now change something "
-        "-- zoom the pistol -- and press Numpad 5.", n);
+        "-- zoom the pistol -- and press PGDN.", n);
 }
 
 static void DiffFloats(const uint8_t* obj)
 {
     if (!g_snapValid)
     {
-        Log(">>> FOVPROBE: no snapshot yet. Press Numpad 4 first.");
+        Log(">>> FOVPROBE: no snapshot yet. Press PGUP first.");
         return;
     }
 
@@ -695,15 +936,17 @@ static void ApplyForegroundFov(const uint8_t* obj)
 
 static void PollProbeKeys(const uint8_t* obj)
 {
-    static bool k4 = false, k5 = false;
+    // HOME / END -- the numpad is fully taken (grip tuning owns 0,2,4,5,6,7,8;
+    // DrawHook owns 1,3,*,/,-; CameraHook owns 9,+,.).
+    static bool kH = false, kE = false;
 
-    const bool d4 = (GetAsyncKeyState(VK_NUMPAD4) & 0x8000) != 0;
-    if (d4 && !k4) SnapshotFloats(obj);
-    k4 = d4;
+    const bool dH = (GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0;
+    if (dH && !kH) SnapshotFloats(obj);
+    kH = dH;
 
-    const bool d5 = (GetAsyncKeyState(VK_NUMPAD5) & 0x8000) != 0;
-    if (d5 && !k5) DiffFloats(obj);
-    k5 = d5;
+    const bool dE = (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;
+    if (dE && !kE) DiffFloats(obj);
+    kE = dE;
 }
 
 void GameState_Reset()

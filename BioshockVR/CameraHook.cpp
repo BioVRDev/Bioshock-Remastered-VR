@@ -54,6 +54,9 @@ extern bool g_cfg6DofHands;   // Enable6DofHands
 extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
+bool GameState_Cutscene();   // GameState.cpp
+bool GameState_Paused();     // GameState.cpp
+void GameState_PitchSample(double degThisSecond);   // GameState.cpp
 bool DrawHook_MenuUp();   // DrawHook.cpp
 
 static void Log(const char* fmt, ...)
@@ -628,6 +631,12 @@ static DWORD    g_lastTick = 0;
 // in rotator units. Sums |delta| so a sweep up and back down cannot cancel out.
 static double   g_aimGameDPitch = 0.0;
 
+// S77: the game's own yaw change since our last write, republished every
+// CalcView. Under input context NullInput the game DISCARDS stick input, so
+// this stays flat while the stick is hard over -- a direct test for "the game
+// is ignoring you" that needs no offsets and no cutscene flag.
+static int      g_gameDYaw = 0;
+
 // S22: rotator fields are 16-bit-periodic (65536 units == 360 deg) but stored
 // in a wider signed field, and the game NORMALISES what we write. Look down and
 // we write a negative pitch; the game stores it normalised, and a naive
@@ -750,6 +759,17 @@ void CameraHook_LateHandsWrite()
 {
     if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
 
+    // The hands actor is destroyed on level/save load. This runs on the RENDER
+    // thread from a pointer cached on the GAME thread, so a stale cache writes
+    // into freed or reallocated memory -- a crash during loading. Re-check the
+    // probe's current target every call and drop the cache the moment it moves.
+    void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
+    if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff) || obj != g_hwObj)
+    {
+        g_hwValid = false;
+        return;
+    }
+
     FRotator* R = (FRotator*)((uint8_t*)g_hwObj + g_hwRotOff);
     if (!IsMemoryWritable(R, sizeof(FRotator))) return;
     *R = g_hwWant;
@@ -758,6 +778,7 @@ void CameraHook_LateHandsWrite()
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
+    if (GameState_Cutscene()) return;
 
     void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
     if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff)) return;
@@ -877,8 +898,6 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     g_orig(pThis, edx, ViewActor, CameraLocation, CameraRotation);
 
     // The game's own UI state, read off the controller we already have in hand.
-    GameState_Observe(pThis);
-
     GameState_Observe(pThis);
     HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
 
@@ -1230,6 +1249,101 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     }
                 }
 
+                // S75: RENDER-SIDE CUTSCENE TURN. MEASURED from the decompile:
+                // ShockPlayerController::Use pushes input context NullInput, so
+                // during the balcony the game discards the stick and no delta
+                // ever reaches Rotation. We read the stick ourselves and rotate
+                // only the VIEW -- Controller.Rotation is never touched, so the
+                // game's idea of where you point stays correct and scripted
+                // triggers still fire.
+                {
+                    static LARGE_INTEGER s_freq = {}, s_last = {};
+                    static double s_cutYaw = 0.0;          // rotator units
+                    const double kTurnDegPerSec = 90.0;    // raise/lower to taste
+
+                    if (!s_freq.QuadPart) QueryPerformanceFrequency(&s_freq);
+                    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                    const double dt = s_last.QuadPart
+                        ? (double)(now.QuadPart - s_last.QuadPart) / (double)s_freq.QuadPart
+                        : 0.0;
+                    s_last = now;
+
+                    static double s_pushSec = 0.0, s_deadSec = 0.0;
+                    static double s_liveSec = 0.0, s_idleSec = 0.0;
+                    static bool   s_ignored = false;
+
+                    float tx = 0.0f;
+                    const bool haveStick = Input_GetTurnX(&tx);
+                    const bool pushing = haveStick && fabsf(tx) > 0.30f;
+                    // 4 units == 0.02 deg. Deliberately SENSITIVE: ANY real
+                    // response must count. At 30 a gentle stick push during
+                    // normal play read as "ignored" -- five false arms before
+                    // the first cutscene even started.
+                    const bool gameMoved = (g_gameDYaw > 4 || g_gameDYaw < -4);
+                    const bool goodDt = (dt > 0.0 && dt < 0.25);
+
+                    if (goodDt)
+                    {
+                        if (pushing) { s_pushSec += dt; s_idleSec = 0.0; }
+                        else { s_pushSec = 0.0; s_idleSec += dt; }
+
+                        if (pushing && !gameMoved) s_deadSec += dt; else s_deadSec = 0.0;
+                        if (pushing && gameMoved) s_liveSec += dt; else s_liveSec = 0.0;
+                    }
+
+                    const bool blocked = DrawHook_MenuUp() || GameState_Paused();
+
+                    if (!s_ignored)
+                    {
+                        if (!blocked && s_pushSec > 0.30 && s_deadSec > 0.30)
+                            s_ignored = true;               // ARM
+                    }
+                    else
+                    {
+                        // RELEASE only for a real reason. Letting go of the
+                        // stick is NOT one -- that is what chattered 40 times.
+                        if (blocked || s_liveSec > 0.25 || s_idleSec > 5.0)
+                            s_ignored = false;
+                    }
+
+                    if (s_ignored && pushing && goodDt)
+                        s_cutYaw += (double)tx * kTurnDegPerSec * 182.0444 * dt;
+                    else if (gameMoved && !pushing && goodDt)
+                    {
+                        // S78: the SCRIPT OUTRANKS our offset. StartForcePlayerMove
+                        // (ShockPlayerController::Use -- the syringe) slews your yaw
+                        // at ForceMoveRotationDeltaPerSecond=65536, a full turn per
+                        // second, to plant you in the scripted pose. Our offset rode
+                        // on top of it, so the shot framed ~45 deg off and afterwards
+                        // "forward" walked you across the room. Whenever the game
+                        // turns you and you are NOT on the stick, hand the framing
+                        // back -- rate limited, so it eases instead of snapping.
+                        static bool s_unwinding = false;
+                        if (!s_unwinding && (s_cutYaw > 900.0 || s_cutYaw < -900.0))
+                        {
+                            s_unwinding = true;
+                            Log(">>> STICK: script is turning you -- unwinding %.1f deg",
+                                s_cutYaw / 182.0444);
+                        }
+
+                        const double step = 120.0 * 182.0444 * dt;   // deg/s
+                        if (s_cutYaw > step) s_cutYaw -= step;
+                        else if (s_cutYaw < -step) s_cutYaw += step;
+                        else { s_cutYaw = 0.0; s_unwinding = false; }
+                    }
+
+                    static bool s_wasIgnored = false;
+                    if (s_ignored != s_wasIgnored)
+                    {
+                        s_wasIgnored = s_ignored;
+                        Log(">>> STICK: game is %s input (render-side turn %s)",
+                            s_ignored ? "IGNORING" : "accepting",
+                            s_ignored ? "ON" : "off");
+                    }
+
+                    finalRot.yaw += (int)s_cutYaw;
+                }
+
                 *CameraRotation = finalRot;
             }
 
@@ -1296,6 +1410,14 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
                 if (IsMemoryWritable(aim, sizeof(FRotator)))
                 {
+                    // Re-arm the heading the frame a cutscene ends, so the view
+                    // resumes from wherever the game left you facing instead of
+                    // snapping by the whole cutscene's accumulated slew.
+                    static bool s_wasCut = false;
+                    const bool s_nowCut = GameState_Cutscene();
+                    if (s_wasCut && !s_nowCut) g_aimInit = false;
+                    s_wasCut = s_nowCut;
+
                     if (!g_aimInit)
                     {
                         g_aimBase = *aim;
@@ -1306,22 +1428,25 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     else
                     {
                         // Only the GAME's own change since our last write.
-                        // S21 diagnostic: how much pitch is the GAME still
-                        // injecting? If mouse-Y is truly dead at the engine
-                        // level this stays at 0.0 while you sweep the mouse
-                        // up and down. If it does not, the User.ini edit did
-                        // not take -- almost always because the live User.ini
-                        // is beside the live Bioshock.ini, not where the
-                        // guide's default path says.
                         const int dP = RotDelta(aim->pitch, g_aimLastWrote.pitch);
                         const int dY = RotDelta(aim->yaw, g_aimLastWrote.yaw);
                         const int dR = RotDelta(aim->roll, g_aimLastWrote.roll);
 
                         g_aimGameDPitch += fabs((double)dP);
+                        g_gameDYaw = dY;        // S77, read by the turn gate
 
-                        g_aimBase.pitch += dP;
-                        g_aimBase.yaw += dY;
-                        g_aimBase.roll += dR;
+                        // CUTSCENE HEAD-OVERRIDE: during a scripted camera the game
+                        // slews aim to point the view where the script wants;
+                        // accumulating that swings the whole world around your
+                        // locked head (nausea). Freeze the world heading so ONLY
+                        // the head rotates the view. Position still follows the
+                        // script, so you ride the path.
+                        if (!s_nowCut)
+                        {
+                            g_aimBase.pitch += dP;
+                            g_aimBase.yaw += dY;
+                            g_aimBase.roll += dR;
+                        }
                     }
 
                     FRotator want;
@@ -1349,8 +1474,22 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         want.roll = g_aimBase.roll;
                     }
 
-                    *aim = want;
-                    g_aimLastWrote = want;
+                    // S74: back to NOT writing during a cutscene. Always-writing
+                    // latches the detector ON forever: we freeze g_aimBase, you
+                    // push the stick, we overwrite it, and that disagreement is
+                    // exactly what the detector measures. It pinned your facing
+                    // and killed the projector trigger. The 2-second flag this
+                    // restores is wrong but harmless; the real fix is reading the
+                    // game's own scripted-sequence state, not this heuristic.
+                    if (!s_nowCut)
+                    {
+                        *aim = want;
+                        g_aimLastWrote = want;
+                    }
+                    else
+                    {
+                        g_aimLastWrote = *aim;
+                    }
                 }
             }
 
@@ -1385,8 +1524,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     if (now - g_lastTick >= 1000)
     {
         g_lastTick = now;
+        const double injDeg = g_aimGameDPitch / 182.0444;
         Log("  MOUSE-Y: game injected %.1f deg of pitch this second   (0.0 == mouse Y is dead)",
-            g_aimGameDPitch / 182.0444);
+            injDeg);
+        GameState_PitchSample(injDeg);
         g_aimGameDPitch = 0.0;
 
         Log("--- camera: %llu calls, %d site(s), leader=site%d | writes L=%llu R=%llu ---",

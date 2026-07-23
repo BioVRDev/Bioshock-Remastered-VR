@@ -45,6 +45,7 @@ bool  g_cfgHeadAim = false;      // make Controller.Rotation follow the aim
 int   g_cfgHeadAimMode = 1;      // 0 additive, 1 local compose, 2 pitch-decoupled
 bool  g_cfgPairLock = true;      // render both eyes from the same instant
 float g_cfgHeightOffset = 0.0f;  // CameraHeightOffset, cm, +up
+bool  g_cfgCutsceneTheater = false;  // show cutscenes on the flat quad
 
 // weapon & arm rendering -----------------------------------------------------
 int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
@@ -250,6 +251,7 @@ static void LoadConfig()
     g_cfgHeadAimMode = CfgIntRange("HeadAimMode", 1, 0, 2);
     g_cfgPairLock = CfgBool("PairLockCamera", true);
     g_cfgHeightOffset = CfgFloat("CameraHeightOffset", g_cfgHeightOffset, -100.f, 100.f);
+    g_cfgCutsceneTheater = CfgBool("CutsceneTheater", false);
 
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
@@ -337,6 +339,8 @@ static void LoadConfig()
         "(local compose, PITCH DECOUPLED)");
     CfgEcho("PairLockCamera", "%d", (int)g_cfgPairLock);
     CfgEcho("CameraHeightOffset", "%.1f cm", g_cfgHeightOffset);
+    CfgEcho("CutsceneTheater", "%d  %s", (int)g_cfgCutsceneTheater,
+        g_cfgCutsceneTheater ? "(cutscenes on the flat quad)" : "(cutscenes in 3D)");
 
     Log("[weapon]");
     CfgEcho("ForegroundFov", "offset 0x%X  value %.1f", g_cfgFgFovOffset, g_cfgFgFovValue);

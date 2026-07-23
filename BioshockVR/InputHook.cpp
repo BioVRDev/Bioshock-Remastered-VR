@@ -196,6 +196,15 @@ static bool ReadPad(PadState* out)
     return false;
 }
 
+bool Input_GetTurnX(float* out)
+{
+    if (!out) return false;
+    PadState s;
+    if (!ReadPad(&s) || !s.active) return false;
+    *out = s.turnX;
+    return true;
+}
+
 // ---------------------------------------------------------------- OpenXR side
 
 static XrInstance g_inst = XR_NULL_HANDLE;

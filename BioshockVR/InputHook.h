@@ -71,6 +71,12 @@ struct HandPose
 // gripValid separately: a clean read of an untracked hand is still a clean read.
 bool Input_GetHandPose(int hand, HandPose* out);
 
+// Right-stick X, -1..1. False when the XR session is not focused. For
+// CameraHook's render-side cutscene turn: during input context NullInput the
+// game DISCARDS stick input (ShockPlayerController::Use pushes NullInput), so
+// reading the stick here is the ONLY way to turn during a scripted sequence.
+bool Input_GetTurnX(float* out);
+
 // ---- consumer: call from Hooks.cpp --------------------------------------
 // Once per Present. Handles deferred hook installation (the game may load its
 // XInput DLL long after our first frame) and the once-a-second log line.

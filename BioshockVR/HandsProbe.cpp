@@ -68,6 +68,7 @@ extern int   g_cfgGunChildren;   // GunChildren: 0 == off, 1 == sweep them one
 // at a time, 2 == scale all of them at once.
 
 void GameState_SetPawn(void* pawn);   // GameState.cpp
+bool GameState_InGame();              // GameState.cpp
 
 static void Log(const char* fmt, ...)
 {
@@ -1091,6 +1092,12 @@ void HandsProbe_Observe(void* playerController,
     if (!playerController || !camLoc || !camRot) return;
 
     PollGripKeys();          // always live, even before the probe locks
+
+    // NO LEVEL, NO PROBE. On the main menu the camera sits at the origin, so
+    // every zeroed vector in memory reads as "57 cm from the camera" and the
+    // probe locks junk -- then we write Location, Rotation and DrawScale into
+    // objects the level load frees. That is the crash.
+    if (!GameState_InGame()) return;
 
     if (++g_calls < 600) return;     // let the level finish loading
 
