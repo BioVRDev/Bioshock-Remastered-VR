@@ -43,6 +43,7 @@ extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render threa
 extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 extern void  XR_GetHeadPos(float out[3]);
 extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
+extern int   g_cfgDeltaClamp;     // 0 off, 1 player world, 2 both (dllmain.cpp)
 extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch-decoupled
 extern bool  g_cfgPairLock;
 extern bool  g_cfgHeadAim;
@@ -109,6 +110,18 @@ static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (men
 static long           g_deepPops = 0;      // consecutive pops with depth > 1
 extern float g_cfgHeightOffset;   // CameraHeightOffset, cm
 static FVector g_lastCamCenter = {};
+
+// How far the camera travelled between the eye-0 and eye-1 renders -- i.e. how
+// far the WORLD slid between the two eye images. This is the exact quantity the
+// 10a clamp is supposed to drive to zero, so it is how we judge it.
+static double g_ieLast = 0.0, g_ieSum = 0.0, g_ieMax = 0.0;
+static long   g_ieN = 0;
+
+// S80: how far the camera travelled between the eye-0 and eye-1 renders --
+// i.e. how far the WORLD slid between the two eye images. The exact quantity
+// behind the bathysphere doubling.
+static double g_interEyeMove = 0.0;
+double CameraHook_InterEyeMove() { return g_interEyeMove; }
 
 // With head-aim the head reaches the view INDIRECTLY (we write the aim field,
 // the game derives CameraRotation from it NEXT call). So the image is rendered
@@ -775,6 +788,121 @@ void CameraHook_LateHandsWrite()
     *R = g_hwWant;
 }
 
+// ---- PHASE 10a: ONE WORLD ADVANCE PER EYE PAIR --------------------------
+// RE'd in phase 10. module+0x53D850 is the frame-delta function on the game
+// thread: it scales the incoming delta by LevelInfo->TimeDilation, clamps to
+// [0, 0.4], stores it at this+0xC8, then calls the virtual advance -- so the
+// delta can be intercepted on the way IN.
+//
+// Option-B carry: pass 0 on the right-eye frame, (delta + carry) on the left.
+// The world then advances ONCE per stereo pair instead of once per eye. That
+// is the entire cause of the bathysphere doubling -- 4.2ms of world motion
+// between the two eye renders, which near geometry turns into unfusable
+// disparity. Nothing is discarded, so full speed is preserved.
+static const unsigned kDelta_FnOff = 0x53D850;
+typedef int(__fastcall* DeltaFn)(void* thisPtr, void* edx, void* arg1, uint32_t deltaBits);
+static DeltaFn  g_origDelta = nullptr;
+static void* g_deltaFnAddr = nullptr;
+static bool     g_deltaFired = false;
+
+// TWO objects receive an advance every frame. Only one is the player world;
+// the other ignores TimeDilation and drives UI/streaming. ASLR means we cannot
+// use a recorded address -- the right one is found live, every launch.
+static volatile uint32_t g_deltaObjA = 0, g_deltaObjB = 0;
+static uint32_t g_targetObj = 0;
+static bool     g_targetLocked = false;
+static float    g_carry = 0.0f;   // carry for the player world
+static float    g_carryB = 0.0f;   // carry for the second world
+
+// Phase 10 proved the clamp by watching the STORED delta alternate
+// (~0.0085 doubled / ~0.0005 near-zero). Bits only -- positive floats compare
+// correctly as uint32, so the hook never has to touch an FP register.
+static uint32_t g_fdMinBits = 0xFFFFFFFFu, g_fdMaxBits = 0;
+
+static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t deltaBits)
+{
+    if (!g_deltaFired)
+    {
+        g_deltaFired = true;
+        Log(">>> DELTA HOOK FIRED. this=0x%08X thread=%lu",
+            (unsigned)(uintptr_t)thisPtr, GetCurrentThreadId());
+    }
+
+    const uint32_t self = (uint32_t)(uintptr_t)thisPtr;
+
+    // Track the two delta-receiving objects. A save or level load destroys both
+    // and makes new ones. With the old pair still recorded, neither new object
+    // matches g_deltaObjB, so BOTH map onto g_carry and share one accumulator
+    // -- one world then advances twice per pair. That is the double speed after
+    // a load. A third identity means the pairing is stale: reset and re-lock.
+    if (self != g_deltaObjA && self != g_deltaObjB)
+    {
+        if (g_deltaObjA == 0) g_deltaObjA = self;
+        else if (g_deltaObjB == 0) g_deltaObjB = self;
+        else
+        {
+            g_deltaObjA = self; g_deltaObjB = 0;
+            g_carry = 0.0f; g_carryB = 0.0f;
+            g_targetObj = 0; g_targetLocked = false;
+            Log(">>> DELTA: world objects changed (0x%08X). Carries reset, re-locking.",
+                self);
+        }
+    }
+
+    uint32_t passDelta = deltaBits;
+
+    if (g_cfgDeltaClamp)
+    {
+        const bool isTarget = (g_targetLocked && self == g_targetObj);
+        // Mode 2: clamp BOTH delta-receiving objects. FrameDelta proves the
+        // player world is already freezing, yet the camera still moves 1.2
+        // units between eyes -- so whatever carries the bathysphere is being
+        // ticked by the other one.
+        const bool doClamp = (g_cfgDeltaClamp == 2) ? true : isTarget;
+
+        if (doClamp)
+        {
+            // Each object needs its OWN carry. Sharing one would hand each
+            // world the other's frozen time and desync them both.
+            float* carry = (self == g_deltaObjB) ? &g_carryB : &g_carry;
+            const float d = *(const float*)&deltaBits;
+            if ((int)(g_eyeWr & 1) == 1)
+            {
+                *carry += d;                       // right-eye frame: freeze
+                // Safety: during a load the eye tag stops alternating and the
+                // carry can bank far more than a frame. Dumping that in one go
+                // is a lurch, so discard anything implausible.
+                if (*carry > 0.1f) *carry = 0.0f;
+                const float zero = 0.0f;
+                passDelta = *(const uint32_t*)&zero;
+            }
+            else
+            {
+                const float carried = d + *carry;  // left-eye frame: advance the pair
+                *carry = 0.0f;
+                passDelta = *(const uint32_t*)&carried;
+            }
+        }
+    }
+
+    // Nothing after the call. Your phase-10 notes were careful to keep the
+    // post-call section integer-only so a possible EAX/xmm0 return was never
+    // clobbered; leaving it empty removes the hazard entirely.
+    const int ret = g_origDelta(thisPtr, edx, arg1, passDelta);
+
+    // Integer-only readback, after the call. this+0xC8 is FrameDelta: the
+    // scaled, clamped value the engine actually stored and advanced on.
+    if (g_targetLocked && self == g_targetObj &&
+        IsMemoryValid((const char*)thisPtr + 0xC8, 4))
+    {
+        const uint32_t stored = *(const uint32_t*)((const char*)thisPtr + 0xC8);
+        if (stored < g_fdMinBits) g_fdMinBits = stored;
+        if (stored > g_fdMaxBits) g_fdMaxBits = stored;
+    }
+
+    return ret;
+}
+
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
@@ -959,6 +1087,29 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     //     writing to them would let head-look steer the character. ---
     if (site != &g_sites[leader]) return;
 
+    // PHASE 10a: which delta-receiving object does the RENDER view's controller
+    // reach? That one is the player world. Throttled -- this is a scan, and it
+    // stops permanently the moment it locks (rule 1, section 11).
+    if (g_cfgDeltaClamp && !g_targetLocked && (g_deltaObjA || g_deltaObjB))
+    {
+        static int probeTick = 0;
+        if (((probeTick++) & 0x3F) == 0)
+        {
+            for (unsigned O = 0; O <= 0x400; O += 4)
+            {
+                if (!IsMemoryValid((const char*)pThis + O, 4)) continue;
+                const uint32_t v = *(const uint32_t*)((const char*)pThis + O);
+                if (v && (v == g_deltaObjA || v == g_deltaObjB))
+                {
+                    g_targetObj = v; g_targetLocked = true;
+                    Log(">>> TARGET: player world 0x%08X via pThis+0x%X (phase 10 found +0xFC)",
+                        v, O);
+                    break;
+                }
+            }
+        }
+    }
+
     // --- TAG THIS FRAME'S EYE and push it to Present. The eye is owned HERE,
     //     on the game thread, by strict alternation of the producer index. It
     //     rides the FIFO out to the render thread with the frame it belongs to. ---
@@ -977,6 +1128,14 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     else if (g_cfgPairLock && g_pairValid &&
         g_cfgCameraWrite && g_calls >= kArmAfterCalls)
     {
+        // Measure BEFORE discarding it.
+        const double dx = (double)CameraLocation->x - (double)g_pairLoc.x;
+        const double dy = (double)CameraLocation->y - (double)g_pairLoc.y;
+        const double dz = (double)CameraLocation->z - (double)g_pairLoc.z;
+        g_ieLast = sqrt(dx * dx + dy * dy + dz * dz);
+        g_ieSum += g_ieLast; ++g_ieN;
+        if (g_ieLast > g_ieMax) g_ieMax = g_ieLast;
+
         *CameraRotation = g_pairRot;
         *CameraLocation = g_pairLoc;
     }
@@ -1272,6 +1431,17 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     static double s_liveSec = 0.0, s_idleSec = 0.0;
                     static bool   s_ignored = false;
 
+                    // S79: the offset must never survive anything. MEASURED: it
+                    // reached -159.2 deg and rode straight through a save load,
+                    // leaving the view a half turn from the character -- hence
+                    // the inverted stick and the backwards head parallax.
+                    if (CameraHook_Starved() || DrawHook_MenuUp() || GameState_Paused())
+                    {
+                        s_cutYaw = 0.0;
+                        s_ignored = false;
+                        s_pushSec = s_deadSec = s_liveSec = s_idleSec = 0.0;
+                    }
+
                     float tx = 0.0f;
                     const bool haveStick = Input_GetTurnX(&tx);
                     const bool pushing = haveStick && fabsf(tx) > 0.30f;
@@ -1308,7 +1478,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
                     if (s_ignored && pushing && goodDt)
                         s_cutYaw += (double)tx * kTurnDegPerSec * 182.0444 * dt;
-                    else if (gameMoved && !pushing && goodDt)
+                    else if (goodDt && ((gameMoved && !pushing) ||
+                        g_gameDYaw > 150 || g_gameDYaw < -150))
                     {
                         // S78: the SCRIPT OUTRANKS our offset. StartForcePlayerMove
                         // (ShockPlayerController::Use -- the syringe) slews your yaw
@@ -1535,6 +1706,14 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",
             g_headYaw, g_headPitch, g_headRoll,
             g_cfgHeadTracking ? "(WRITTEN to camera)" : "(computed, not written)");
+        Log("  INTEREYE: avg%7.2f  max%7.2f  units   clamp=%d %s",
+            g_ieN ? (g_ieSum / (double)g_ieN) : 0.0, g_ieMax,
+            (int)g_cfgDeltaClamp, g_targetLocked ? "(locked)" : "(NOT locked)");
+        g_ieSum = 0.0; g_ieMax = 0.0; g_ieN = 0;
+        Log("  DELTA: FrameDelta min %.5f  max %.5f   clamp=%d",
+            (g_fdMinBits == 0xFFFFFFFFu) ? 0.0f : *(const float*)&g_fdMinBits,
+            * (const float*)&g_fdMaxBits, (int)g_cfgDeltaClamp);
+            g_fdMinBits = 0xFFFFFFFFu; g_fdMaxBits = 0;
         Log("  POS : right%7.1f%s  up%7.1f%s  fwd%7.1f%s  cm   %s",
             g_posRight, (fabs(g_posRight) >= kPosSide - 0.05) ? "*" : " ",
             g_posUp, (g_posUp >= kPosUpMax - 0.05 ||
@@ -1684,6 +1863,35 @@ bool CameraHook_Install()
     s = MH_EnableHook(fn);
     if (s != MH_OK) { Log("camera: MH_EnableHook -> %d. No hook.", (int)s); g_fnAddr = nullptr; return false; }
 
+    // Separate hook, separate failure. If this doesn't take, the camera still
+    // works and the mod runs exactly as it does today.
+    if (g_cfgDeltaClamp)
+    {
+        void* dfn = (void*)(g_modBase + kDelta_FnOff);
+        const uint8_t* pb = (const uint8_t*)dfn;
+        // Prologue confirmed in phase 10: 55 8B EC 6A FF. If this build differs,
+        // REFUSE -- hooking the wrong address here corrupts the sim clock.
+        if (IsMemoryValid(pb, 5) && pb[0] == 0x55 && pb[1] == 0x8B &&
+            pb[2] == 0xEC && pb[3] == 0x6A && pb[4] == 0xFF)
+        {
+            if (MH_CreateHook(dfn, &hkDelta, (LPVOID*)&g_origDelta) == MH_OK &&
+                MH_EnableHook(dfn) == MH_OK)
+            {
+                g_deltaFnAddr = dfn;
+                Log(">>> DELTA HOOK ARMED at module+0x%X (one world advance per eye pair)",
+                    kDelta_FnOff);
+            }
+            else Log("!!! delta: MinHook failed at module+0x%X. Clamp OFF.", kDelta_FnOff);
+        }
+        else
+        {
+            Log("!!! delta: prologue MISMATCH at module+0x%X (expected 55 8B EC 6A FF).",
+                kDelta_FnOff);
+            Log("!!! delta: wrong build or the offset moved. NOTHING hooked.");
+        }
+    }
+    else Log("delta: DeltaClamp=0. One advance per EYE -- fast scenes will double.");
+
     Log(">>> CAMERA HOOK ARMED (write=%d). Load a level and move.", (int)g_cfgCameraWrite);
     return true;
 }
@@ -1691,4 +1899,5 @@ bool CameraHook_Install()
 void CameraHook_Remove()
 {
     if (g_fnAddr) { MH_DisableHook(g_fnAddr); g_fnAddr = nullptr; }
+    if (g_deltaFnAddr) { MH_DisableHook(g_deltaFnAddr); g_deltaFnAddr = nullptr; }
 }

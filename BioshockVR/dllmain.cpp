@@ -46,6 +46,7 @@ int   g_cfgHeadAimMode = 1;      // 0 additive, 1 local compose, 2 pitch-decoupl
 bool  g_cfgPairLock = true;      // render both eyes from the same instant
 float g_cfgHeightOffset = 0.0f;  // CameraHeightOffset, cm, +up
 bool  g_cfgCutsceneTheater = false;  // show cutscenes on the flat quad
+int   g_cfgDeltaClamp = 0;           // 0 off, 1 player world, 2 BOTH worlds
 
 // weapon & arm rendering -----------------------------------------------------
 int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
@@ -252,6 +253,7 @@ static void LoadConfig()
     g_cfgPairLock = CfgBool("PairLockCamera", true);
     g_cfgHeightOffset = CfgFloat("CameraHeightOffset", g_cfgHeightOffset, -100.f, 100.f);
     g_cfgCutsceneTheater = CfgBool("CutsceneTheater", false);
+    g_cfgDeltaClamp = CfgInt("DeltaClamp", 0);
 
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
@@ -341,6 +343,9 @@ static void LoadConfig()
     CfgEcho("CameraHeightOffset", "%.1f cm", g_cfgHeightOffset);
     CfgEcho("CutsceneTheater", "%d  %s", (int)g_cfgCutsceneTheater,
         g_cfgCutsceneTheater ? "(cutscenes on the flat quad)" : "(cutscenes in 3D)");
+    CfgEcho("DeltaClamp", "%d  %s", g_cfgDeltaClamp,
+        (g_cfgDeltaClamp == 2) ? "(BOTH worlds, one advance per eye pair)"
+        : (g_cfgDeltaClamp == 1) ? "(player world only)" : "(off, one per eye)");
 
     Log("[weapon]");
     CfgEcho("ForegroundFov", "offset 0x%X  value %.1f", g_cfgFgFovOffset, g_cfgFgFovValue);

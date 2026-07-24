@@ -28,6 +28,10 @@ void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)
 // TRUE when no camera view has been produced for >250ms (menu/loading/movie).
 bool CameraHook_Starved();
 
+// World units the camera moved between the two eye renders. Large means the
+// stashed left image no longer fuses with the live right one.
+double CameraHook_InterEyeMove();
+
 // ---- THE LATCHED-POSE CHANNEL (flicker fix, §2) -------------------------
 // game->render, mirror of the render->game head seqlock. Publishes the pose
 // the camera was ACTUALLY rendered from: the quat latched at eye-0 time, and
