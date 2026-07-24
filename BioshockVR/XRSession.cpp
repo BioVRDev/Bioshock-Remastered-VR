@@ -24,6 +24,7 @@ extern bool  g_cfgSwapEyes;
 extern float g_cfgMenuSize;
 extern float g_cfgMenuDist;
 extern bool  g_cfgCrosshair;
+extern float g_cfgHeightOffset;   // CameraHeightOffset, cm (dllmain.cpp)
 extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
 extern float g_cfgXhDist;
 extern float g_cfgMenuHeight;
@@ -663,21 +664,22 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     static float lastX = 0.f, lastY = 0.f, lastZ = -1.f;
                     float dl[3] = { lastX, lastY, lastZ };
 
-                    HandPose hp = {};
+                    // S82: use the CLAMPED, SMOOTHED offset the camera hook
+                    // ACTUALLY APPLIED, not the raw controller pose. The gun
+                    // points along the aim field, which CameraHook composes from
+                    // the clamped offset -- drawing the dot from the raw pose
+                    // puts it where your hand points, a fixed diagonal away from
+                    // where the gun shoots.
+                    float dYaw = 0.f, dPitch = 0.f;
                     const bool haveAim = (g_cfgAimSource == 1) &&
-                        Input_GetHandPose(HAND_RIGHT, &hp) && hp.aimValid;
+                        CameraHook_GetAimOffset(&dYaw, &dPitch);
                     if (haveAim)
                     {
-                        const float fwd[3] = { 0.f, 0.f, -1.f };
-                        float aw[3];
-                        XhQuatRotate(hp.aimQuat, fwd, aw);           // aim in world
-
-                        const XrQuaternionf& Q = views[0].pose.orientation;
-                        const float hc[4] = { -Q.x, -Q.y, -Q.z, Q.w };  // conjugate
-                        XhQuatRotate(hc, aw, dl);                    // aim in head-local
-
-                        float n = sqrtf(dl[0] * dl[0] + dl[1] * dl[1] + dl[2] * dl[2]);
-                        if (n > 1e-4f) { dl[0] /= n; dl[1] /= n; dl[2] /= n; }
+                        const float ry = dYaw * 0.01745329f;
+                        const float rp = dPitch * 0.01745329f;
+                        dl[0] = sinf(ry) * cosf(rp);
+                        dl[1] = sinf(rp);
+                        dl[2] = -cosf(ry) * cosf(rp);
                         lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
                     }
                     else if (g_cfgAimSource != 1)
@@ -686,7 +688,15 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     }
                     // else: motion aim on but a one-frame tracking blip -- hold last.
 
-                    xh.pose.position = { xd * dl[0], xd * dl[1], xd * dl[2] };
+                    // S84: MEASURED -- CameraHeightOffset raises the camera 9cm
+                    // above the pawn's eye (S40 stature), but shots still leave
+                    // FROM the pawn's eye. The dot therefore sits a fixed 9cm
+                    // above every impact at every range, which is exactly what
+                    // "low by the same amount at all distances" describes.
+                    // Drop the quad by the same offset and they coincide.
+                    xh.pose.position = { xd * dl[0],
+                                         xd * dl[1] - g_cfgHeightOffset * 0.01f,
+                                         xd * dl[2] };
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
                     layerCount = 2;
                 }

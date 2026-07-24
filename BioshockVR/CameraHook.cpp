@@ -140,9 +140,12 @@ static volatile long g_lpValid = 0;
 
 // ---------------------------------------------------------------- memory safety
 
+volatile long g_vqCount = 0;   // VirtualQuery calls, drained by the heartbeat
+
 static bool IsMemoryValid(const void* addr, size_t size)
 {
     if (!addr || !size) return false;
+    _InterlockedIncrement(&g_vqCount);
 
     MEMORY_BASIC_INFORMATION mbi = {};
     if (VirtualQuery(addr, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
@@ -771,6 +774,7 @@ static bool     g_hwValid = false;
 void CameraHook_LateHandsWrite()
 {
     if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
+    if (GameState_Paused()) return;   // render-thread half of the same freeze
 
     // The hands actor is destroyed on level/save load. This runs on the RENDER
     // thread from a pointer cached on the GAME thread, so a stale cache writes
@@ -818,6 +822,7 @@ static float    g_carryB = 0.0f;   // carry for the second world
 // (~0.0085 doubled / ~0.0005 near-zero). Bits only -- positive floats compare
 // correctly as uint32, so the hook never has to touch an FP register.
 static uint32_t g_fdMinBits = 0xFFFFFFFFu, g_fdMaxBits = 0;
+static bool g_fdChecked = false, g_fdOk = false;   // validate the page once
 
 static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t deltaBits)
 {
@@ -844,6 +849,7 @@ static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t del
             g_deltaObjA = self; g_deltaObjB = 0;
             g_carry = 0.0f; g_carryB = 0.0f;
             g_targetObj = 0; g_targetLocked = false;
+            g_fdChecked = false; g_fdOk = false;
             Log(">>> DELTA: world objects changed (0x%08X). Carries reset, re-locking.",
                 self);
         }
@@ -892,12 +898,21 @@ static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t del
 
     // Integer-only readback, after the call. this+0xC8 is FrameDelta: the
     // scaled, clamped value the engine actually stored and advanced on.
-    if (g_targetLocked && self == g_targetObj &&
-        IsMemoryValid((const char*)thisPtr + 0xC8, 4))
+    if (g_targetLocked && self == g_targetObj)
     {
-        const uint32_t stored = *(const uint32_t*)((const char*)thisPtr + 0xC8);
-        if (stored < g_fdMinBits) g_fdMinBits = stored;
-        if (stored > g_fdMaxBits) g_fdMaxBits = stored;
+        // Validate ONCE per world, not 235 times a second. VirtualQuery is a
+        // kernel transition and this sits in the engine's hottest function.
+        if (!g_fdChecked)
+        {
+            g_fdChecked = true;
+            g_fdOk = IsMemoryValid((const char*)thisPtr + 0xC8, 4);
+        }
+        if (g_fdOk)
+        {
+            const uint32_t stored = *(const uint32_t*)((const char*)thisPtr + 0xC8);
+            if (stored < g_fdMinBits) g_fdMinBits = stored;
+            if (stored > g_fdMaxBits) g_fdMaxBits = stored;
+        }
     }
 
     return ret;
@@ -907,6 +922,7 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
     if (GameState_Cutscene()) return;
+    if (GameState_Paused()) return;   // hands hold still behind a menu
 
     void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
     if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff)) return;
@@ -1515,6 +1531,23 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     finalRot.yaw += (int)s_cutYaw;
                 }
 
+                // S83: FREEZE the view while an in-game menu is up. Pause, map,
+                // inventory and vending all render the world behind the UI, and
+                // having it swing with your head while you read a menu is
+                // disorienting. Latch on entry rather than skipping the write,
+                // so the view holds where it was instead of snapping to the
+                // game's rotation.
+                {
+                    static FRotator s_menuRot = {};
+                    static bool     s_menuHeld = false;
+                    if (GameState_Paused())
+                    {
+                        if (!s_menuHeld) { s_menuHeld = true; s_menuRot = finalRot; }
+                        finalRot = s_menuRot;
+                    }
+                    else s_menuHeld = false;
+                }
+
                 *CameraRotation = finalRot;
             }
 
@@ -1533,9 +1566,23 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 const double cy = UnitsToRad(
                     (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : cleanRot.yaw);
                 const double cs = cos(cy), sn = sin(cy);
-                CameraLocation->x += (float)(g_posFwd * cs - g_posRight * sn);
-                CameraLocation->y += (float)(g_posFwd * sn + g_posRight * cs);
-                CameraLocation->z += (float)g_posUp;
+                // S85: hold the head-position offset too while a menu is up.
+                // Freezing rotation alone still let you slide the world by
+                // leaning. Latch on entry rather than zeroing, so the view holds
+                // where it was instead of snapping back to the pawn's eye.
+                static double mFwd = 0.0, mRight = 0.0, mUp = 0.0;
+                static bool   mHeld = false;
+                double pf = g_posFwd, pr = g_posRight, pu = g_posUp;
+                if (GameState_Paused())
+                {
+                    if (!mHeld) { mHeld = true; mFwd = g_posFwd; mRight = g_posRight; mUp = g_posUp; }
+                    pf = mFwd; pr = mRight; pu = mUp;
+                }
+                else mHeld = false;
+
+                CameraLocation->x += (float)(pf * cs - pr * sn);
+                CameraLocation->y += (float)(pf * sn + pr * cs);
+                CameraLocation->z += (float)pu;
             }
 
             // S40: STATURE. The pawn's eye height is authored for a monitor and
@@ -1714,6 +1761,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             (g_fdMinBits == 0xFFFFFFFFu) ? 0.0f : *(const float*)&g_fdMinBits,
             * (const float*)&g_fdMaxBits, (int)g_cfgDeltaClamp);
             g_fdMinBits = 0xFFFFFFFFu; g_fdMaxBits = 0;
+        Log("  VQUERY: %ld VirtualQuery calls in the last second",
+            _InterlockedExchange(&g_vqCount, 0));
         Log("  POS : right%7.1f%s  up%7.1f%s  fwd%7.1f%s  cm   %s",
             g_posRight, (fabs(g_posRight) >= kPosSide - 0.05) ? "*" : " ",
             g_posUp, (g_posUp >= kPosUpMax - 0.05 ||
