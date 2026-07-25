@@ -210,12 +210,9 @@ const char* GameState_Context()
 
 // ---------------------------------------------------------------- memory
 
-extern volatile long g_vqCount;   // CameraHook.cpp
-
 static bool Readable(const void* p, size_t n)
 {
     if (!p || !n) return false;
-    _InterlockedIncrement(&g_vqCount);
     MEMORY_BASIC_INFORMATION mbi = {};
     if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
     if (mbi.State != MEM_COMMIT) return false;
