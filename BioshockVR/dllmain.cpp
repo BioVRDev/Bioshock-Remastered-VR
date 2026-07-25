@@ -64,6 +64,9 @@ bool  g_cfgHandsProbe = false;
 int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
 int   g_cfgHandsPosOff = 0;      // HandsPosOffset, e.g. 0x1D8
 float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // fwd,right,up cm
+float g_cfgHandsRot[3] = { 0.0f, 0.0f, 0.0f };   // pitch,yaw,roll deg  LIVE
+float g_cfgGripSlot[9][3] = {};                  // per-weapon position, from ini
+float g_cfgRotSlot[9][3] = {};                   // per-weapon rotation, from ini
 float g_cfgHandsNudgeZ = 0.0f;     // probe only
 float g_cfgHandsNudgeYaw = 0.0f;   // probe only
 float g_cfgHandsNudgePitch = 0.0f; // probe only
@@ -72,6 +75,7 @@ float g_cfgHandsNudgePitch = 0.0f; // probe only
 int   g_cfgAimSource = 0;        // 0 head, 1 right controller
 float g_cfgAimClampDeg = 20.0f;
 float g_cfgAimSmooth = 0.35f;
+float g_cfgPlasmidAimPitch = -50.0f;   // deg added to the plasmid hand's aim pitch
 bool  g_cfgCrosshair = true;
 float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
@@ -271,6 +275,26 @@ static void LoadConfig()
     g_cfgHandsPtrOff = CfgHex("HandsPtrOffset", g_cfgHandsPtrOff);
     g_cfgHandsPosOff = CfgHex("HandsPosOffset", g_cfgHandsPosOff);
     CfgVec3("HandsGripOffset", g_cfgHandsGrip);
+    CfgVec3("HandsRotOffset", g_cfgHandsRot);
+
+    // Per-weapon tables. Slot order is AllPossibleWeaponClasses -- 0 Wrench,
+    // 1 Pistol, 2 Shotgun, 3 Crossbow, 4 GrenadeLauncher, 5 MachineGun,
+    // 6 ChemicalThrower, 7 ResearchCamera -- plus 8 = plasmid. Each slot is
+    // seeded from the two globals first, so a slot with no ini key inherits them
+    // instead of snapping to zero.
+    for (int s = 0; s < 9; ++s)
+    {
+        for (int a = 0; a < 3; ++a)
+        {
+            g_cfgGripSlot[s][a] = g_cfgHandsGrip[a];
+            g_cfgRotSlot[s][a] = g_cfgHandsRot[a];
+        }
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "GripOffset%d", s);
+        CfgVec3(key, g_cfgGripSlot[s]);
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "RotOffset%d", s);
+        CfgVec3(key, g_cfgRotSlot[s]);
+    }
     g_cfgHandsNudgeZ = CfgFloat("HandsNudgeZ", g_cfgHandsNudgeZ, -500.f, 500.f);
     g_cfgHandsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfgHandsNudgeYaw, -180.f, 180.f);
     g_cfgHandsNudgePitch = CfgFloat("HandsNudgePitch", g_cfgHandsNudgePitch, -180.f, 180.f);
@@ -278,6 +302,7 @@ static void LoadConfig()
     // aiming / crosshair
     g_cfgAimSource = CfgInt("AimSource", 0);
     g_cfgAimClampDeg = CfgFloat("AimClampDeg", g_cfgAimClampDeg, 1.f, 80.f);
+    g_cfgPlasmidAimPitch = CfgFloat("PlasmidAimPitch", g_cfgPlasmidAimPitch, -90.f, 90.f);
     g_cfgAimSmooth = CfgFloat("AimSmoothing", g_cfgAimSmooth, 0.f, 0.95f);
     g_cfgCrosshair = CfgBool("EnableCrosshair", true);
     g_cfgXhSize = CfgFloat("CrosshairSize", g_cfgXhSize, 0.0005f, 0.5f);
@@ -366,6 +391,11 @@ static void LoadConfig()
     CfgEcho("AimSource", "%d  %s", g_cfgAimSource,
         g_cfgAimSource == 1 ? "(right controller)" : "(head)");
     CfgEcho("AimClampDeg", "%.0f", g_cfgAimClampDeg);
+    CfgEcho("PlasmidAimPitch", "%.0f deg", g_cfgPlasmidAimPitch);
+    for (int s = 0; s < 9; ++s)
+        Log("  slot %d  pos %6.1f,%6.1f,%6.1f   rot %5.0f,%5.0f,%5.0f", s,
+            g_cfgGripSlot[s][0], g_cfgGripSlot[s][1], g_cfgGripSlot[s][2],
+            g_cfgRotSlot[s][0], g_cfgRotSlot[s][1], g_cfgRotSlot[s][2]);
     CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
         g_cfgXhSize * 1000.f, g_cfgXhDist);

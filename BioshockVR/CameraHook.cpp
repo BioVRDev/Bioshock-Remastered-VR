@@ -49,10 +49,12 @@ extern bool  g_cfgPairLock;
 extern bool  g_cfgHeadAim;
 extern bool g_cfgHeadRoll;
 extern int   g_cfgAimSource;     // 0 head, 1 right controller
+extern float g_cfgPlasmidAimPitch;  // deg, added to the plasmid hand's aim pitch
 extern float g_cfgAimClampDeg;   // max angle between aim and view
 extern float g_cfgAimSmooth;     // 0 none .. 0.95 heavy
 extern bool g_cfg6DofHands;   // Enable6DofHands
 extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
+extern float g_cfgHandsRot[3];    // HandsRotOffset: pitch, yaw, roll (deg)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
 bool GameState_Cutscene();   // GameState.cpp
@@ -925,6 +927,14 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     double cp, cy, cr;
     HeadQuatToDeg(hp.aimQuat, cp, cy, cr);
 
+    // MODEL ROTATION, per weapon slot, live-tunable. The runtime aim pose is a
+    // gun-pointing ray, so the hands actor inherits that orientation and a
+    // plasmid cast reads as pointing up. The AIM is deliberately not touched --
+    // cursor and shot stay locked together and only the visual moves.
+    cp += (double)g_cfgHandsRot[0];
+    cy += (double)g_cfgHandsRot[1];
+    cr += (double)g_cfgHandsRot[2];
+
     FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfgHeadAimMode >= 2);
     // Roll restored. The game tick erases it, so CameraHook_LateHandsWrite
     // re-applies the whole rotator from Present, after they are done.
@@ -1183,6 +1193,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             {
                 double ap, ay, ar;
                 HeadQuatToDeg(hpose.aimQuat, ap, ay, ar);
+
+                // PALM AIM. The runtime's aim pose points where an extended
+                // index finger would -- correct for a gun, wrong for a plasmid
+                // cast, where the controller is held tilted up and the same pose
+                // therefore aims high. Rotate it back down by a fixed amount.
+                // NEGATIVE pulls the aim down. Plasmid hand only; DriveHands is
+                // deliberately left alone so the hand model still tracks the
+                // controller and keeps the casting pose.
+                if (HandsProbe_AbilityMode()) ap += (double)g_cfgPlasmidAimPitch;
 
                 double dY = WrapDeg180(ay - g_headYaw);
                 double dP = ap - g_headPitch;

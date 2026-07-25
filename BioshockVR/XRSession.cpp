@@ -28,6 +28,8 @@ extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
 extern float g_cfgXhDist;
 extern float g_cfgMenuHeight;
 extern float g_cfgHeightOffset;   // CameraHeightOffset, cm (dllmain.cpp)
+extern float g_cfgPlasmidAimPitch;      // dllmain.cpp
+bool HandsProbe_AbilityMode();          // HandsProbe.cpp
 extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controller)
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
@@ -664,22 +666,44 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     static float lastX = 0.f, lastY = 0.f, lastZ = -1.f;
                     float dl[3] = { lastX, lastY, lastZ };
 
-                    // Use the CLAMPED, SMOOTHED offset the camera hook ACTUALLY
-                    // APPLIED, not the raw controller pose. The gun fires along
-                    // the aim field, which CameraHook composes from that offset,
-                    // so drawing from the raw pose puts the dot a fixed diagonal
-                    // away from the shot. It also means the dot follows whichever
-                    // HAND drives the aim, with no mode logic on this thread.
-                    float dYaw = 0.f, dPitch = 0.f;
+                    // FRESH controller minus FRESH head, both read on THIS thread
+                    // THIS frame. CameraHook_GetAimOffset was wrong here: it is a
+                    // head-relative offset computed on the GAME thread against a
+                    // head latched at eye-0 time, while this quad is reprojected
+                    // against the runtime's predicted head at display time. That
+                    // stale head term IS the dot following your head. Fresh minus
+                    // fresh has no such term.
+                    //
+                    // Accepted cost: this ignores the clamp and the smoothing, so
+                    // the dot can trail the shot by the smoothing time and diverge
+                    // past AimClampDeg. Bounded and small at 0.5 / 80 deg.
+                    HandPose hp = {};
+                    const int xhHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
                     const bool haveAim = (g_cfgAimSource == 1) &&
-                        CameraHook_GetAimOffset(&dYaw, &dPitch);
+                        Input_GetHandPose(xhHand, &hp) && hp.aimValid;
                     if (haveAim)
                     {
-                        const float ry = dYaw * 0.01745329f;
-                        const float rp = dPitch * 0.01745329f;
-                        dl[0] = sinf(ry) * cosf(rp);
-                        dl[1] = sinf(rp);
-                        dl[2] = -cosf(ry) * cosf(rp);
+                        const float fwd[3] = { 0.f, 0.f, -1.f };
+                        float aw[3];
+                        XhQuatRotate(hp.aimQuat, fwd, aw);              // aim in world
+
+                        const XrQuaternionf& Q = views[0].pose.orientation;
+                        const float hc[4] = { -Q.x, -Q.y, -Q.z, Q.w };  // conjugate
+                        XhQuatRotate(hc, aw, dl);                       // aim head-local
+
+                        // Same palm correction the aim write applies, so the dot and
+                        // the shot pitch together instead of splitting apart.
+                        if (HandsProbe_AbilityMode())
+                        {
+                            const float rp = g_cfgPlasmidAimPitch * 0.01745329f;
+                            const float cs = cosf(rp), sn = sinf(rp);
+                            const float y = dl[1], z = dl[2];
+                            dl[1] = y * cs - z * sn;
+                            dl[2] = y * sn + z * cs;
+                        }
+
+                        float n = sqrtf(dl[0] * dl[0] + dl[1] * dl[1] + dl[2] * dl[2]);
+                        if (n > 1e-4f) { dl[0] /= n; dl[1] /= n; dl[2] /= n; }
                         lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
                     }
                     else if (g_cfgAimSource != 1)

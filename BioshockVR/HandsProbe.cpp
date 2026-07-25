@@ -45,6 +45,9 @@ extern float g_cfgHandsNudgeZ;   // HandsNudgeZ, cm. 0 == off.
 extern float g_cfgHandsNudgeYaw;   // HandsNudgeYaw, degrees. 0 == off.
 extern float g_cfgHandsNudgePitch; // HandsNudgePitch, degrees. 0 == off.
 extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE.
+extern float g_cfgHandsRot[3];     // HandsRotOffset: pitch, yaw, roll (deg). LIVE.
+extern float g_cfgGripSlot[9][3];  // per-weapon position, from the ini
+extern float g_cfgRotSlot[9][3];   // per-weapon rotation, from the ini
 extern float g_cfgHandsScale;      // HandsScale: value to sweep. 0 == no sweep.
 extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
 // the Hands object. 0 == use g_locOff.
@@ -246,6 +249,11 @@ static const size_t kPawnScan = 0x4000;
 void* HandsProbe_Get() { return g_hands; }
 void* HandsProbe_GetPawn() { return g_pawn; }
 
+// Declared here, not further down: PollGripKeys uses both, and in one
+// translation unit a static has to be declared before the function that reads it.
+static bool g_rotMode = false;    // false = numpad edits position, true = rotation
+static int  g_wepSlot = -1;       // active weapon slot, -1 until the first switch
+
 // ---------------------------------------------------------------- live tuning
 //
 // S56: HandsGripOffset is three numbers whose only test is "does the gun pivot
@@ -273,15 +281,43 @@ static void PollGripKeys()
 
     static bool  prev[6] = {};
     static bool  prevStep = false;
+    static bool  prevMode = false;
     static float step = 2.0f;
+    static float rotStep = 5.0f;
+
+    // PGUP toggles what the six keys edit. Same keys, two targets -- the numpad
+    // is completely full, so a mode toggle is the only way to add three more
+    // axes without stealing a bind you already use.
+    //   POSITION  8/2 fwd   6/4 right  0/5 up     (cm)
+    //   ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)
+    const bool modeDown = (GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0;
+    if (modeDown && !prevMode)
+    {
+        g_rotMode = !g_rotMode;
+        Log(">>> GRIP: numpad now edits %s",
+            g_rotMode ? "ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
+            : "POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)");
+    }
+    prevMode = modeDown;
 
     const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
     if (stepDown && !prevStep)
     {
-        step = (step > 4.0f) ? 0.5f : (step > 1.0f ? 5.0f : 2.0f);
-        Log(">>> GRIP: step = %.1f cm", step);
+        if (g_rotMode)
+        {
+            rotStep = (rotStep > 8.0f) ? 1.0f : (rotStep > 2.0f ? 15.0f : 5.0f);
+            Log(">>> GRIP: rotation step = %.0f deg", rotStep);
+        }
+        else
+        {
+            step = (step > 4.0f) ? 0.5f : (step > 1.0f ? 5.0f : 2.0f);
+            Log(">>> GRIP: position step = %.1f cm", step);
+        }
     }
     prevStep = stepDown;
+
+    float* const tgt = g_rotMode ? g_cfgHandsRot : g_cfgHandsGrip;
+    const float  amt = g_rotMode ? rotStep : step;
 
     bool changed = false;
     for (int i = 0; i < 6; ++i)
@@ -289,15 +325,21 @@ static void PollGripKeys()
         const bool down = (GetAsyncKeyState(kBinds[i].vk) & 0x8000) != 0;
         if (down && !prev[i])
         {
-            g_cfgHandsGrip[kBinds[i].axis] += kBinds[i].sign * step;
+            tgt[kBinds[i].axis] += kBinds[i].sign * amt;
             changed = true;
         }
         prev[i] = down;
     }
 
     if (changed)
-        Log(">>> GRIP: HandsGripOffset=%.1f,%.1f,%.1f   (fwd, right, up cm)",
-            g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+    {
+        if (g_rotMode)
+            Log(">>> GRIP: RotOffset%d=%.0f,%.0f,%.0f   (pitch, yaw, roll deg)",
+                g_wepSlot, g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+        else
+            Log(">>> GRIP: GripOffset%d=%.1f,%.1f,%.1f   (fwd, right, up cm)",
+                g_wepSlot, g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+    }
 }
 
 bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff)
@@ -1197,6 +1239,178 @@ static void UpdateHandMode(const void* hands)
 
 bool HandsProbe_AbilityMode() { return g_abilityMode; }
 
+// ---- WHICH WEAPON IS EQUIPPED --------------------------------------------
+// ShockPawn: var config array< Class<Weapon> > AllPossibleWeaponClasses;
+// The UClass pointers are heap addresses and change every launch, but their
+// ORDER in that array is fixed by config -- so the INDEX is a stable ini key.
+//
+// STAGE W1  find the array. A UE2 TArray is { void* Data; int Count; int Max; }.
+//           Accept Count 4..16, Max >= Count, every element a DISTINCT readable
+//           object pointer. PreloadClasses matches this shape too, so we keep
+//           EVERY candidate and let the log tell us which is which.
+//
+// STAGE W2  find UObject::Class without knowing the UObject layout: scan the
+//           live Holdable for a dword equal to one of those class pointers. The
+//           match is simultaneously the offset and the proof it is the field.
+static const int kWepMax = 16;
+static const int kCandMax = 4;
+static void* g_wepList[kCandMax][kWepMax] = {};
+static int      g_wepCount[kCandMax] = {};
+static unsigned g_wepAt[kCandMax] = {};
+static int      g_nWepCand = 0;
+static bool     g_wepScanned = false;
+
+static void ScanWeaponClassLists(const void* pawn)
+{
+    if (g_wepScanned || !pawn) return;
+    g_wepScanned = true;
+
+    const size_t blk = ReadableBlock(pawn, 0x1000);
+    for (size_t off = 0; off + 12 <= blk && g_nWepCand < kCandMax; off += 4)
+    {
+        const uint8_t* h = (const uint8_t*)pawn + off;
+        void* const data = *(void* const*)h;
+        const int count = *(const int*)(h + 4);
+        const int maxN = *(const int*)(h + 8);
+
+        if (count < 4 || count > kWepMax || maxN < count) continue;
+        if (!data || !Readable(data, (size_t)count * 4)) continue;
+
+        void* tmp[kWepMax] = {};
+        bool ok = true;
+        for (int i = 0; i < count && ok; ++i)
+        {
+            void* c = ((void**)data)[i];
+            if (!LooksLikeObject(c)) { ok = false; break; }
+            for (int j = 0; j < i; ++j) if (tmp[j] == c) { ok = false; break; }
+            tmp[i] = c;
+        }
+        if (!ok) continue;
+
+        const int k = g_nWepCand++;
+        g_wepCount[k] = count;
+        g_wepAt[k] = (unsigned)off;
+        for (int i = 0; i < count; ++i) g_wepList[k][i] = tmp[i];
+
+        Log(">>> WEP: candidate %d at pawn+0x%03X, %d entries", k, (unsigned)off, count);
+    }
+
+    if (!g_nWepCand) Log(">>> WEP: no class-list-shaped array found on the pawn.");
+}
+
+// Reports, for every candidate array, which slot the live weapon matches.
+static void ReportWeaponIdentity(const void* hands)
+{
+    if (!g_nWepCand || !hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return;
+
+    if (!Readable((const uint8_t*)hands + g_cfgGunPtrOff, 4)) return;
+    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfgGunPtrOff);
+
+    static const void* lastHold = nullptr;
+    if (hold == lastHold) return;          // only on a real weapon change
+    lastHold = hold;
+
+    if (!hold) { Log(">>> WEP: holdable NULL (plasmid mode)."); return; }
+
+    const size_t hb = ReadableBlock(hold, 0x40);
+    for (size_t co = 0; co + 4 <= hb; co += 4)
+    {
+        void* const cls = *(void* const*)((const uint8_t*)hold + co);
+        if (!cls) continue;
+
+        for (int k = 0; k < g_nWepCand; ++k)
+            for (int i = 0; i < g_wepCount[k]; ++i)
+                if (g_wepList[k][i] == cls)
+                    Log(">>> WEP: holdable 0x%08X  Class at +0x%03X = 0x%08X  "
+                        "-> candidate %d slot %d",
+                        (unsigned)(uintptr_t)hold, (unsigned)co,
+                        (unsigned)(uintptr_t)cls, k, i);
+    }
+}
+
+// ---- PER-WEAPON GRIP OFFSET (measured 2026-07-25) ------------------------
+// MEASURED by cycling pistol -> machinegun -> wrench with the WEP probe:
+//   AllPossibleWeaponClasses  pawn+0x750   (candidate 0, 8 entries)
+//   PreloadClasses            pawn+0x998   (candidate 1, 8 entries -- DECOY)
+//   UObject::Class            holdable+0x30
+// MachineGun separated them: slot 5 in candidate 0, slot 6 in candidate 1,
+// exactly as the two decompiled default lists differ. Candidate 0 is always the
+// LOWER offset, because AllPossibleWeaponClasses is declared on ShockPawn while
+// PreloadClasses is on the ShockPlayer subclass -- structural, not luck.
+static const char* kWepName[9] = {
+    "Wrench", "Pistol", "Shotgun", "Crossbow", "GrenadeLauncher",
+    "MachineGun", "ChemicalThrower", "ResearchCamera", "Plasmid"
+};
+
+// One grip offset per slot, all seeded from HandsGripOffset. The numpad keys
+// edit whichever slot is live; switching weapons SAVES the slot you were on and
+// LOADS the one you switched to. So a single session tunes every weapon, and
+// both values print on every switch ready to paste into the ini.
+static float g_gripBySlot[9][3] = {};
+static float g_rotBySlot[9][3] = {};
+static bool  g_gripInit = false;
+
+static int ResolveWeaponSlot(const void* hands)
+{
+    if (!hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return -1;
+    if (!Readable((const uint8_t*)hands + g_cfgGunPtrOff, 4)) return -1;
+
+    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfgGunPtrOff);
+    if (!hold) return 8;                       // plasmid / ability mode
+
+    int k = -1;
+    for (int i = 0; i < g_nWepCand; ++i) if (g_wepCount[i] == 8) { k = i; break; }
+    if (k < 0) return -1;
+
+    if (!Readable((const uint8_t*)hold + 0x30, 4)) return -1;
+    void* const cls = *(void* const*)((const uint8_t*)hold + 0x30);
+
+    for (int i = 0; i < 8; ++i) if (g_wepList[k][i] == cls) return i;
+    return -1;
+}
+
+static void UpdateWeaponGrip(const void* hands)
+{
+    if (!g_gripInit)
+    {
+        for (int i = 0; i < 9; ++i)
+            for (int a = 0; a < 3; ++a)
+            {
+                g_gripBySlot[i][a] = g_cfgGripSlot[i][a];
+                g_rotBySlot[i][a] = g_cfgRotSlot[i][a];
+            }
+        g_gripInit = true;
+    }
+
+    const int slot = ResolveWeaponSlot(hands);
+    if (slot < 0 || slot == g_wepSlot) return;
+
+    if (g_wepSlot >= 0)
+    {
+        for (int a = 0; a < 3; ++a)
+        {
+            g_gripBySlot[g_wepSlot][a] = g_cfgHandsGrip[a];
+            g_rotBySlot[g_wepSlot][a] = g_cfgHandsRot[a];
+        }
+        Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
+            g_wepSlot, kWepName[g_wepSlot],
+            g_wepSlot, g_gripBySlot[g_wepSlot][0], g_gripBySlot[g_wepSlot][1], g_gripBySlot[g_wepSlot][2],
+            g_wepSlot, g_rotBySlot[g_wepSlot][0], g_rotBySlot[g_wepSlot][1], g_rotBySlot[g_wepSlot][2]);
+    }
+
+    g_wepSlot = slot;
+    for (int a = 0; a < 3; ++a)
+    {
+        g_cfgHandsGrip[a] = g_gripBySlot[slot][a];
+        g_cfgHandsRot[a] = g_rotBySlot[slot][a];
+    }
+
+    Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
+        slot, kWepName[slot],
+        g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2],
+        g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+}
+
 // ---------------------------------------------------------------- driver
 
 void HandsProbe_Observe(void* playerController,
@@ -1258,6 +1472,9 @@ void HandsProbe_Observe(void* playerController,
 
     ScanHandsForPosition(g_hands, camLoc);
     ApplyHandsScale(g_hands);
+    ScanWeaponClassLists(g_pawn);
+    ReportWeaponIdentity(g_hands);
+    UpdateWeaponGrip(g_hands);
     UpdateHandMode(g_hands);
     PollHandsModeKeys(g_hands);
 
