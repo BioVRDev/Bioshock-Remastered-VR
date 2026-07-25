@@ -55,4 +55,8 @@ void* HandsProbe_GetPawn();
 // rotation, and doing it there keeps the hands in the same frame as the view.
 bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff);
 
+// TRUE when a plasmid is active rather than a weapon. Drives which controller
+// aims, and which one the hands actor is posed from.
+bool HandsProbe_AbilityMode();
+
 void HandsProbe_Reset();

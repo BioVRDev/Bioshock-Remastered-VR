@@ -1083,6 +1083,120 @@ static void NudgeTest(void* hands, const float cam[3], const int camRot[3])
     }
 }
 
+// ---- HAND MODE PROBE: plasmid vs weapon ---------------------------------
+// Hands declares CurrentAbility (Ability*), OldAbility, CurrentHoldable, and a
+// travel bool bIsInWeaponMode. SetHandsMode('Weapon'/'Ability') is the only
+// writer of that bool, so switching wrench <-> plasmid MUST move one of:
+//   * a pointer slot going null <-> object   -> CurrentAbility
+//   * a dword changing by exactly one bit    -> bIsInWeaponMode's bitfield
+// One shot per keypress. Never a per-frame scan.
+//
+//   HOME  snapshot every dword of the Hands object
+//   END   dump the dwords that changed since the snapshot
+static const size_t kHmScan = 0x800;
+static uint32_t g_hmSnap[kHmScan / 4] = {};
+static bool     g_hmValid = false;
+
+static void HandsModeSnapshot(const void* hands)
+{
+    const size_t blk = ReadableBlock(hands, kHmScan);
+    if (!blk) { Log(">>> HANDMODE: hands object unreadable."); return; }
+
+    for (size_t off = 0; off + 4 <= blk; off += 4)
+        g_hmSnap[off / 4] = *(const uint32_t*)((const uint8_t*)hands + off);
+
+    g_hmValid = true;
+    Log(">>> HANDMODE: snapshot of 0x%08X over 0x%X bytes. PGUP/PGDN. Now SWITCH between the "
+        "wrench and a plasmid, then press END.",
+        (unsigned)(uintptr_t)hands, (unsigned)blk);
+}
+
+static void HandsModeDiff(const void* hands)
+{
+    if (!g_hmValid) { Log(">>> HANDMODE: no snapshot yet. Press PGUP first."); return; }
+
+    const size_t blk = ReadableBlock(hands, kHmScan);
+    if (!blk) { Log(">>> HANDMODE: hands object unreadable."); return; }
+
+    Log(">>> HANDMODE: ---- dwords that changed ----");
+    int shown = 0;
+    for (size_t off = 0; off + 4 <= blk; off += 4)
+    {
+        const uint32_t now = *(const uint32_t*)((const uint8_t*)hands + off);
+        const uint32_t was = g_hmSnap[off / 4];
+        if (now == was) continue;
+
+        // Classify, so the two we want stand out from animation handles and
+        // float timers rather than having to be guessed at from a wall of hex.
+        const bool ptrNow = LooksLikeObject((const void*)now);
+        const bool ptrWas = LooksLikeObject((const void*)was);
+        const uint32_t x = now ^ was;
+        const bool oneBit = (x != 0) && ((x & (x - 1)) == 0);
+
+        Log(">>> HANDMODE:   +0x%03X  0x%08X -> 0x%08X%s%s",
+            (unsigned)off, was, now,
+            (ptrNow != ptrWas) ? "   <-- OBJECT PTR (CurrentAbility?)" : "",
+            oneBit ? "   <-- ONE BIT (bIsInWeaponMode?)" : "");
+
+        if (++shown >= 40) { Log(">>> HANDMODE:   ...truncated at 40"); break; }
+    }
+    if (!shown) Log(">>> HANDMODE:   (nothing changed -- did the mode actually switch?)");
+    Log(">>> HANDMODE: ------------------------------");
+
+    g_hmValid = false;   // one shot; press HOME again for the next comparison
+}
+
+static void PollHandsModeKeys(const void* hands)
+{
+    static bool kH = false, kE = false;
+
+    const bool dH = (GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0;   // PGUP
+    if (dH && !kH) HandsModeSnapshot(hands);
+    kH = dH;
+
+    const bool dE = (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;    // PGDN
+    if (dE && !kE) HandsModeDiff(hands);
+    kE = dE;
+}
+
+// ---- ACTIVE HAND MODE: weapon vs plasmid --------------------------------
+// MEASURED with the PGUP/PGDN dword differ, both directions:
+//   hands+0x454   null with the wrench   -> object with a plasmid   CurrentAbility
+//   hands+0x45C   object with the wrench -> null with a plasmid     CurrentHoldable
+// That pair also CONFIRMS the layout: Hands declares CurrentAbility, OldAbility,
+// CurrentHoldable consecutively, so +0x454/+0x458/+0x45C is that run of three
+// pointers -- which means +0x45C is CurrentHoldable, not "the weapon actor" as
+// GunPtrOffset's name implies. Deriving ability = GunPtrOffset - 8 keeps one ini
+// key driving both so they cannot drift.
+//
+// Requiring BOTH pointers avoids flapping: mid-equip one is briefly null before
+// the other has been written.
+static bool g_abilityMode = false;
+
+static void UpdateHandMode(const void* hands)
+{
+    if (!hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return;   // Hands-relative only
+
+    const unsigned holdOff = (unsigned)g_cfgGunPtrOff;
+    const unsigned abilOff = holdOff - 8;
+
+    if (!Readable((const uint8_t*)hands + abilOff, 4)) return;
+    if (!Readable((const uint8_t*)hands + holdOff, 4)) return;
+
+    const void* abil = *(void* const*)((const uint8_t*)hands + abilOff);
+    const void* hold = *(void* const*)((const uint8_t*)hands + holdOff);
+
+    const bool ability = (abil != nullptr) && (hold == nullptr);
+    if (ability == g_abilityMode) return;
+
+    g_abilityMode = ability;
+    Log(">>> HANDMODE: %s   (ability=0x%08X holdable=0x%08X)",
+        ability ? "PLASMID -- left hand" : "WEAPON -- right hand",
+        (unsigned)(uintptr_t)abil, (unsigned)(uintptr_t)hold);
+}
+
+bool HandsProbe_AbilityMode() { return g_abilityMode; }
+
 // ---------------------------------------------------------------- driver
 
 void HandsProbe_Observe(void* playerController,
@@ -1144,6 +1258,8 @@ void HandsProbe_Observe(void* playerController,
 
     ScanHandsForPosition(g_hands, camLoc);
     ApplyHandsScale(g_hands);
+    UpdateHandMode(g_hands);
+    PollHandsModeKeys(g_hands);
 
     // Re-read the weapon pointer EVERY call, not once. Switching weapons swaps
     // the Holdable, so a pointer captured at lock time goes stale the first time

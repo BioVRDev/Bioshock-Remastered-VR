@@ -771,6 +771,7 @@ static bool     g_hwValid = false;
 void CameraHook_LateHandsWrite()
 {
     if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
+    if (GameState_Paused()) return;   // render-thread half of the same freeze
 
     // The hands actor is destroyed on level/save load. This runs on the RENDER
     // thread from a pointer cached on the GAME thread, so a stale cache writes
@@ -907,12 +908,14 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
     if (GameState_Cutscene()) return;
+    if (GameState_Paused()) return;   // hands hold still behind a menu
 
     void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
     if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff)) return;
 
     HandPose hp = {};
-    if (!Input_GetHandPose(HAND_RIGHT, &hp)) return;
+    const int poseHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
+    if (!Input_GetHandPose(poseHand, &hp)) return;
     if (!hp.aimValid && !hp.gripValid) return;
 
     if (!IsMemoryWritable((uint8_t*)obj + locOff, sizeof(FVector))) return;
@@ -1025,9 +1028,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     //    accumulator, no drift.
     g_orig(pThis, edx, ViewActor, CameraLocation, CameraRotation);
 
-    // The game's own UI state, read off the controller we already have in hand.
-    GameState_Observe(pThis);
-    HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
+    // GameState_Observe / HandsProbe_Observe MOVED below the site filter.
+    // They must not run on non-leader call sites -- see the note down there.
 
     void* ret = _ReturnAddress();
 
@@ -1086,6 +1088,16 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     // --- site0 ONLY. Sites 2/3/4 are movement/physics/AI CONSUMING the view;
     //     writing to them would let head-look steer the character. ---
     if (site != &g_sites[leader]) return;
+
+    // LEADER ONLY. MEASURED: the engine calls CalcView 4.2x per frame (site0,
+    // site2, site3, site5 each tick once). Above the filter these two cost
+    // 200-257 ms/s against 4 ms/s for the engine's own CalcView -- ~22% of the
+    // frame, three quarters of it on views we discard one line earlier.
+    // It also fixes a real bug: non-leader sites carry a DIFFERENT rotator
+    // (site1 read yaw -176 while site0 read +160), so HandsProbe's rotation
+    // match was being handed whichever site happened to call last.
+    GameState_Observe(pThis);
+    HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
 
     // PHASE 10a: which delta-receiving object does the RENDER view's controller
     // reach? That one is the player world. Throttled -- this is a scan, and it
@@ -1164,7 +1176,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         if (g_cfgAimSource == 1)
         {
             HandPose hpose = {};
-            if (Input_GetHandPose(HAND_RIGHT, &hpose) && hpose.aimValid)
+            // Plasmids are cast from the left hand, so the aim -- and therefore
+            // the crosshair, which now reads the APPLIED offset -- follows it.
+            const int aimHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
+            if (Input_GetHandPose(aimHand, &hpose) && hpose.aimValid)
             {
                 double ap, ay, ar;
                 HeadQuatToDeg(hpose.aimQuat, ap, ay, ar);
@@ -1515,6 +1530,22 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     finalRot.yaw += (int)s_cutYaw;
                 }
 
+                // FREEZE the view while an in-game menu is up. Pause, map,
+                // inventory and vending all render the world behind the UI, and
+                // having it swing with your head while you read is disorienting.
+                // Latch on ENTRY rather than skipping the write, so the view
+                // holds where it was instead of snapping to the game's rotation.
+                {
+                    static FRotator s_menuRot = {};
+                    static bool     s_menuHeld = false;
+                    if (GameState_Paused())
+                    {
+                        if (!s_menuHeld) { s_menuHeld = true; s_menuRot = finalRot; }
+                        finalRot = s_menuRot;
+                    }
+                    else s_menuHeld = false;
+                }
+
                 *CameraRotation = finalRot;
             }
 
@@ -1533,9 +1564,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 const double cy = UnitsToRad(
                     (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : cleanRot.yaw);
                 const double cs = cos(cy), sn = sin(cy);
-                CameraLocation->x += (float)(g_posFwd * cs - g_posRight * sn);
-                CameraLocation->y += (float)(g_posFwd * sn + g_posRight * cs);
-                CameraLocation->z += (float)g_posUp;
+
+                // Hold the head-position offset too. Freezing rotation alone
+                // still let you slide the world by leaning. Latch on entry, so
+                // the view holds where it was instead of snapping back to the
+                // pawn's eye.
+                static double mFwd = 0.0, mRight = 0.0, mUp = 0.0;
+                static bool   mHeld = false;
+                double pf = g_posFwd, pr = g_posRight, pu = g_posUp;
+                if (GameState_Paused())
+                {
+                    if (!mHeld) { mHeld = true; mFwd = g_posFwd; mRight = g_posRight; mUp = g_posUp; }
+                    pf = mFwd; pr = mRight; pu = mUp;
+                }
+                else mHeld = false;
+
+                CameraLocation->x += (float)(pf * cs - pr * sn);
+                CameraLocation->y += (float)(pf * sn + pr * cs);
+                CameraLocation->z += (float)pu;
             }
 
             // S40: STATURE. The pawn's eye height is authored for a monitor and
