@@ -70,6 +70,8 @@ float g_cfgRotSlot[9][3] = {};                   // per-weapon rotation, from in
 float g_cfgHandsNudgeZ = 0.0f;     // probe only
 float g_cfgHandsNudgeYaw = 0.0f;   // probe only
 float g_cfgHandsNudgePitch = 0.0f; // probe only
+float g_cfgBobDamping = -1.0f;     // Hands.WeaponBobDamping. <0 == leave alone
+int   g_cfgIdleAnimMode = 0;       // 0 off, 1 collapse to entry[0], 2 HandsDown
 
 // aiming / crosshair ---------------------------------------------------------
 int   g_cfgAimSource = 0;        // 0 head, 1 right controller
@@ -79,6 +81,7 @@ float g_cfgPlasmidAimPitch = -50.0f;   // deg added to the plasmid hand's aim pi
 bool  g_cfgCrosshair = true;
 float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
+int   g_cfgXhLag = 0;            // CrosshairLagFrames. -1 == old fresh-quat behaviour
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
@@ -298,6 +301,8 @@ static void LoadConfig()
     g_cfgHandsNudgeZ = CfgFloat("HandsNudgeZ", g_cfgHandsNudgeZ, -500.f, 500.f);
     g_cfgHandsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfgHandsNudgeYaw, -180.f, 180.f);
     g_cfgHandsNudgePitch = CfgFloat("HandsNudgePitch", g_cfgHandsNudgePitch, -180.f, 180.f);
+    g_cfgBobDamping = CfgFloat("WeaponBobDamping", g_cfgBobDamping, -1.f, 10.f);
+    g_cfgIdleAnimMode = CfgIntRange("IdleAnimMode", 0, 0, 2);
 
     // aiming / crosshair
     g_cfgAimSource = CfgInt("AimSource", 0);
@@ -307,6 +312,7 @@ static void LoadConfig()
     g_cfgCrosshair = CfgBool("EnableCrosshair", true);
     g_cfgXhSize = CfgFloat("CrosshairSize", g_cfgXhSize, 0.0005f, 0.5f);
     g_cfgXhDist = CfgFloat("CrosshairDistance", g_cfgXhDist, 0.2f, 50.f);
+    g_cfgXhLag = CfgIntRange("CrosshairLagFrames", 0, -1, 6);
 
     // controller
     g_cfgController = CfgBool("EnableController", true);
@@ -386,6 +392,12 @@ static void LoadConfig()
     CfgEcho("HandsPosOffset", "0x%X", g_cfgHandsPosOff);
     CfgEcho("HandsGripOffset", "%.0f fwd, %.0f right, %.0f up (cm)",
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+    CfgEcho("WeaponBobDamping", "%.2f  %s", g_cfgBobDamping,
+        g_cfgBobDamping < 0.f ? "(not written)" : "(written to hands+0x484)");
+    CfgEcho("IdleAnimMode", "%d  %s", g_cfgIdleAnimMode,
+        g_cfgIdleAnimMode == 0 ? "(off)" :
+        g_cfgIdleAnimMode == 1 ? "(all entries -> entry[0], kills the wrench slap)"
+        : "(all entries -> HandsOffscreenAnimationName)");
 
     Log("[aim]");
     CfgEcho("AimSource", "%d  %s", g_cfgAimSource,
@@ -399,6 +411,8 @@ static void LoadConfig()
     CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
         g_cfgXhSize * 1000.f, g_cfgXhDist);
+    CfgEcho("CrosshairLagFrames", "%d  %s", g_cfgXhLag,
+        g_cfgXhLag < 0 ? "(off -- fresh controller quat)" : "(dot uses the posed quat)");
 
     Log("[controller]");
     CfgEcho("EnableController", "%d  mode=%s", (int)g_cfgController,
