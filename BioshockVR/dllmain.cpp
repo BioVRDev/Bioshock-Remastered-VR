@@ -67,6 +67,13 @@ float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // fwd,right,up cm
 float g_cfgHandsRot[3] = { 0.0f, 0.0f, 0.0f };   // pitch,yaw,roll deg  LIVE
 float g_cfgGripSlot[9][3] = {};                  // per-weapon position, from ini
 float g_cfgRotSlot[9][3] = {};                   // per-weapon rotation, from ini
+float g_cfgCursorRot[3] = { 0.f, 0.f, 0.f };     // CursorOffset p,y,r deg. LIVE
+float g_cfgCursorSlot[9][3] = {};                // per-weapon, from the ini
+int   g_cfgHandsArmCalls = 600;    // CalcView calls before the probe arms
+int   g_cfgHandsRetryCalls = 600;  // calls between STAGE A retries
+int   g_cfgIdleAnimMode = 0;       // 0 off, 1 entry[0], 2 HandsDown, 3 Equipping
+int   g_cfgIdleModeSlot[9] = {};   // per-weapon override
+int   g_cfgHideArmsSlot[9] = {};                 // per-weapon arm suppression
 float g_cfgHandsNudgeZ = 0.0f;     // probe only
 float g_cfgHandsNudgeYaw = 0.0f;   // probe only
 float g_cfgHandsNudgePitch = 0.0f; // probe only
@@ -109,6 +116,10 @@ char  g_cfgWeaponList[256] = {};
 float g_cfgWeaponScale = 0.0f;
 char  g_cfgHudList[256] = {};
 float g_cfgHudScale = 0.0f;
+char  g_cfgArrowList[256] = {};   // ArrowCounts, e.g. 234i@512x512
+float g_cfgArrowScale = 1.0f;     // 0 == leave size alone
+float g_cfgArrowX = 0.0f;         // fraction of viewport width, + == right
+float g_cfgArrowY = 0.0f;         // fraction of viewport height, - == up
 
 // ============================================================================
 //  LOGGING
@@ -276,6 +287,9 @@ static void LoadConfig()
     g_cfgHandsPosOff = CfgHex("HandsPosOffset", g_cfgHandsPosOff);
     CfgVec3("HandsGripOffset", g_cfgHandsGrip);
     CfgVec3("HandsRotOffset", g_cfgHandsRot);
+    g_cfgHandsArmCalls = CfgIntRange("HandsArmCalls", 600, 1, 5000);
+    g_cfgHandsRetryCalls = CfgIntRange("HandsRetryCalls", 600, 1, 5000);
+    g_cfgIdleAnimMode = CfgIntRange("IdleAnimMode", 0, 0, 3);
 
     // Per-weapon tables. Slot order is AllPossibleWeaponClasses -- 0 Wrench,
     // 1 Pistol, 2 Shotgun, 3 Crossbow, 4 GrenadeLauncher, 5 MachineGun,
@@ -288,12 +302,22 @@ static void LoadConfig()
         {
             g_cfgGripSlot[s][a] = g_cfgHandsGrip[a];
             g_cfgRotSlot[s][a] = g_cfgHandsRot[a];
+            g_cfgCursorSlot[s][a] = 0.0f;
         }
         char key[32];
         _snprintf_s(key, sizeof(key), _TRUNCATE, "GripOffset%d", s);
         CfgVec3(key, g_cfgGripSlot[s]);
         _snprintf_s(key, sizeof(key), _TRUNCATE, "RotOffset%d", s);
         CfgVec3(key, g_cfgRotSlot[s]);
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "CursorOffset%d", s);
+        CfgVec3(key, g_cfgCursorSlot[s]);
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "IdleAnimMode%d", s);
+        g_cfgIdleModeSlot[s] = CfgIntRange(key, g_cfgIdleAnimMode, 0, 3);
+
+        // HideArmsN: auto-arm the SuppressIndexCounts list while this weapon is
+        // held. Guns hide the arms; the wrench and plasmids keep them.
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "HideArms%d", s);
+        g_cfgHideArmsSlot[s] = CfgIntRange(key, 0, 0, 1);
     }
     g_cfgHandsNudgeZ = CfgFloat("HandsNudgeZ", g_cfgHandsNudgeZ, -500.f, 500.f);
     g_cfgHandsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfgHandsNudgeYaw, -180.f, 180.f);
@@ -339,6 +363,10 @@ static void LoadConfig()
     g_cfgWeaponScale = CfgFloat("WeaponScale", g_cfgWeaponScale, 0.f, 4.f);
     CfgStr("HudCounts", "", g_cfgHudList, sizeof(g_cfgHudList));
     g_cfgHudScale = CfgFloat("HudScale", g_cfgHudScale, 0.f, 4.f);
+    CfgStr("ArrowCounts", "", g_cfgArrowList, sizeof(g_cfgArrowList));
+    g_cfgArrowScale = CfgFloat("ArrowScale", g_cfgArrowScale, 0.f, 4.f);
+    g_cfgArrowX = CfgFloat("ArrowOffsetX", g_cfgArrowX, -2.f, 2.f);
+    g_cfgArrowY = CfgFloat("ArrowOffsetY", g_cfgArrowY, -2.f, 2.f);
 
     // ---- echo ----
     Log("=== BioshockVR config ===");
@@ -384,6 +412,14 @@ static void LoadConfig()
     CfgEcho("EnableHandsProbe", "%d", (int)g_cfgHandsProbe);
     CfgEcho("HandsPtrOffset", "0x%X", g_cfgHandsPtrOff);
     CfgEcho("HandsPosOffset", "0x%X", g_cfgHandsPosOff);
+    CfgEcho("HandsArm / Retry", "%d / %d calls  (~%.1f / %.1f s at 220/s)",
+        g_cfgHandsArmCalls, g_cfgHandsRetryCalls,
+        g_cfgHandsArmCalls / 220.0, g_cfgHandsRetryCalls / 220.0);
+    CfgEcho("IdleAnimMode", "%d  %s", g_cfgIdleAnimMode,
+        g_cfgIdleAnimMode == 0 ? "(off)" :
+        g_cfgIdleAnimMode == 1 ? "(all entries -> entry[0], kills the wrench slap)" :
+        g_cfgIdleAnimMode == 2 ? "(-> HandsOffscreenAnimationName, arms off screen)"
+        : "(-> EquippingHandsAnim, no idle motion, arms visible)");
     CfgEcho("HandsGripOffset", "%.0f fwd, %.0f right, %.0f up (cm)",
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
 
@@ -393,9 +429,11 @@ static void LoadConfig()
     CfgEcho("AimClampDeg", "%.0f", g_cfgAimClampDeg);
     CfgEcho("PlasmidAimPitch", "%.0f deg", g_cfgPlasmidAimPitch);
     for (int s = 0; s < 9; ++s)
-        Log("  slot %d  pos %6.1f,%6.1f,%6.1f   rot %5.0f,%5.0f,%5.0f", s,
+        Log("  slot %d  pos %6.1f,%6.1f,%6.1f   rot %5.1f,%5.1f,%5.1f   cur %5.1f,%5.1f,%5.1f   idle %d  hide %d", s,
             g_cfgGripSlot[s][0], g_cfgGripSlot[s][1], g_cfgGripSlot[s][2],
-            g_cfgRotSlot[s][0], g_cfgRotSlot[s][1], g_cfgRotSlot[s][2]);
+            g_cfgRotSlot[s][0], g_cfgRotSlot[s][1], g_cfgRotSlot[s][2],
+            g_cfgCursorSlot[s][0], g_cfgCursorSlot[s][1], g_cfgCursorSlot[s][2],
+            g_cfgIdleModeSlot[s], g_cfgHideArmsSlot[s]);
     CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
         g_cfgXhSize * 1000.f, g_cfgXhDist);
@@ -430,6 +468,8 @@ static void LoadConfig()
     CfgEcho("SuppressIndexCounts", "'%s'", g_cfgSuppressList);
     CfgEcho("WeaponCounts", "'%s'  scale %.2f", g_cfgWeaponList, g_cfgWeaponScale);
     CfgEcho("HudCounts", "'%s'  scale %.2f", g_cfgHudList, g_cfgHudScale);
+    CfgEcho("ArrowCounts", "'%s'  scale %.2f  offset %+.2f,%+.2f",
+        g_cfgArrowList, g_cfgArrowScale, g_cfgArrowX, g_cfgArrowY);
 
     Log("=========================");
 }

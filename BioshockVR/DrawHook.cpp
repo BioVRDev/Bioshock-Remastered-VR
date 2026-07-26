@@ -66,6 +66,10 @@ extern float g_cfgHudScale;
 extern int   g_cfgMenuMaxIndexed;
 extern int   g_cfgMenuMaxDraw;
 extern bool  g_cfgHookInstanced;
+extern char  g_cfgArrowList[256];
+extern float g_cfgArrowScale;
+extern float g_cfgArrowX;
+extern float g_cfgArrowY;
 
 static void Log(const char* fmt, ...)
 {
@@ -281,6 +285,15 @@ static int      g_hudN = 0;
 // Returns the viewport scale to use for this draw, or 0 if it is not ours.
 static float ViewportScaleFor(unsigned count, int kind, ID3D11DeviceContext* ctx);
 
+// Quest arrow reposition. Set by ViewportScaleFor, consumed by ViewportPush on
+// the very next line of the same call -- a side channel rather than four more
+// parameters, because the alternative is editing all four draw hooks for a
+// value only one match ever uses. Render thread only, no reentrancy.
+static float g_vpDX = 0.0f, g_vpDY = 0.0f;
+
+static CountRef g_arrow[8] = {};
+static int      g_arrowN = 0;
+
 // ---- menu detection -------------------------------------------------------
 // ALL configured counts must appear in the SAME frame before we call it a menu.
 // ANY-match is not selective enough: small counts (21, 63, 87...) are shared
@@ -389,6 +402,19 @@ static void SortByPersistence(int* order)
         }
 }
 
+// HideArmsN: arm the SuppressIndexCounts list automatically while one of the
+// listed weapon slots is held, so guns hide the arms while the wrench and the
+// plasmids keep them. Numpad 1 still works -- either source can arm the list,
+// and neither overrides the other.
+extern int g_cfgHideArmsSlot[9];   // dllmain.cpp
+int HandsProbe_WeaponSlot();       // HandsProbe.cpp
+
+static bool ArmsAutoHidden()
+{
+    const int s = HandsProbe_WeaponSlot();
+    return (s >= 0 && s <= 8) && g_cfgHideArmsSlot[s] != 0;
+}
+
 static bool IsSuppressed(unsigned count, int kind, ID3D11DeviceContext* ctx)
 {
     // Isolate wins outright. One variable changing at a time is the whole point.
@@ -398,7 +424,7 @@ static bool IsSuppressed(unsigned count, int kind, ID3D11DeviceContext* ctx)
         return false;
     }
 
-    if (!g_suppressOn) return false;
+    if (!g_suppressOn && !ArmsAutoHidden()) return false;
     for (int i = 0; i < g_suppressCount; ++i)
         if (RefMatches(g_suppress[i], count, kind, ctx))
         {
@@ -415,7 +441,20 @@ static float ViewportScaleFor(unsigned count, int kind, ID3D11DeviceContext* ctx
     // "DIRECTOR'S COMMENTARY" inward at 0.6x until it landed on top of
     // "LOAD GAME", which looked like missing glyphs and got blamed on
     // suppression for two sessions. The HUD only matters while playing.
-    if (g_menuUp || !g_gameplayConfirmed) return 0.0f;
+    if (g_menuUp || !g_gameplayConfirmed) { g_vpDX = g_vpDY = 0.0f; return 0.0f; }
+
+    g_vpDX = g_vpDY = 0.0f;
+
+    // Arrow first: it wins over the weapon/HUD lists, and it is the only entry
+    // that carries an offset as well as a scale.
+    for (int i = 0; i < g_arrowN; ++i)
+        if (RefMatches(g_arrow[i], count, kind, ctx))
+        {
+            g_vpDX = g_cfgArrowX;
+            g_vpDY = g_cfgArrowY;
+            return (g_cfgArrowScale > 0.0f && g_cfgArrowScale <= 4.0f)
+                ? g_cfgArrowScale : 1.0f;
+        }
 
     if (g_cfgWeaponScale > 0.0f && g_cfgWeaponScale <= 4.0f)
         for (int i = 0; i < g_weaponN; ++i)
@@ -738,8 +777,12 @@ static bool ViewportPush(ID3D11DeviceContext* ctx, D3D11_VIEWPORT* saved, float 
     D3D11_VIEWPORT s = *saved;
     s.Width = saved->Width * k;
     s.Height = saved->Height * k;
-    s.TopLeftX = saved->TopLeftX + (saved->Width - s.Width) * 0.5f;
-    s.TopLeftY = saved->TopLeftY + (saved->Height - s.Height) * 0.5f;
+    // g_vpDX/DY are fractions of the viewport, so they are resolution
+    // independent. Negative Y moves the drawn geometry UP the screen.
+    s.TopLeftX = saved->TopLeftX + (saved->Width - s.Width) * 0.5f
+        + saved->Width * g_vpDX;
+    s.TopLeftY = saved->TopLeftY + (saved->Height - s.Height) * 0.5f
+        + saved->Height * g_vpDY;
 
     ctx->RSSetViewports(1, &s);
     return true;
@@ -1049,6 +1092,7 @@ static void ParseConfigLists()
         g_cfgMenuMaxIndexed > 0 ? "(low-geometry frames == menu)" : "(off)");
     Log("drawhook: MenuMaxDraw    = %d %s", g_cfgMenuMaxDraw,
         g_cfgMenuMaxDraw > 0 ? "(few Draw calls == in-game menu)" : "(off)");
+    g_arrowN = ParseCounts(g_cfgArrowList, g_arrow, 8);
 
     // Split MenuIndexCounts on ';' into OR-groups, each with AND semantics.
     g_menuGroupN = 0;

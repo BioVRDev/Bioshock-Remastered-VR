@@ -55,6 +55,7 @@ extern float g_cfgAimSmooth;     // 0 none .. 0.95 heavy
 extern bool g_cfg6DofHands;   // Enable6DofHands
 extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
 extern float g_cfgHandsRot[3];    // HandsRotOffset: pitch, yaw, roll (deg)
+extern float g_cfgCursorRot[3];   // CursorOffset: pitch, yaw, roll (deg)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
 bool GameState_Cutscene();   // GameState.cpp
@@ -906,6 +907,52 @@ static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t del
     return ret;
 }
 
+// ---- S5: THE OFFSET IS A ROTATION, NOT EULER ARITHMETIC ------------------
+// Adding constants to Euler angles is a shear. Near +-90 deg of controller
+// pitch the yaw and roll terms go degenerate and a small movement whips the
+// model across the screen. Build the offset as a quaternion in the CONTROLLER'S
+// LOCAL frame, then do ONE Euler conversion.
+//
+// Axis map derived against HeadQuatToDeg (UE_x = -XR_z, UE_y = XR_x,
+// UE_z = XR_y):  UE pitch = +rot about XR +X
+//                UE yaw   = -rot about XR +Y
+//                UE roll  = +rot about XR -Z
+static void QuatMul(const float a[4], const float b[4], float out[4])
+{
+    const float ax = a[0], ay = a[1], az = a[2], aw = a[3];
+    const float bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    out[0] = aw * bx + ax * bw + ay * bz - az * by;
+    out[1] = aw * by - ax * bz + ay * bw + az * bx;
+    out[2] = aw * bz + ax * by - ay * bx + az * bw;
+    out[3] = aw * bw - ax * bx - ay * by - az * bz;
+}
+
+static void QuatAxisAngle(float x, float y, float z, double deg, float out[4])
+{
+    const double h = deg * (3.14159265358979323846 / 180.0) * 0.5;
+    const double s = sin(h);
+    out[0] = (float)(x * s); out[1] = (float)(y * s);
+    out[2] = (float)(z * s); out[3] = (float)cos(h);
+}
+
+static void HandsOffsetQuat(const float pyr[3], float out[4])
+{
+    float qy[4], qp[4], qr[4], t[4];
+    QuatAxisAngle(0.f, 1.f, 0.f, -(double)pyr[1], qy);   // UE yaw
+    QuatAxisAngle(1.f, 0.f, 0.f, (double)pyr[0], qp);   // UE pitch
+    QuatAxisAngle(0.f, 0.f, -1.f, (double)pyr[2], qr);   // UE roll
+    QuatMul(qy, qp, t);
+    QuatMul(t, qr, out);
+}
+
+// Exported so the crosshair uses the SAME maths as the model offset.
+void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4])
+{
+    float qOff[4];
+    HandsOffsetQuat(pyr, qOff);
+    QuatMul(in, qOff, out);
+}
+
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
@@ -924,16 +971,12 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     if (!IsMemoryWritable((uint8_t*)obj + rotOff, sizeof(FRotator))) return;
 
     // ---- rotation: yaw and pitch only ------------------------------------
-    double cp, cy, cr;
-    HeadQuatToDeg(hp.aimQuat, cp, cy, cr);
+    float qOff[4], qFinal[4];
+    HandsOffsetQuat(g_cfgHandsRot, qOff);
+    QuatMul(hp.aimQuat, qOff, qFinal);
 
-    // MODEL ROTATION, per weapon slot, live-tunable. The runtime aim pose is a
-    // gun-pointing ray, so the hands actor inherits that orientation and a
-    // plasmid cast reads as pointing up. The AIM is deliberately not touched --
-    // cursor and shot stay locked together and only the visual moves.
-    cp += (double)g_cfgHandsRot[0];
-    cy += (double)g_cfgHandsRot[1];
-    cr += (double)g_cfgHandsRot[2];
+    double cp, cy, cr;
+    HeadQuatToDeg(qFinal, cp, cy, cr);
 
     FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfgHeadAimMode >= 2);
     // Roll restored. The game tick erases it, so CameraHook_LateHandsWrite
@@ -1059,15 +1102,6 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     if (!IsMemoryValid(CameraLocation, sizeof(FVector)))  return;
     if (!IsMemoryValid(CameraRotation, sizeof(FRotator))) return;
 
-    // Numpad 9: one-shot rotation scan. Rotation here is still CLEAN -- the
-    // head compose happens further down, at kArmAfterCalls.
-    {
-        static bool k9 = false;
-        const bool down = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
-        if (down && !k9) ScanForRotation(pThis, *CameraRotation);
-        k9 = down;
-    }
-
     // --- bucket by return address (§6c-2) ---
     CallSite* site = nullptr;
     for (int i = 0; i < g_siteCount; ++i)
@@ -1191,8 +1225,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             const int aimHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
             if (Input_GetHandPose(aimHand, &hpose) && hpose.aimValid)
             {
+                // The gun is a rigid prop in the hands mesh, so its muzzle
+                // points somewhere fixed relative to the controller. The SHOT
+                // takes the same offset as the crosshair, from one value, so
+                // they cannot diverge.
+                float qAim[4];
+                CameraHook_OffsetQuat(hpose.aimQuat, g_cfgCursorRot, qAim);
+
                 double ap, ay, ar;
-                HeadQuatToDeg(hpose.aimQuat, ap, ay, ar);
+                HeadQuatToDeg(qAim, ap, ay, ar);
 
                 // PALM AIM. The runtime's aim pose points where an extended
                 // index finger would -- correct for a gun, wrong for a plasmid

@@ -48,6 +48,12 @@ extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE
 extern float g_cfgHandsRot[3];     // HandsRotOffset: pitch, yaw, roll (deg). LIVE.
 extern float g_cfgGripSlot[9][3];  // per-weapon position, from the ini
 extern float g_cfgRotSlot[9][3];   // per-weapon rotation, from the ini
+extern float g_cfgCursorRot[3];    // CursorOffset pitch,yaw,roll deg. LIVE.
+extern float g_cfgCursorSlot[9][3];
+extern int   g_cfgHandsArmCalls;
+extern int   g_cfgHandsRetryCalls;
+extern int   g_cfgIdleAnimMode;
+extern int   g_cfgIdleModeSlot[9];
 extern float g_cfgHandsScale;      // HandsScale: value to sweep. 0 == no sweep.
 extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
 // the Hands object. 0 == use g_locOff.
@@ -251,8 +257,10 @@ void* HandsProbe_GetPawn() { return g_pawn; }
 
 // Declared here, not further down: PollGripKeys uses both, and in one
 // translation unit a static has to be declared before the function that reads it.
-static bool g_rotMode = false;    // false = numpad edits position, true = rotation
+static int   g_editMode = 0;      // 0 position, 1 model rotation, 2 cursor
+static float g_cursorBySlot[9][3] = {};
 static int  g_wepSlot = -1;       // active weapon slot, -1 until the first switch
+int HandsProbe_WeaponSlot() { return g_wepSlot; }
 
 // ---------------------------------------------------------------- live tuning
 //
@@ -283,30 +291,39 @@ static void PollGripKeys()
     static bool  prevStep = false;
     static bool  prevMode = false;
     static float step = 2.0f;
-    static float rotStep = 5.0f;
+    static float rotStep = 1.0f;
 
-    // PGUP toggles what the six keys edit. Same keys, two targets -- the numpad
-    // is completely full, so a mode toggle is the only way to add three more
-    // axes without stealing a bind you already use.
-    //   POSITION  8/2 fwd   6/4 right  0/5 up     (cm)
-    //   ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)
-    const bool modeDown = (GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0;
+    // NUMPAD 9 cycles what the six keys edit. It used to be PGUP, but VK_PRIOR
+    // is bound in three places and has never once registered in a log on this
+    // keyboard -- so rotation mode was unreachable for several sessions.
+    //   0 POSITION  8/2 fwd   6/4 right  0/5 up     (cm)   -- the hands actor
+    //   1 ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the hands MODEL
+    //   2 CURSOR    8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the aim ray
+    const bool modeDown = ((GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0);
     if (modeDown && !prevMode)
     {
-        g_rotMode = !g_rotMode;
+        g_editMode = (g_editMode + 1) % 3;
         Log(">>> GRIP: numpad now edits %s",
-            g_rotMode ? "ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
-            : "POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)");
+            (g_editMode == 0) ? "POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
+            : (g_editMode == 1) ? "ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
+            : "CURSOR (8/2 pitch, 6/4 yaw, 0/5 roll, deg)");
     }
     prevMode = modeDown;
 
     const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
     if (stepDown && !prevStep)
     {
-        if (g_rotMode)
+        if (g_editMode)
         {
-            rotStep = (rotStep > 8.0f) ? 1.0f : (rotStep > 2.0f ? 15.0f : 5.0f);
-            Log(">>> GRIP: rotation step = %.0f deg", rotStep);
+            rotStep = (rotStep >= 15.0f) ? 0.1f
+                : (rotStep >= 5.0f) ? 15.0f
+                : (rotStep >= 2.0f) ? 5.0f
+                : (rotStep >= 1.0f) ? 2.0f
+                : (rotStep >= 0.5f) ? 1.0f
+                : (rotStep >= 0.25f) ? 0.5f
+                : (rotStep >= 0.1f) ? 0.25f : 0.1f;
+            Log(">>> GRIP: rotation step = %.2f deg", rotStep);
         }
         else
         {
@@ -316,8 +333,9 @@ static void PollGripKeys()
     }
     prevStep = stepDown;
 
-    float* const tgt = g_rotMode ? g_cfgHandsRot : g_cfgHandsGrip;
-    const float  amt = g_rotMode ? rotStep : step;
+    float* const tgt = (g_editMode == 0) ? g_cfgHandsGrip
+        : (g_editMode == 1) ? g_cfgHandsRot : g_cfgCursorRot;
+    const float amt = g_editMode ? rotStep : step;
 
     bool changed = false;
     for (int i = 0; i < 6; ++i)
@@ -333,12 +351,15 @@ static void PollGripKeys()
 
     if (changed)
     {
-        if (g_rotMode)
-            Log(">>> GRIP: RotOffset%d=%.0f,%.0f,%.0f   (pitch, yaw, roll deg)",
-                g_wepSlot, g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
-        else
+        if (g_editMode == 0)
             Log(">>> GRIP: GripOffset%d=%.1f,%.1f,%.1f   (fwd, right, up cm)",
                 g_wepSlot, g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+        else if (g_editMode == 1)
+            Log(">>> GRIP: RotOffset%d=%.2f,%.2f,%.2f   (pitch, yaw, roll deg)",
+                g_wepSlot, g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+        else
+            Log(">>> GRIP: CursorOffset%d=%.2f,%.2f,%.2f   (pitch, yaw, roll deg)",
+                g_wepSlot, g_cfgCursorRot[0], g_cfgCursorRot[1], g_cfgCursorRot[2]);
     }
 }
 
@@ -1369,6 +1390,72 @@ static int ResolveWeaponSlot(const void* hands)
     return -1;
 }
 
+// ---- IDLE HANDS ANIMATION ------------------------------------------------
+// The sway IS the idle fidget. state WeaponIdling loops
+// PlayAnimationOnChannelFlatEaseIn(0, GetIdlingHandsAnim(), ...) forever, and
+// the weapon hangs off a bone of that mesh via AttachBone, so authored fidget
+// motion lands on the gun.
+//
+// MEASURED TWICE -- DO NOT REPEAT: writing name index 0 ('None') hangs the
+// GAME THREAD about one animation cycle later. That guard sits inside a
+// while(true) whose only latent call is in the taken branch, so 'None'
+// re-queries forever with nothing to yield on. ALWAYS write a different VALID
+// name and the loop keeps yielding on FinishAnimation.
+//
+//   1  every entry -> entry[0]. Kills the wrench slap (FidgetSlapWrench is
+//      entry[1], weight 50) and leaves one ordinary fidget.
+//   2  every entry -> Hands::HandsOffscreenAnimationName (hands+0x498). No
+//      motion, but the arms park OFF SCREEN -- only usable with HideArms.
+//   3  every entry -> Holdable::EquippingHandsAnim (holdable+0x480). No idle
+//      motion AND the arms hold the weapon-ready pose. This is the wrench one.
+//
+// Layout measured in S9: IdlingHandsAnim is a TArray<FName> at holdable+0x458
+// ({Data, Count, Max}); FName is 8 bytes {Index, Number}.
+static void ApplyIdleAnim(const void* hands, int slot)
+{
+    const int mode = (slot >= 0 && slot <= 8) ? g_cfgIdleModeSlot[slot]
+        : g_cfgIdleAnimMode;
+    if (mode <= 0) return;
+    if (!Readable((const uint8_t*)hands + 0x45C, 4)) return;
+
+    uint8_t* const hold = *(uint8_t* const*)((const uint8_t*)hands + 0x45C);
+    if (!hold) return;                        // ability mode -- no holdable
+    if (!Readable(hold + 0x458, 12)) return;
+
+    uint8_t* const d = *(uint8_t* const*)(hold + 0x458);
+    const int n = *(const int*)(hold + 0x45C);
+    if (!d || n < 1 || n > 8) return;
+    if (!Writable(d, (size_t)n * 8)) return;
+
+    uint32_t idx = *(const uint32_t*)(d);         // entry[0]
+    uint32_t num = *(const uint32_t*)(d + 4);
+
+    if (mode == 2 && Readable((const uint8_t*)hands + 0x498, 8))
+    {
+        idx = *(const uint32_t*)((const uint8_t*)hands + 0x498);
+        num = *(const uint32_t*)((const uint8_t*)hands + 0x49C);
+    }
+    else if (mode == 3 && Readable(hold + 0x480, 8))
+    {
+        idx = *(const uint32_t*)(hold + 0x480);
+        num = *(const uint32_t*)(hold + 0x484);
+    }
+
+    if (!idx)
+    {
+        Log("!!! IDLE: source name is 0 -- REFUSING. That hangs the game.");
+        return;
+    }
+
+    for (int i = 0; i < n; ++i)
+    {
+        *(uint32_t*)(d + i * 8) = idx;
+        *(uint32_t*)(d + i * 8 + 4) = num;
+    }
+    Log(">>> IDLE: slot %d, %d entr%s -> name %u (mode %d)",
+        slot, n, (n == 1) ? "y" : "ies", idx, mode);
+}
+
 static void UpdateWeaponGrip(const void* hands)
 {
     if (!g_gripInit)
@@ -1378,6 +1465,7 @@ static void UpdateWeaponGrip(const void* hands)
             {
                 g_gripBySlot[i][a] = g_cfgGripSlot[i][a];
                 g_rotBySlot[i][a] = g_cfgRotSlot[i][a];
+                g_cursorBySlot[i][a] = g_cfgCursorSlot[i][a];
             }
         g_gripInit = true;
     }
@@ -1391,6 +1479,7 @@ static void UpdateWeaponGrip(const void* hands)
         {
             g_gripBySlot[g_wepSlot][a] = g_cfgHandsGrip[a];
             g_rotBySlot[g_wepSlot][a] = g_cfgHandsRot[a];
+            g_cursorBySlot[g_wepSlot][a] = g_cfgCursorRot[a];
         }
         Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
             g_wepSlot, kWepName[g_wepSlot],
@@ -1403,12 +1492,15 @@ static void UpdateWeaponGrip(const void* hands)
     {
         g_cfgHandsGrip[a] = g_gripBySlot[slot][a];
         g_cfgHandsRot[a] = g_rotBySlot[slot][a];
+        g_cfgCursorRot[a] = g_cursorBySlot[slot][a];
     }
 
     Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
         slot, kWepName[slot],
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2],
         g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+
+    ApplyIdleAnim(hands, slot);
 }
 
 // ---------------------------------------------------------------- driver
@@ -1427,11 +1519,19 @@ void HandsProbe_Observe(void* playerController,
     // objects the level load frees. That is the crash.
     if (!GameState_InGame()) return;
 
-    if (++g_calls < 600) return;     // let the level finish loading
+    // The arm delay exists because a scan during level load locks freed objects
+    // and we then write Location/Rotation/DrawScale into them -- that was the
+    // S45 crash. GameState_InGame() above is the real guard; this is belt and
+    // braces, so it is tunable rather than baked at 600 (2.7 s at 220 calls/s).
+    if (++g_calls < g_cfgHandsArmCalls) return;
 
     if (!g_locOff)
     {
-        if (++g_retry < 600) return; // ~5s between attempts; the scan is not cheap
+        // FIRST attempt goes straight through. The old code made it pay the
+        // retry interval too, doubling the wait on every level load for nothing.
+        static bool tried = false;
+        if (tried && ++g_retry < g_cfgHandsRetryCalls) return;
+        tried = true;
         g_retry = 0;
         FindLocationAndPawn(playerController, camLoc);
         return;

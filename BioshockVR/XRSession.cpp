@@ -33,6 +33,8 @@ bool HandsProbe_AbilityMode();          // HandsProbe.cpp
 extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controller)
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
+void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
+extern float g_cfgCursorRot[3];
 
 static void Log(const char* fmt, ...)
 {
@@ -683,9 +685,12 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         Input_GetHandPose(xhHand, &hp) && hp.aimValid;
                     if (haveAim)
                     {
+                        float qc[4];
+                        CameraHook_OffsetQuat(hp.aimQuat, g_cfgCursorRot, qc);
+
                         const float fwd[3] = { 0.f, 0.f, -1.f };
                         float aw[3];
-                        XhQuatRotate(hp.aimQuat, fwd, aw);              // aim in world
+                        XhQuatRotate(qc, fwd, aw);                      // aim in world
 
                         const XrQuaternionf& Q = views[0].pose.orientation;
                         const float hc[4] = { -Q.x, -Q.y, -Q.z, Q.w };  // conjugate

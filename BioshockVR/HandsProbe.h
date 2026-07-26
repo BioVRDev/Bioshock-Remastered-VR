@@ -43,6 +43,10 @@ void* HandsProbe_Get();
 // why GameState's 16KB scan of the controller came back with nothing.
 void* HandsProbe_GetPawn();
 
+// Active weapon slot, or -1 before the first switch. DrawHook reads this to
+// decide whether the arms should be suppressed for the weapon in hand.
+int HandsProbe_WeaponSlot();
+
 // ---- 6-DOF (S54) ---------------------------------------------------------
 // MEASURED, all four confirmed by writing and watching:
 //   Hands object   pawn+0x724   (tracks the view rotator, err 0.0 deg)
