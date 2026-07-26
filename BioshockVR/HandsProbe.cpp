@@ -48,8 +48,6 @@ extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE
 extern float g_cfgHandsRot[3];     // HandsRotOffset: pitch, yaw, roll (deg). LIVE.
 extern float g_cfgGripSlot[9][3];  // per-weapon position, from the ini
 extern float g_cfgRotSlot[9][3];   // per-weapon rotation, from the ini
-extern float g_cfgBobDamping;      // Hands.WeaponBobDamping. <0 == leave alone
-extern int   g_cfgIdleAnimMode;    // 0 off, 1 collapse to entry[0], 2 HandsDown
 extern float g_cfgHandsScale;      // HandsScale: value to sweep. 0 == no sweep.
 extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
 // the Hands object. 0 == use g_locOff.
@@ -1371,72 +1369,6 @@ static int ResolveWeaponSlot(const void* hands)
     return -1;
 }
 
-// ---- HANDS / HOLDABLE FIELD PROBE (one shot per weapon slot) -------------
-// The weapon sway, the wrench fidget and the hands-vs-eye offset are all config
-// vars we cannot reach: there is no [ShockGame.Hands] section, and the ini edits
-// are not landing. Read them out of the live objects instead.
-//
-// This also SETTLES the ini question. IdlingHandsAnim is array<name>; 'None' is
-// name index 0. If the entries come back 0, the ini landed and the slap is
-// coming from somewhere else. If they are non-zero, the file is dead.
-static void ProbeHandsFields(const void* hands, int slot)
-{
-    static unsigned done = 0;
-    if (!hands || slot < 0 || slot > 8) return;
-    if (done & (1u << slot)) return;
-    done |= (1u << slot);
-
-    Log(">>> FIELDS: slot %d %-16s hands 0x%08X",
-        slot, kWepName[slot], (unsigned)(uintptr_t)hands);
-    if (Readable((const uint8_t*)hands + 0x484, 4))
-        Log("  hands+0x484 WeaponBobDamping      = %.4f",
-            *(const float*)((const uint8_t*)hands + 0x484));
-
-    if (!Readable((const uint8_t*)hands + 0x45C, 4)) return;
-    const uint8_t* hold = *(const uint8_t* const*)((const uint8_t*)hands + 0x45C);
-    if (!hold) { Log("  (CurrentHoldable null -- ability mode)"); return; }
-
-    // AActor's own block ends at 0x450 -- Hands::PawnOwner proves it. Holdable
-    // extends Actor directly, so its first var is 0x450 too. FName is 8 bytes
-    // (measured: HandsOffscreenAnimationName index +0x498, Number +0x49C).
-    Log("  holdable 0x%08X", (unsigned)(uintptr_t)hold);
-    if (!Readable(hold + 0x450, 0x60)) { Log("  !!! holdable+0x450 unreadable"); return; }
-
-    const void* backHands = *(const void* const*)(hold + 0x450);
-    Log("  holdable+0x450 Hands = 0x%08X  %s", (unsigned)(uintptr_t)backHands,
-        (backHands == hands) ? "<== MATCHES, layout confirmed"
-        : "<== MISMATCH, layout is wrong, ignore the rest");
-
-    const uint8_t* animD = *(const uint8_t* const*)(hold + 0x458);
-    const int      animN = *(const int*)(hold + 0x45C);
-    const float* wD = *(const float* const*)(hold + 0x464);
-    const int      wN = *(const int*)(hold + 0x468);
-
-    Log("  holdable+0x458 IdlingHandsAnim       count=%d data=0x%08X",
-        animN, (unsigned)(uintptr_t)animD);
-    Log("  holdable+0x464 IdlingHandsAnimWeight count=%d data=0x%08X",
-        wN, (unsigned)(uintptr_t)wD);
-
-    if (animD && animN > 0 && animN <= 8 && Readable(animD, (size_t)animN * 8))
-        for (int i = 0; i < animN; ++i)
-        {
-            const uint32_t n = *(const uint32_t*)(animD + i * 8);
-            Log("     IdlingHandsAnim[%d] name = %u   %s", i, n,
-                n ? "(a real animation -- THE INI IS DEAD)"
-                : "('None' -- THE INI LANDED)");
-        }
-
-    if (wD && wN > 0 && wN <= 8 && Readable(wD, (size_t)wN * 4))
-        for (int i = 0; i < wN; ++i)
-            Log("     IdlingHandsAnimWeight[%d] = %.1f", i, wD[i]);
-
-    Log("  holdable+0x470 IdlingAnim           = %u", *(const uint32_t*)(hold + 0x470));
-    Log("  holdable+0x478 AdditiveHandBobAnim  = %u   <== the sway animation",
-        *(const uint32_t*)(hold + 0x478));
-    Log("  holdable+0x480 EquippingHandsAnim   = %u", *(const uint32_t*)(hold + 0x480));
-    Log("  holdable+0x4A4 AttachBone           = %u", *(const uint32_t*)(hold + 0x4A4));
-}
-
 static void UpdateWeaponGrip(const void* hands)
 {
     if (!g_gripInit)
@@ -1477,54 +1409,6 @@ static void UpdateWeaponGrip(const void* hands)
         slot, kWepName[slot],
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2],
         g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
-    ProbeHandsFields(hands, slot);
-    if (g_cfgBobDamping >= 0.0f && Readable((const uint8_t*)hands + 0x484, 4))
-    {
-        *(float*)((uint8_t*)const_cast<void*>(hands) + 0x484) = g_cfgBobDamping;
-        Log(">>> BOB: WeaponBobDamping <- %.3f", g_cfgBobDamping);
-    }
-
-    // MEASURED TWICE: name index 0 ('None') hangs the game one idle animation
-    // later -- state WeaponIdling's guard sits in a while(true) whose only
-    // latent call is inside the taken branch, so 'None' spins the VM. Never
-    // write 0. Write a DIFFERENT VALID NAME and the loop keeps yielding.
-    if (g_cfgIdleAnimMode > 0 && Readable((const uint8_t*)hands + 0x45C, 4))
-    {
-        uint8_t* const hold = *(uint8_t* const*)((const uint8_t*)hands + 0x45C);
-        if (hold && Readable(hold + 0x458, 12))
-        {
-            uint8_t* const d = *(uint8_t* const*)(hold + 0x458);
-            const int n = *(const int*)(hold + 0x45C);
-            if (d && n > 0 && n <= 8 && Writable(d, (size_t)n * 8))
-            {
-                uint32_t idx = *(const uint32_t*)(d);          // entry[0]
-                uint32_t num = *(const uint32_t*)(d + 4);
-
-                if (g_cfgIdleAnimMode >= 2 &&
-                    Readable((const uint8_t*)hands + 0x498, 8))
-                {
-                    idx = *(const uint32_t*)((const uint8_t*)hands + 0x498);
-                    num = *(const uint32_t*)((const uint8_t*)hands + 0x49C);
-                }
-
-                if (!idx)
-                {
-                    Log("!!! IDLE: source name is 0 -- REFUSING. That is the hang.");
-                }
-                else
-                {
-                    for (int i = 0; i < n; ++i)
-                    {
-                        *(uint32_t*)(d + i * 8) = idx;
-                        *(uint32_t*)(d + i * 8 + 4) = num;
-                    }
-                    Log(">>> IDLE: %d entr%s -> name %u (mode %d) on holdable 0x%08X",
-                        n, (n == 1) ? "y" : "ies", idx, g_cfgIdleAnimMode,
-                        (unsigned)(uintptr_t)hold);
-                }
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------- driver

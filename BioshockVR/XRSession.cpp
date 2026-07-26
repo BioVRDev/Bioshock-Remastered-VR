@@ -33,8 +33,6 @@ bool HandsProbe_AbilityMode();          // HandsProbe.cpp
 extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controller)
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
-bool CameraHook_GetPosedAim(int lagFrames, float q[4]);        // CameraHook.cpp
-extern int g_cfgXhLag;                                          // CrosshairLagFrames
 
 static void Log(const char* fmt, ...)
 {
@@ -685,19 +683,9 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         Input_GetHandPose(xhHand, &hp) && hp.aimValid;
                     if (haveAim)
                     {
-                        // The gun model is rendered from the quat DriveHands wrote
-                        // one or more frames ago. Using the FRESH quat here puts the
-                        // dot ahead of the model. Take the same quat the model was
-                        // posed from; the head term below stays fresh, so the S11
-                        // head-follow rule is untouched.
-                        float pq[4];
-                        const bool posed = (g_cfgXhLag >= 0) &&
-                            CameraHook_GetPosedAim(g_cfgXhLag, pq);
-                        const float* aq = posed ? pq : hp.aimQuat;
-
                         const float fwd[3] = { 0.f, 0.f, -1.f };
                         float aw[3];
-                        XhQuatRotate(aq, fwd, aw);                      // aim in world
+                        XhQuatRotate(hp.aimQuat, fwd, aw);              // aim in world
 
                         const XrQuaternionf& Q = views[0].pose.orientation;
                         const float hc[4] = { -Q.x, -Q.y, -Q.z, Q.w };  // conjugate
