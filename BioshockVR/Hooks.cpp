@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <cmath>
 
 #include <MinHook.h>
 
@@ -34,6 +35,8 @@ extern bool  g_cfgCameraHook;
 extern bool  g_cfgDisableVSync;
 extern bool  g_cfgMenuScreen;
 extern bool g_cfgCutsceneTheater;
+extern float g_cfgFgFovValue;
+extern bool  g_cfgFgFovAuto;
 
 static void Log(const char* fmt, ...)
 {
@@ -146,6 +149,39 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         else
         {
             XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+
+            // Derive the foreground projection from the REAL backbuffer, not
+            // from ResolutionX/Y -- if the game ignored the requested size, the
+            // ini values are a lie and the weapon projection would be wrong.
+            // Resolution is the thing you choose; this follows it.
+            //
+            //   fgFov = 2*atan( tan(GameFovDegrees/2) * (4/3) / (W/H) )
+            //
+            // The 4/3 is the aspect the game's own foreground projection
+            // assumes. At 3072x3264 / 110 this lands on 127.4, which is where
+            // the hand-tuned 127 came from.
+            if (g_cfgFgFovAuto && g_bbW && g_bbH)
+            {
+                const double kPI = 3.14159265358979323846;
+                const double aspect = (double)g_bbW / (double)g_bbH;
+                const double half = g_cfgFovDeg * 0.5 * (kPI / 180.0);
+                const double v = 2.0 * atan(tan(half) * (4.0 / 3.0) / aspect)
+                    * (180.0 / kPI);
+
+                if (v > 5.0 && v < 170.0)
+                {
+                    Log(">>> FOV AUTO: backbuffer %ux%u (aspect %.4f), game FOV %.1f"
+                        "  ->  ForegroundFovValue %.1f  (was %.1f)",
+                        g_bbW, g_bbH, aspect, g_cfgFovDeg, v, g_cfgFgFovValue);
+                    g_cfgFgFovValue = (float)v;
+                }
+                else
+                {
+                    Log("!!! FOV AUTO: computed %.1f is out of range. Keeping %.1f.",
+                        v, g_cfgFgFovValue);
+                }
+            }
+
         }
 
         // Camera hook on the render thread at the first frame -- NOT at DllMain,

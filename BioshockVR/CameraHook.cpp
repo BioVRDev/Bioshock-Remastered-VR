@@ -56,6 +56,8 @@ extern bool g_cfg6DofHands;   // Enable6DofHands
 extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
 extern float g_cfgHandsRot[3];    // HandsRotOffset: pitch, yaw, roll (deg)
 extern float g_cfgCursorRot[3];   // CursorOffset: pitch, yaw, roll (deg)
+extern int   g_cfgArrowPtrOff;    // pawn+N -> the quest arrow actor. 0 == off
+extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
 bool GameState_Cutscene();   // GameState.cpp
@@ -953,6 +955,52 @@ void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4])
     QuatMul(in, qOff, out);
 }
 
+// ---- QUEST ARROW ---------------------------------------------------------
+// MEASURED: the arrow is an actor at pawn+0xAE4, found 22 cm directly above the
+// gun by the proximity probe. Attached to the weapon, which is why it rode the
+// gun around.
+//
+// Writing its Location every frame parks it relative to the CAMERA instead.
+// Rotation is deliberately left alone so it keeps pointing at the objective.
+// This replaces the ArrowCounts viewport hack outright -- that could only add a
+// constant screen offset to something still tracking the weapon, and its texture
+// match was loose enough to displace world geometry for a frame at a time.
+static void DriveQuestArrow(const FVector& camLoc)
+{
+    if (!g_cfgArrowPtrOff) return;
+
+    void* const pawn = HandsProbe_GetPawn();
+    if (!pawn) return;
+    if (!IsMemoryValid((const uint8_t*)pawn + g_cfgArrowPtrOff, 4)) return;
+
+    void* const arrow = *(void**)((uint8_t*)pawn + g_cfgArrowPtrOff);
+    if (!arrow) return;
+    if (!IsMemoryWritable((uint8_t*)arrow + 0x1D8, sizeof(FVector))) return;
+
+    // Room frame, same yaw basis the head-position write uses, so "forward"
+    // means where the body faces rather than where the eyes happen to point.
+    const double yaw = UnitsToRad(
+        (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
+    const double cs = cos(yaw), sn = sin(yaw);
+
+    const double f = g_cfgArrowWorld[0];
+    const double r = g_cfgArrowWorld[1];
+    const double u = g_cfgArrowWorld[2];
+
+    FVector* const L = (FVector*)((uint8_t*)arrow + 0x1D8);
+    L->x = (float)(camLoc.x + (f * cs - r * sn));
+    L->y = (float)(camLoc.y + (f * sn + r * cs));
+    L->z = (float)(camLoc.z + u);
+
+    static bool announced = false;
+    if (!announced)
+    {
+        announced = true;
+        Log(">>> ARROW: driving pawn+0x%X -> 0x%08X",
+            (unsigned)g_cfgArrowPtrOff, (unsigned)(uintptr_t)arrow);
+    }
+}
+
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
@@ -1774,6 +1822,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // positioned relative to it.
             g_lastCleanYaw = (double)cleanRot.yaw;
             DriveHands(g_lastCamCenter, g_lastHeadPos);
+            DriveQuestArrow(g_lastCamCenter);
 
             if (eye == 0) ++g_wLeft; else ++g_wRight;
 

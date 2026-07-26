@@ -51,7 +51,12 @@ int   g_cfgDeltaClamp = 0;           // 0 off, 1 player world, 2 BOTH worlds
 // weapon & arm rendering -----------------------------------------------------
 int   g_cfgFgFovOffset = 0;      // ForegroundFovOffset, 0 == off
 float g_cfgFgFovValue = 0.0f;    // ForegroundFovValue, 0 == use GameFovDegrees
+bool  g_cfgFgFovAuto = false;    // derive ForegroundFovValue from the backbuffer
 int   g_cfgFgFovSrc = 0;         // ForegroundFovSrcOffset, 0 == off
+int   g_cfgWorldFovOff = 0;      // controller+N -> world FOV. 0 == off
+int   g_cfgWorldFovOff2 = 0;     // its mirror. 0 == off
+float g_cfgWorldFovMax = 0.0f;   // above this, snap back. 0 == off
+float g_cfgWorldFovVal = 75.0f;  // the value to snap back to
 float g_cfgHandsScale = 0.0f;    // DrawScale for the arms. 0 == leave alone
 float g_cfgGunScale = 0.0f;      // DrawScale for the weapon actor. 0 == off
 int   g_cfgGunPtrOff = 0;        // GunPtrOffset. 0 == run the sweep
@@ -120,6 +125,8 @@ char  g_cfgArrowList[256] = {};   // ArrowCounts, e.g. 234i@512x512
 float g_cfgArrowScale = 1.0f;     // 0 == leave size alone
 float g_cfgArrowX = 0.0f;         // fraction of viewport width, + == right
 float g_cfgArrowY = 0.0f;         // fraction of viewport height, - == up
+int   g_cfgArrowPtrOff = 0;                    // pawn+N -> the arrow actor. 0 == off
+float g_cfgArrowWorld[3] = { 0.f, 0.f, 60.f }; // fwd,right,up from the camera, cm
 
 // ============================================================================
 //  LOGGING
@@ -273,7 +280,12 @@ static void LoadConfig()
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
     g_cfgFgFovValue = CfgFloat("ForegroundFovValue", g_cfgFgFovValue, 0.f, 360.f);
+    g_cfgFgFovAuto = CfgBool("ForegroundFovAuto", false);
     g_cfgFgFovSrc = CfgHex("ForegroundFovSrcOffset", g_cfgFgFovSrc);
+    g_cfgWorldFovOff = CfgHex("WorldFovOffset", g_cfgWorldFovOff);
+    g_cfgWorldFovOff2 = CfgHex("WorldFovOffset2", g_cfgWorldFovOff2);
+    g_cfgWorldFovMax = CfgFloat("WorldFovMax", g_cfgWorldFovMax, 0.f, 170.f);
+    g_cfgWorldFovVal = CfgFloat("WorldFovValue", g_cfgWorldFovVal, 5.f, 170.f);
     g_cfgHandsScale = CfgFloat("HandsScale", g_cfgHandsScale, 0.05f, 5.f);
     g_cfgGunScale = CfgFloat("GunScale", g_cfgGunScale, 0.05f, 5.f);
     g_cfgGunPtrOff = CfgHex("GunPtrOffset", g_cfgGunPtrOff);
@@ -367,6 +379,8 @@ static void LoadConfig()
     g_cfgArrowScale = CfgFloat("ArrowScale", g_cfgArrowScale, 0.f, 4.f);
     g_cfgArrowX = CfgFloat("ArrowOffsetX", g_cfgArrowX, -2.f, 2.f);
     g_cfgArrowY = CfgFloat("ArrowOffsetY", g_cfgArrowY, -2.f, 2.f);
+    g_cfgArrowPtrOff = CfgHex("ArrowPtrOffset", g_cfgArrowPtrOff);
+    CfgVec3("ArrowWorldOffset", g_cfgArrowWorld);
 
     // ---- echo ----
     Log("=== BioshockVR config ===");
@@ -401,7 +415,11 @@ static void LoadConfig()
         : (g_cfgDeltaClamp == 1) ? "(player world only)" : "(off, one per eye)");
 
     Log("[weapon]");
-    CfgEcho("ForegroundFov", "offset 0x%X  value %.1f", g_cfgFgFovOffset, g_cfgFgFovValue);
+    CfgEcho("ForegroundFov", "offset 0x%X  value %.1f  %s",
+        g_cfgFgFovOffset, g_cfgFgFovValue,
+        g_cfgFgFovAuto ? "(AUTO -- recomputed from the real backbuffer)" : "(fixed)");
+    CfgEcho("WorldFov", "offset 0x%X / 0x%X   max %.1f -> %.1f",
+        g_cfgWorldFovOff, g_cfgWorldFovOff2, g_cfgWorldFovMax, g_cfgWorldFovVal);
     CfgEcho("HandsScale", "%.2f", g_cfgHandsScale);
     CfgEcho("GunScale", "%.2f  ptr %s+0x%03X", g_cfgGunScale,
         g_cfgGunPtrBase ? "hands" : "pawn", (unsigned)g_cfgGunPtrOff);
@@ -470,6 +488,8 @@ static void LoadConfig()
     CfgEcho("HudCounts", "'%s'  scale %.2f", g_cfgHudList, g_cfgHudScale);
     CfgEcho("ArrowCounts", "'%s'  scale %.2f  offset %+.2f,%+.2f",
         g_cfgArrowList, g_cfgArrowScale, g_cfgArrowX, g_cfgArrowY);
+    CfgEcho("ArrowPtrOffset", "0x%X   world %+.0f fwd %+.0f right %+.0f up (cm)",
+        g_cfgArrowPtrOff, g_cfgArrowWorld[0], g_cfgArrowWorld[1], g_cfgArrowWorld[2]);
 
     Log("=========================");
 }

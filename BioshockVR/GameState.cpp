@@ -37,6 +37,10 @@
 extern void LogFile(const char* msg);
 extern bool  g_cfgGameState;      // EnableGameState, default 1
 extern int   g_cfgFgFovOffset;    // ForegroundFovOffset, 0 == off
+extern int   g_cfgWorldFovOff;
+extern int   g_cfgWorldFovOff2;
+extern float g_cfgWorldFovMax;
+extern float g_cfgWorldFovVal;
 extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use src/GameFovDegrees
 extern int   g_cfgFgFovSrc;       // ForegroundFovSrcOffset, 0 == off
 extern float g_cfgFovDeg;         // GameFovDegrees
@@ -442,6 +446,43 @@ static void RecheckCandidates(const uint8_t* obj)
 static void PollProbeKeys(const uint8_t* obj);
 static void ApplyForegroundFov(const uint8_t* obj);
 
+// ---- WORLD FOV CEILING ---------------------------------------------------
+// MEASURED: a vita chamber respawn drives controller+0x45C from 75 to 139.9,
+// and +0x648 mirrors it. The value is saved with the game, so it survives a
+// reload -- which is why it looked permanent.
+//
+// A CEILING, not a fixed write. Hands::FadeFOV animates this same field
+// DOWNWARD when a weapon zooms, so anything below the threshold is left alone
+// and scoping keeps working. Only the runaway value is caught.
+static void ClampWorldFov(const uint8_t* obj)
+{
+    if (g_cfgWorldFovOff <= 0 || g_cfgWorldFovMax <= 0.0f) return;
+
+    const unsigned offs[2] = { (unsigned)g_cfgWorldFovOff,
+                               (unsigned)g_cfgWorldFovOff2 };
+    for (int i = 0; i < 2; ++i)
+    {
+        if (!offs[i]) continue;
+        if (!Readable(obj + offs[i], 4)) continue;
+
+        float* const p = (float*)(obj + offs[i]);
+        if (*p <= g_cfgWorldFovMax) continue;
+
+        static DWORD lastLog = 0;
+        const DWORD t = GetTickCount();
+        if (t - lastLog >= 2000)
+        {
+            lastLog = t;
+            Log(">>> WORLDFOV: +0x%03X was %.1f (over %.1f) -- snapping to %.1f",
+                offs[i], *p, g_cfgWorldFovMax, g_cfgWorldFovVal);
+        }
+        *p = g_cfgWorldFovVal;
+    }
+}
+
+static void FovAutoDiff(const uint8_t* obj);
+static void ClampWorldFov(const uint8_t* obj);
+
 // ============================================================================
 // PAUSE / FULL-MENU DETECTION via Level.Pauser  (S67)
 //   Level : Actor::Level is a LevelInfo shared by every actor, and a LevelInfo's
@@ -760,7 +801,9 @@ void GameState_Observe(void* playerController)
     // meant EnableGameState=0 silently reverted the weapon to 60-degree
     // foreground FOV. Different feature, different switch.
     PollProbeKeys((const uint8_t*)playerController);
+    FovAutoDiff((const uint8_t*)playerController);
     ApplyForegroundFov((const uint8_t*)playerController);
+    ClampWorldFov((const uint8_t*)playerController);
 
     if (!g_cfgGameState) return;
     RefreshPawn(playerController);
@@ -932,6 +975,39 @@ static void ApplyForegroundFov(const uint8_t* obj)
     }
 
     if (*p != want) *p = want;
+}
+
+// ---- FOV AUTO-DIFF (read only) -------------------------------------------
+// The manual snapshot/diff is on PGUP/PGDN, which does not register on this
+// keyboard. So do it unattended: remember every FOV-plausible float on the
+// controller and log the ones that MOVE. Die in a vita chamber and the change
+// lands in the log by itself, with its offset.
+static void FovAutoDiff(const uint8_t* obj)
+{
+    static float prev[256] = {};
+    static bool  have = false;
+    static DWORD last = 0;
+
+    const DWORD t = GetTickCount();
+    if (last && (t - last) < 500) return;
+    last = t;
+
+    const unsigned lo = 0x300, hi = 0x700;
+    int i = 0;
+    for (unsigned o = lo; o + 4 <= hi && i < 256; o += 4, ++i)
+    {
+        if (!Readable(obj + o, 4)) { prev[i] = 0.0f; continue; }
+        const float v = *(const float*)(obj + o);
+        const bool plausible = (v > 5.0f && v < 170.0f);
+
+        if (have && plausible && prev[i] > 5.0f && prev[i] < 170.0f &&
+            (v - prev[i] > 0.5f || prev[i] - v > 0.5f))
+        {
+            Log(">>> FOVDIFF: +0x%03X  %.1f -> %.1f", o, prev[i], v);
+        }
+        prev[i] = plausible ? v : 0.0f;
+    }
+    have = true;
 }
 
 static void PollProbeKeys(const uint8_t* obj)

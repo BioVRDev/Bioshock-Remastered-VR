@@ -1503,6 +1503,58 @@ static void UpdateWeaponGrip(const void* hands)
     ApplyIdleAnim(hands, slot);
 }
 
+// ---- QUEST ARROW HUNT (READ ONLY, one shot) -----------------------------
+// The arrow tracks the weapon in 3D through a full transform, which is what an
+// ATTACHED ACTOR looks like. If it is one, it has Location +0x1D8 like every
+// other actor and we can drive it the way we drive the hands -- real world
+// placement, correct stereo, and its rotation is preserved so it keeps
+// pointing at the objective.
+//
+// Same method that found the Hands: anything sitting within a metre of the gun
+// is a short list, and the gun's own Location is already known.
+static void ProbeNearGun(const void* pawn, const void* hands, const void* gun)
+{
+    static bool done = false;
+    if (done || !pawn || !hands || !gun) return;
+    if (!Readable((const uint8_t*)gun + 0x1D8, 12)) return;
+    done = true;
+
+    const float* const g = (const float*)((const uint8_t*)gun + 0x1D8);
+    Log(">>> ARROW: searching within 150 cm of the gun at %.1f %.1f %.1f",
+        g[0], g[1], g[2]);
+
+    struct Src { const char* name; const uint8_t* base; unsigned lo, hi; };
+    const Src srcs[2] = {
+        { "pawn",  (const uint8_t*)pawn,  0x450, 0x1000 },
+        { "hands", (const uint8_t*)hands, 0x450, 0x0800 },
+    };
+
+    int hits = 0;
+    for (int s = 0; s < 2 && hits < 24; ++s)
+    {
+        for (unsigned o = srcs[s].lo; o + 4 <= srcs[s].hi && hits < 24; o += 4)
+        {
+            if (!Readable(srcs[s].base + o, 4)) continue;
+            const void* const p = *(const void* const*)(srcs[s].base + o);
+            if (!p || p == gun || p == hands || p == pawn) continue;
+            if (!LooksLikeObject(p)) continue;
+            if (!Readable((const uint8_t*)p + 0x1D8, 12)) continue;
+
+            const float* const L = (const float*)((const uint8_t*)p + 0x1D8);
+            const double dx = (double)L[0] - g[0];
+            const double dy = (double)L[1] - g[1];
+            const double dz = (double)L[2] - g[2];
+            const double d = sqrt(dx * dx + dy * dy + dz * dz);
+            if (d > 150.0) continue;
+
+            Log("   %s+0x%03X -> 0x%08X   %6.1f cm   loc %.1f %.1f %.1f",
+                srcs[s].name, o, (unsigned)(uintptr_t)p, d, L[0], L[1], L[2]);
+            ++hits;
+        }
+    }
+    if (!hits) Log("   nothing within 150 cm. The arrow is not reachable this way.");
+}
+
 // ---------------------------------------------------------------- driver
 
 void HandsProbe_Observe(void* playerController,
@@ -1601,6 +1653,7 @@ void HandsProbe_Observe(void* playerController,
     }
 
     SweepGunScale(camLoc);
+    ProbeNearGun(g_pawn, g_hands, g_gun);
 
     // Re-lock after a level load, teleport, or respawn. The pawn/hands/gun are
     // rebuilt at NEW addresses, but the OLD memory usually stays readable, so a
