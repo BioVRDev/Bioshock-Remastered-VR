@@ -1001,6 +1001,45 @@ static void DriveQuestArrow(const FVector& camLoc)
     }
 }
 
+// ---- GUN DISTANCE WATCH (diagnostic, read only) --------------------------
+// The gun changing SIZE with turn direction is either a PROJECTION error (the
+// weapon is where it should be, drawn at the wrong scale) or a PLACEMENT error
+// (it is genuinely moving toward and away from the camera). At 40 cm those look
+// the same through a headset. The distance does not lie.
+static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
+{
+    if (!handsObj) return;
+    if (!IsMemoryValid((const uint8_t*)handsObj + 0x45C, 4)) return;
+
+    const uint8_t* const gun = *(const uint8_t* const*)((const uint8_t*)handsObj + 0x45C);
+    if (!gun || !IsMemoryValid(gun + 0x1D8, 12)) return;
+
+    const float* const g = (const float*)(gun + 0x1D8);
+    const double dx = (double)g[0] - camLoc.x;
+    const double dy = (double)g[1] - camLoc.y;
+    const double dz = (double)g[2] - camLoc.z;
+    const double d = sqrt(dx * dx + dy * dy + dz * dz);
+
+    static double lo = 1e9, hi = -1e9, sum = 0.0;
+    static int    n = 0, yawSum = 0;
+    static DWORD  last = 0;
+
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+    sum += d; ++n;
+    yawSum += g_gameDYaw;
+
+    const DWORD t = GetTickCount();
+    if (!last) { last = t; return; }
+    if (t - last < 1000) return;
+    last = t;
+
+    Log("  GUNDIST: avg %6.1f cm   min %6.1f  max %6.1f  spread %5.1f   turn %+7.0f deg/s",
+        n ? sum / n : 0.0, lo, hi, hi - lo, yawSum / 182.0444);
+
+    lo = 1e9; hi = -1e9; sum = 0.0; n = 0; yawSum = 0;
+}
+
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg6DofHands) return;
@@ -1109,6 +1148,8 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     L->x = (float)wx;
     L->y = (float)wy;
     L->z = (float)wz;
+
+    WatchGunDistance(camLoc, obj);
 
     static bool announced = false;
     if (!announced)
@@ -1479,6 +1520,64 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // the clean mouse heading, then WRITE it. Aim stays on
             // Controller.Rotation (untouched), so the gun won't follow the head.
             const FRotator cleanRot = *CameraRotation;    // mouse heading, pre-head
+
+            // ---- ADVANCE g_aimBase BEFORE THE VIEW IS COMPOSED --------------
+            // The VIEW is built from g_aimBase a few lines below; the AIM field,
+            // which the GUN is drawn from, is written from it much further down.
+            // Advancing the base in between left the gun ONE FRAME OF YAW ahead
+            // of the view -- an error proportional to turn rate whose sign flips
+            // with direction, so the weapon swells turning one way and shrinks
+            // turning the other. No ForegroundFovValue can cancel it, because
+            // the FOV is not what is changing. All three consumers -- view, aim
+            // field and DriveHands -- now read the SAME base.
+            FRotator* aimField = nullptr;
+            bool      aimNowCut = false;
+            if (g_cfgHeadAim && g_cfgHeadTracking &&
+                !DrawHook_MenuUp() && !CameraHook_Starved())
+            {
+                const unsigned off = kAimOffsets[g_aimCand & 1];
+                FRotator* const a = (FRotator*)((uint8_t*)pThis + off);
+                if (IsMemoryWritable(a, sizeof(FRotator)))
+                {
+                    aimField = a;
+
+                    static bool s_wasCut = false;
+                    aimNowCut = GameState_Cutscene();
+                    if (s_wasCut && !aimNowCut) g_aimInit = false;
+                    s_wasCut = aimNowCut;
+
+                    if (!g_aimInit)
+                    {
+                        g_aimBase = *a;
+                        g_aimLastWrote = *a;
+                        g_aimInit = true;
+                        Log(">>> HEAD-AIM armed on +0x%X", off);
+                    }
+                    else
+                    {
+                        // Only the GAME's own change since our last write.
+                        const int dP = RotDelta(a->pitch, g_aimLastWrote.pitch);
+                        const int dY = RotDelta(a->yaw, g_aimLastWrote.yaw);
+                        const int dR = RotDelta(a->roll, g_aimLastWrote.roll);
+
+                        g_aimGameDPitch += fabs((double)dP);
+                        g_gameDYaw = dY;        // S77, read by the turn gate below
+
+                        // CUTSCENE HEAD-OVERRIDE: during a scripted camera the
+                        // game slews aim to point the view where the script
+                        // wants; accumulating that swings the whole world around
+                        // your locked head. Freeze the heading so ONLY the head
+                        // rotates the view. Position still follows the script.
+                        if (!aimNowCut)
+                        {
+                            g_aimBase.pitch += dP;
+                            g_aimBase.yaw += dY;
+                            g_aimBase.roll += dR;
+                        }
+                    }
+                }
+            }
+
             FRotator finalRot = cleanRot;
             if (g_cfgHeadTracking)
             {
@@ -1727,94 +1826,44 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             CameraLocation->z += (float)(right.z * s);
 
             // --- HEAD-AIM WRITE ---
-            if (g_cfgHeadAim && g_cfgHeadTracking &&
-                !DrawHook_MenuUp() && !CameraHook_Starved())
+            // g_aimBase was advanced at the top of this block, from the same
+            // value the view was composed from. Only the write remains here.
+            if (aimField)
             {
-                unsigned off = kAimOffsets[g_aimCand & 1];
-                FRotator* aim = (FRotator*)((uint8_t*)pThis + off);
-
-                if (IsMemoryWritable(aim, sizeof(FRotator)))
+                FRotator want;
+                if (g_cfgHeadAimMode <= 0)
                 {
-                    // Re-arm the heading the frame a cutscene ends, so the view
-                    // resumes from wherever the game left you facing instead of
-                    // snapping by the whole cutscene's accumulated slew.
-                    static bool s_wasCut = false;
-                    const bool s_nowCut = GameState_Cutscene();
-                    if (s_wasCut && !s_nowCut) g_aimInit = false;
-                    s_wasCut = s_nowCut;
+                    // LEGACY. Kept only so the artifact can be A/B'd live.
+                    want = g_aimBase;
+                    want.pitch += (int)(g_headPitch * 182.0444);
+                    want.yaw += (int)(g_headYaw * 182.0444);
+                }
+                else
+                {
+                    // Motion aim feeds the CONTROLLER direction here while the
+                    // view above keeps the head. That split is the whole feature.
+                    const double aimY = (g_cfgAimSource == 1 && g_aimHandValid)
+                        ? g_aimHandYaw : g_headYaw;
+                    const double aimP = (g_cfgAimSource == 1 && g_aimHandValid)
+                        ? g_aimHandPitch : g_headPitch;
 
-                    if (!g_aimInit)
-                    {
-                        g_aimBase = *aim;
-                        g_aimLastWrote = *aim;
-                        g_aimInit = true;
-                        Log(">>> HEAD-AIM armed on +0x%X", off);
-                    }
-                    else
-                    {
-                        // Only the GAME's own change since our last write.
-                        const int dP = RotDelta(aim->pitch, g_aimLastWrote.pitch);
-                        const int dY = RotDelta(aim->yaw, g_aimLastWrote.yaw);
-                        const int dR = RotDelta(aim->roll, g_aimLastWrote.roll);
+                    want = ComposeHeadLocal(g_aimBase, aimY, aimP,
+                        g_cfgHeadAimMode >= 2);
+                    // The controller rotator cannot carry head roll (S6); roll
+                    // still reaches the view through the compose above.
+                    want.roll = g_aimBase.roll;
+                }
 
-                        g_aimGameDPitch += fabs((double)dP);
-                        g_gameDYaw = dY;        // S77, read by the turn gate
-
-                        // CUTSCENE HEAD-OVERRIDE: during a scripted camera the game
-                        // slews aim to point the view where the script wants;
-                        // accumulating that swings the whole world around your
-                        // locked head (nausea). Freeze the world heading so ONLY
-                        // the head rotates the view. Position still follows the
-                        // script, so you ride the path.
-                        if (!s_nowCut)
-                        {
-                            g_aimBase.pitch += dP;
-                            g_aimBase.yaw += dY;
-                            g_aimBase.roll += dR;
-                        }
-                    }
-
-                    FRotator want;
-                    if (g_cfgHeadAimMode <= 0)
-                    {
-                        // LEGACY. Kept only so the artifact can be A/B'd live.
-                        want = g_aimBase;
-                        want.pitch += (int)(g_headPitch * 182.0444);
-                        want.yaw += (int)(g_headYaw * 182.0444);
-                    }
-                    else
-                    {
-                        // Motion aim feeds the CONTROLLER direction here while
-                        // the view above keeps the head. That split is the whole
-                        // feature.
-                        const double aimY = (g_cfgAimSource == 1 && g_aimHandValid)
-                            ? g_aimHandYaw : g_headYaw;
-                        const double aimP = (g_cfgAimSource == 1 && g_aimHandValid)
-                            ? g_aimHandPitch : g_headPitch;
-
-                        want = ComposeHeadLocal(g_aimBase, aimY, aimP,
-                            g_cfgHeadAimMode >= 2);
-                        // The controller rotator cannot carry head roll (S6);
-                        // roll still reaches the view through the compose above.
-                        want.roll = g_aimBase.roll;
-                    }
-
-                    // S74: back to NOT writing during a cutscene. Always-writing
-                    // latches the detector ON forever: we freeze g_aimBase, you
-                    // push the stick, we overwrite it, and that disagreement is
-                    // exactly what the detector measures. It pinned your facing
-                    // and killed the projector trigger. The 2-second flag this
-                    // restores is wrong but harmless; the real fix is reading the
-                    // game's own scripted-sequence state, not this heuristic.
-                    if (!s_nowCut)
-                    {
-                        *aim = want;
-                        g_aimLastWrote = want;
-                    }
-                    else
-                    {
-                        g_aimLastWrote = *aim;
-                    }
+                // S74: do NOT write during a cutscene. Always-writing latches
+                // the detector ON forever.
+                if (!aimNowCut)
+                {
+                    *aimField = want;
+                    g_aimLastWrote = want;
+                }
+                else
+                {
+                    g_aimLastWrote = *aimField;
                 }
             }
 

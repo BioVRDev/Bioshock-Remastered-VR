@@ -218,15 +218,23 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             QueryPerformanceCounter(&x0);
 
             static bool menuMode = false;
-            if (g_cfgMenuScreen && (CameraHook_Starved() || GameState_Paused() ||
-                (g_cfgCutsceneTheater && GameState_Cutscene()) ||
-                (DrawHook_MenuUp() && !GameState_InGame())))
+
+            const bool starved = CameraHook_Starved();
+            const bool drawMenu = DrawHook_MenuUp();
+            const bool paused = GameState_Paused();
+            const bool theater = g_cfgCutsceneTheater && GameState_Cutscene();
+
+            if (g_cfgMenuScreen && (starved || paused || theater ||
+                (drawMenu && !GameState_InGame())))
             {
                 if (!menuMode)
                 {
                     menuMode = true;
-                    Log(">>> MENU SCREEN ON (%s)",
-                        CameraHook_Starved() ? "camera starved" : "draw signature");
+                    Log(">>> MENU SCREEN ON (%s%s%s%s)",
+                        starved ? "camera starved " : "",
+                        theater ? "cutscene " : "",
+                        paused ? "paused " : "",
+                        drawMenu ? "drawmenu" : "");
                 }
 
                 XR_SubmitMenuMono(bb);
