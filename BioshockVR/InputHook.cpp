@@ -36,6 +36,7 @@ extern float g_cfgStickDeadzone;     // radial, 0..0.9          default 0.15
 extern bool  g_cfgControllerLog;     // heartbeat               default 1
 extern int   g_cfgDpadModifier;      // 0 off / 1 thumbrest / 2 R3 / 3 Lgrip  default 1
 extern int   g_cfgControllerLayout;  // 0 literal / 1 jump-on-A       default 0
+extern bool  g_cfgJumpOnR3;          // R3 -> jump instead of zoom    default 0
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
 
@@ -686,6 +687,13 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (aHypo)           btn |= XI_B;      // XENON_B = Med hypo
     if (aHack)           btn |= XI_X;      // XENON_X = Hack / Reload
     if (aJump)           btn |= XI_Y;      // XENON_Y = Jump
+
+    // R3 -> JUMP. The game binds R3 to Zoom, which is unusable in VR anyway --
+    // ADS drives ZoomedForegroundFOVAngle and breaks the ForegroundFov
+    // calibration. ADDITIVE: the layout's normal jump button still jumps, so
+    // this cannot take anything away.
+    if (g_cfgJumpOnR3 && s.thumbR) btn |= XI_Y;
+
     // Touch has ONE application menu button, and the game wants both START
     // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
     // modifier disambiguates: menu alone pauses, modifier+menu is context help.
@@ -693,8 +701,9 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (s.thumbL)        btn |= XI_LTHUMB;
 
     // A control used as the modifier must not ALSO send its normal button, or
-    // every d-pad press would come with a stray R3 / LB.
-    if (s.thumbR && g_cfgDpadModifier != 2)        btn |= XI_RTHUMB;
+    // every d-pad press would come with a stray R3 / LB. Same for one rebound
+    // to jump: without this, every jump would also zoom.
+    if (s.thumbR && g_cfgDpadModifier != 2 && !g_cfgJumpOnR3) btn |= XI_RTHUMB;
     if (s.gripL > 0.5f && g_cfgDpadModifier != 3)  btn |= XI_LSHOULDER;
     if (s.gripR > 0.5f)                            btn |= XI_RSHOULDER;
 

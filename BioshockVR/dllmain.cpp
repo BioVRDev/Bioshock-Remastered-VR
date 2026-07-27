@@ -69,6 +69,7 @@ bool  g_cfgHandsProbe = false;
 int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
 int   g_cfgHandsPosOff = 0;      // HandsPosOffset, e.g. 0x1D8
 float g_cfgHandsGrip[3] = { 0.0f, 0.0f, 0.0f };   // fwd,right,up cm
+float g_cfgGripTunedFgFov = 0.0f;  // fg FOV the grip offsets were tuned at. 0 == off
 float g_cfgHandsRot[3] = { 0.0f, 0.0f, 0.0f };   // pitch,yaw,roll deg  LIVE
 float g_cfgGripSlot[9][3] = {};                  // per-weapon position, from ini
 float g_cfgRotSlot[9][3] = {};                   // per-weapon rotation, from ini
@@ -101,6 +102,7 @@ bool  g_cfgStickYToDpad = false;
 float g_cfgStickDeadzone = 0.15f;
 bool  g_cfgControllerLog = true;
 int   g_cfgDpadModifier = 1;     // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
+bool  g_cfgJumpOnR3 = false;     // R3 -> jump instead of zoom
 
 // menus ----------------------------------------------------------------------
 bool  g_cfgMenuScreen = true;
@@ -110,6 +112,7 @@ float g_cfgMenuHeight = 0.0f;
 int   g_cfgMenuMaxIndexed = 8;
 int   g_cfgMenuMaxDraw = 0;      // RETRACTED (S31), default 0
 char  g_cfgMenuList[256] = {};
+char  g_cfgAnchorList[256] = {};   // in-game UIs that belong on the world-locked quad
 
 // debug / probe --------------------------------------------------------------
 bool  g_cfgDrawHook = true;
@@ -298,6 +301,7 @@ static void LoadConfig()
     g_cfgHandsPtrOff = CfgHex("HandsPtrOffset", g_cfgHandsPtrOff);
     g_cfgHandsPosOff = CfgHex("HandsPosOffset", g_cfgHandsPosOff);
     CfgVec3("HandsGripOffset", g_cfgHandsGrip);
+    g_cfgGripTunedFgFov = CfgFloat("GripTunedFgFov", g_cfgGripTunedFgFov, 0.f, 360.f);
     CfgVec3("HandsRotOffset", g_cfgHandsRot);
     g_cfgHandsArmCalls = CfgIntRange("HandsArmCalls", 600, 1, 5000);
     g_cfgHandsRetryCalls = CfgIntRange("HandsRetryCalls", 600, 1, 5000);
@@ -353,6 +357,7 @@ static void LoadConfig()
     g_cfgDpadModifier = CfgIntRange("ControllerDpadModifier", 1, 0, 3);
     g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
     g_cfgControllerLog = CfgBool("ControllerLog", true);
+    g_cfgJumpOnR3 = CfgBool("JumpOnR3", false);
 
     // menus
     g_cfgMenuScreen = CfgBool("EnableMenuScreen", true);
@@ -362,6 +367,7 @@ static void LoadConfig()
     g_cfgMenuMaxIndexed = CfgIntRange("MenuMaxIndexed", 8, 0, 100000);
     g_cfgMenuMaxDraw = CfgIntRange("MenuMaxDraw", 0, 0, 100000);
     CfgStr("MenuIndexCounts", "1769,63,49,95,21,87", g_cfgMenuList, sizeof(g_cfgMenuList));
+    CfgStr("AnchorIndexCounts", "", g_cfgAnchorList, sizeof(g_cfgAnchorList));
 
     // debug / probe
     g_cfgDrawHook = CfgBool("EnableDrawHook", true);
@@ -440,6 +446,9 @@ static void LoadConfig()
         : "(-> EquippingHandsAnim, no idle motion, arms visible)");
     CfgEcho("HandsGripOffset", "%.0f fwd, %.0f right, %.0f up (cm)",
         g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
+    CfgEcho("GripTunedFgFov", "%.1f  %s", g_cfgGripTunedFgFov,
+        g_cfgGripTunedFgFov > 5.0f ? "(right/up auto-scaled to the live fg FOV)"
+        : "(off -- offsets used exactly as written)");
 
     Log("[aim]");
     CfgEcho("AimSource", "%d  %s", g_cfgAimSource,
@@ -471,6 +480,8 @@ static void LoadConfig()
         g_cfgDpadModifier == 1 ? "(right thumbrest)" :
         g_cfgDpadModifier == 2 ? "(right stick click)" : "(left grip)");
     CfgEcho("StickYToDpad / Log", "%d / %d", (int)g_cfgStickYToDpad, (int)g_cfgControllerLog);
+    CfgEcho("JumpOnR3", "%d  %s", (int)g_cfgJumpOnR3,
+        g_cfgJumpOnR3 ? "(R3 jumps, zoom unbound)" : "(R3 is zoom, stock)");
 
     Log("[menus]");
     CfgEcho("EnableMenuScreen", "%d", (int)g_cfgMenuScreen);
@@ -478,6 +489,7 @@ static void LoadConfig()
         g_cfgMenuSize, g_cfgMenuDist, g_cfgMenuHeight);
     CfgEcho("MenuMaxIndexed", "%d", g_cfgMenuMaxIndexed);
     CfgEcho("MenuIndexCounts", "'%s'", g_cfgMenuList);
+    CfgEcho("AnchorIndexCounts", "'%s'", g_cfgAnchorList);
 
     Log("[debug/probe]");
     CfgEcho("EnableDrawHook", "%d", (int)g_cfgDrawHook);

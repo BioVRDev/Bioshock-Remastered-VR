@@ -65,6 +65,16 @@ bool GameState_Paused();     // GameState.cpp
 void GameState_PitchSample(double degThisSecond);   // GameState.cpp
 bool DrawHook_MenuUp();   // DrawHook.cpp
 
+// TRUE while an IN-GAME UI that should sit on the world-locked quad is up --
+// the tonic/plasmid slot screen, hacking, vending, the map. These do NOT pause,
+// so GameState_Paused() cannot see them, and MenuIndexCounts cannot either:
+// Hooks.cpp only lets a draw signature reach the quad when GameState_InGame()
+// is FALSE. Separate list, separate consumer -- so a wrong entry here can never
+// freeze the camera the way a wrong MenuIndexCounts entry did.
+bool DrawHook_AnchorUp();
+
+bool GameState_InGame();  // GameState.cpp
+
 static void Log(const char* fmt, ...)
 {
     char b[1024];
@@ -1530,10 +1540,20 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // turning the other. No ForegroundFovValue can cancel it, because
             // the FOV is not what is changing. All three consumers -- view, aim
             // field and DriveHands -- now read the SAME base.
+
             FRotator* aimField = nullptr;
             bool      aimNowCut = false;
+
+            // MEASURED 19:26-19:27: DrawHook_MenuUp() is a draw-signature
+            // heuristic and count 1095 flipped it 12 times in one spot during
+            // gameplay. Freezing the base here stops the view turning while the
+            // character, arms and head tracking all keep working -- with nothing
+            // on screen to say why. Trust the game's own pause state instead, and
+            // only believe the heuristic when we are NOT in gameplay.
+            const bool uiUp = GameState_Paused() ||
+                (DrawHook_MenuUp() && !GameState_InGame());
             if (g_cfgHeadAim && g_cfgHeadTracking &&
-                !DrawHook_MenuUp() && !CameraHook_Starved())
+                !uiUp && !CameraHook_Starved())
             {
                 const unsigned off = kAimOffsets[g_aimCand & 1];
                 FRotator* const a = (FRotator*)((uint8_t*)pThis + off);

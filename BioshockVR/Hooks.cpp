@@ -37,6 +37,9 @@ extern bool  g_cfgMenuScreen;
 extern bool g_cfgCutsceneTheater;
 extern float g_cfgFgFovValue;
 extern bool  g_cfgFgFovAuto;
+extern float g_cfgGripTunedFgFov;   // GripTunedFgFov -- 0 == off
+extern float g_cfgGripSlot[9][3];
+extern float g_cfgHandsGrip[3];
 
 static void Log(const char* fmt, ...)
 {
@@ -182,6 +185,46 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 }
             }
 
+            // ---- GRIP OFFSET vs FOREGROUND FOV ------------------------------
+            // The hands actor is placed in WORLD space but drawn by the
+            // FOREGROUND projection, so its screen position is
+            // (lateral / forward) / tan(fgFov/2), while the compositor reads the
+            // backbuffer back at the TRUE world angle. Change the foreground FOV
+            // -- which ForegroundFovAuto does on every resolution change -- and
+            // the same world offset lands at a different apparent angle. Rescale
+            // RIGHT and UP; FORWARD is a depth and does not move. RotOffset and
+            // CursorOffset are angles and need no correction at all.
+            if (g_cfgGripTunedFgFov > 5.0f && g_cfgFgFovValue > 5.0f)
+            {
+                const double kPI2 = 3.14159265358979323846;
+                const double tNow = tan(g_cfgFgFovValue * 0.5 * (kPI2 / 180.0));
+                const double tRef = tan(g_cfgGripTunedFgFov * 0.5 * (kPI2 / 180.0));
+                const double k = (tRef > 1e-6) ? (tNow / tRef) : 1.0;
+
+                if (k > 0.2 && k < 5.0 && (k < 0.999 || k > 1.001))
+                {
+                    for (int s = 0; s < 9; ++s)
+                    {
+                        g_cfgGripSlot[s][1] = (float)(g_cfgGripSlot[s][1] * k);
+                        g_cfgGripSlot[s][2] = (float)(g_cfgGripSlot[s][2] * k);
+                    }
+                    g_cfgHandsGrip[1] = (float)(g_cfgHandsGrip[1] * k);
+                    g_cfgHandsGrip[2] = (float)(g_cfgHandsGrip[2] * k);
+
+                    Log(">>> GRIP SCALE: tuned at fgFov %.1f, running at %.1f"
+                        "  ->  right/up x %.4f",
+                        g_cfgGripTunedFgFov, g_cfgFgFovValue, k);
+                    for (int s = 0; s < 9; ++s)
+                        Log("   GripOffset%d=%.1f,%.1f,%.1f", s,
+                            g_cfgGripSlot[s][0], g_cfgGripSlot[s][1],
+                            g_cfgGripSlot[s][2]);
+                }
+                else
+                {
+                    Log(">>> GRIP SCALE: factor %.4f -- no correction applied.", k);
+                }
+            }
+
         }
 
         // Camera hook on the render thread at the first frame -- NOT at DllMain,
@@ -224,16 +267,19 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             const bool paused = GameState_Paused();
             const bool theater = g_cfgCutsceneTheater && GameState_Cutscene();
 
-            if (g_cfgMenuScreen && (starved || paused || theater ||
+            const bool anchorUi = DrawHook_AnchorUp();
+
+            if (g_cfgMenuScreen && (starved || paused || theater || anchorUi ||
                 (drawMenu && !GameState_InGame())))
             {
                 if (!menuMode)
                 {
                     menuMode = true;
-                    Log(">>> MENU SCREEN ON (%s%s%s%s)",
+                    Log(">>> MENU SCREEN ON (%s%s%s%s%s)",
                         starved ? "camera starved " : "",
                         theater ? "cutscene " : "",
                         paused ? "paused " : "",
+                        anchorUi ? "anchor-ui " : "",
                         drawMenu ? "drawmenu" : "");
                 }
 

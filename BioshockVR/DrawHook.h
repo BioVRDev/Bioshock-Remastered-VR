@@ -27,3 +27,11 @@ void DrawHook_EndFrame();
 // TRUE while a menu/tutorial overlay is on screen, detected by draw signature.
 // Works for pause/main/tutorial menus, which do NOT starve the camera hook.
 bool DrawHook_MenuUp();
+
+// TRUE while an IN-GAME UI that should sit on the world-locked quad is up --
+// the tonic/plasmid slot screen, hacking, vending, the map. These do NOT pause,
+// so GameState_Paused() cannot see them, and MenuIndexCounts cannot either:
+// Hooks.cpp only lets a draw signature reach the quad when GameState_InGame()
+// is FALSE. Separate list, separate consumer -- so a wrong entry here can never
+// freeze the camera the way a wrong MenuIndexCounts entry did.
+bool DrawHook_AnchorUp();

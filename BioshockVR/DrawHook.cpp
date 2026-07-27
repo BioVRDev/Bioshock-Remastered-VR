@@ -58,6 +58,7 @@ extern void  LogFile(const char* msg);
 extern bool  g_cfgDrawHook;
 extern char  g_cfgSuppressList[256];
 extern char  g_cfgMenuList[256];
+extern char  g_cfgAnchorList[256];
 extern char  g_cfgIsolateList[256];
 extern char  g_cfgWeaponList[256];
 extern float g_cfgWeaponScale;
@@ -357,6 +358,17 @@ static bool     g_gameplayConfirmed = false;
 static int      g_gameplayRun = 0;
 
 bool DrawHook_MenuUp() { return g_menuUp; }
+
+// ---- ANCHOR list ----------------------------------------------------------
+// Same group semantics as MenuIndexCounts (AND inside a group, ';' separates
+// OR-groups), evaluated independently and consumed only by Hooks.cpp.
+static MenuGroup g_anchorGroups[kMaxMenuGroups];
+static int       g_anchorGroupN = 0;
+static int       g_anchorHits = 0;
+static int       g_anchorMiss = 0;
+static bool      g_anchorUp = false;
+
+bool DrawHook_AnchorUp() { return g_anchorUp; }
 
 static Bucket* FindBucket(unsigned count, int kind)
 {
@@ -664,6 +676,12 @@ static void NoteMenuCount(unsigned count, int kind, ID3D11DeviceContext* ctx)
         MenuGroup& mg = g_menuGroups[g];
         for (int i = 0; i < mg.n; ++i)
             if (RefMatches(mg.counts[i], count, kind, ctx)) { mg.mask |= (1u << i); break; }
+    }
+    for (int g = 0; g < g_anchorGroupN; ++g)
+    {
+        MenuGroup& ag = g_anchorGroups[g];
+        for (int i = 0; i < ag.n; ++i)
+            if (RefMatches(ag.counts[i], count, kind, ctx)) { ag.mask |= (1u << i); break; }
     }
 }
 
@@ -981,6 +999,34 @@ void DrawHook_EndFrame()
         Log(">>> DRAWHOOK: menu closed");
     }
 
+    // ---- ANCHOR list, evaluated independently of the menu list -------------
+    {
+        bool any = false;
+        int  which = -1;
+        for (int g = 0; g < g_anchorGroupN; ++g)
+        {
+            MenuGroup& ag = g_anchorGroups[g];
+            const unsigned want = (ag.n > 0) ? ((1u << ag.n) - 1u) : 0u;
+            if (ag.n > 0 && ag.mask == want) { any = true; if (which < 0) which = g; }
+            ag.mask = 0;
+        }
+
+        if (any) { ++g_anchorHits; g_anchorMiss = 0; }
+        else { ++g_anchorMiss; g_anchorHits = 0; }
+
+        if (!g_anchorUp && g_anchorHits >= 8)
+        {
+            g_anchorUp = true;
+            Log(">>> DRAWHOOK: ANCHOR UI up -- group %d (first count %u)",
+                which, g_anchorGroups[which < 0 ? 0 : which].counts[0].count);
+        }
+        else if (g_anchorUp && g_anchorMiss >= 8)
+        {
+            g_anchorUp = false;
+            Log(">>> DRAWHOOK: ANCHOR UI down");
+        }
+    }
+
     PollKeys();
 }
 
@@ -1128,6 +1174,41 @@ static void ParseConfigLists()
     {
         Log("drawhook: menu count list EMPTY (structural test only).");
     }
+
+    // Same split for the ANCHOR list. Group numbers logged 0-INDEXED here so
+    // they match DrawHook_EndFrame -- the menu list prints 1-indexed above and
+    // that off-by-one cost real debugging time.
+    g_anchorGroupN = 0;
+    {
+        const char* s = g_cfgAnchorList;
+        while (*s && g_anchorGroupN < kMaxMenuGroups)
+        {
+            char part[128];
+            int  k = 0;
+            while (*s && *s != ';' && k < (int)sizeof(part) - 1) part[k++] = *s++;
+            part[k] = 0;
+            if (*s == ';') ++s;
+
+            MenuGroup& ag = g_anchorGroups[g_anchorGroupN];
+            ag.mask = 0;
+            ag.n = ParseCounts(part, ag.counts, 8);
+            if (ag.n > 0) ++g_anchorGroupN;
+        }
+    }
+
+    if (g_anchorGroupN)
+    {
+        Log("drawhook: %d ANCHOR group(s). ANY group matching == UI goes on the quad.",
+            g_anchorGroupN);
+        for (int g = 0; g < g_anchorGroupN; ++g)
+        {
+            const MenuGroup& ag = g_anchorGroups[g];
+            for (int i = 0; i < ag.n; ++i)
+                Log("   anchor group %d: count %u %s  (ALL %d must hit in one frame)",
+                    g, ag.counts[i].count, KindName(ag.counts[i].kind), ag.n);
+        }
+    }
+    else Log("drawhook: AnchorIndexCounts EMPTY -- in-game UIs will not be anchored.");
 }
 
 bool DrawHook_Install(void* pDrawIndexed, void* pDraw,

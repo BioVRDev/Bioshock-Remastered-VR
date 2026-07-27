@@ -750,10 +750,18 @@ void GameState_PitchSample(double degThisSecond)
 
     const long prev = g_cutscene;
 
-    if (hi >= 2 && !prev)
+    // MEASURED 2026-07-26: ordinary combat injects 12.2, 17.7 and 40.4 deg/s,
+    // which is INSIDE the old "cutscene" band -- so the threshold cannot
+    // separate them and a rocket hit latched this ON, freezing view yaw while
+    // movement kept working. What still separates them is DURATION: every
+    // combat spike lasted ONE second; both measured cutscenes ran 10-11
+    // consecutive seconds. Four samples costs 2s of arming delay on a 10s
+    // cutscene and rejects every spike seen in that log.
+    if (hi >= 4 && !prev)
     {
         _InterlockedExchange(&g_cutscene, 1);
-        Log(">>> CUTSCENE: ON  (injected pitch %.1f deg/s)", degThisSecond);
+        Log(">>> CUTSCENE: ON  (injected pitch %.1f deg/s, %d consecutive)",
+            degThisSecond, hi);
     }
     else if (lo >= 2 && prev)
     {
