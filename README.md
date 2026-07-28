@@ -1,7 +1,7 @@
 # BioShock Remastered VR
 
 Native VR for BioShock Remastered. Real stereo rendering, head tracking, motion
-controllers and 6-DOF weapon holding — not a flat screen floating in a headset.
+controllers and 6-DOF weapon holding.
 
 Built by hooking the game directly: `IDXGISwapChain::Present` for the frame,
 `APlayerController::eventPlayerCalcView` for the camera, and the D3D11 draw path
