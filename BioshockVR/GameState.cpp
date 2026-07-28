@@ -40,6 +40,7 @@ extern int   g_cfgFgFovOffset;    // ForegroundFovOffset, 0 == off
 extern int   g_cfgWorldFovOff;
 extern int   g_cfgWorldFovOff2;
 extern float g_cfgWorldFovMax;
+extern float g_cfgWorldFovMin;
 extern float g_cfgWorldFovVal;
 extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use src/GameFovDegrees
 extern int   g_cfgFgFovSrc;       // ForegroundFovSrcOffset, 0 == off
@@ -454,9 +455,15 @@ static void ApplyForegroundFov(const uint8_t* obj);
 // A CEILING, not a fixed write. Hands::FadeFOV animates this same field
 // DOWNWARD when a weapon zooms, so anything below the threshold is left alone
 // and scoping keeps working. Only the runaway value is caught.
+// Two-sided now. The runaway-wide case was already handled; the bathysphere
+// descent proved the narrow side matters just as much -- MEASURED 75.0 -> 60.0
+// on BOTH fields while we kept reporting 100 to OpenXR. Rendering narrower than
+// we report reads as a zoom, and no cutscene detection is needed to catch it
+// because the value itself is the evidence.
 static void ClampWorldFov(const uint8_t* obj)
 {
-    if (g_cfgWorldFovOff <= 0 || g_cfgWorldFovMax <= 0.0f) return;
+    if (g_cfgWorldFovOff <= 0) return;
+    if (g_cfgWorldFovMax <= 0.0f && g_cfgWorldFovMin <= 0.0f) return;
 
     const unsigned offs[2] = { (unsigned)g_cfgWorldFovOff,
                                (unsigned)g_cfgWorldFovOff2 };
@@ -466,15 +473,19 @@ static void ClampWorldFov(const uint8_t* obj)
         if (!Readable(obj + offs[i], 4)) continue;
 
         float* const p = (float*)(obj + offs[i]);
-        if (*p <= g_cfgWorldFovMax) continue;
+
+        const bool tooWide = (g_cfgWorldFovMax > 0.0f && *p > g_cfgWorldFovMax);
+        const bool tooNarrow = (g_cfgWorldFovMin > 0.0f && *p < g_cfgWorldFovMin);
+        if (!tooWide && !tooNarrow) continue;
 
         static DWORD lastLog = 0;
         const DWORD t = GetTickCount();
         if (t - lastLog >= 2000)
         {
             lastLog = t;
-            Log(">>> WORLDFOV: +0x%03X was %.1f (over %.1f) -- snapping to %.1f",
-                offs[i], *p, g_cfgWorldFovMax, g_cfgWorldFovVal);
+            Log(">>> WORLDFOV: +0x%03X was %.1f (%s) -- snapping to %.1f",
+                offs[i], *p, tooWide ? "too wide" : "too narrow",
+                g_cfgWorldFovVal);
         }
         *p = g_cfgWorldFovVal;
     }
@@ -730,6 +741,20 @@ static void ObserveCutscene(const void* controller)
 }
 
 bool GameState_Cutscene() { return g_cutscene != 0; }
+
+bool GameState_Theater()
+{
+    // A deliberate WHITELIST rather than the whole CTX_SCRIPTED class: that
+    // class also covers forced-movement sequences where the world should stay
+    // immersive. Add names here after testing them one at a time.
+    if (GameState_Valid())
+    {
+        const char* c = GameState_Context();
+        return strcmp(c, "NullInput") == 0 ||
+            strcmp(c, "BathysphereUIActive") == 0;
+    }
+    return GameState_Cutscene();   // context not locked yet
+}
 
 // ============================================================================
 // CUTSCENE DETECTION via INJECTED PITCH  (S72 -- HANDOFF_6 section 8, "Plan B")

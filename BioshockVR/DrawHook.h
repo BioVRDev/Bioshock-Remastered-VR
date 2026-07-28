@@ -15,6 +15,13 @@ ID3D11Texture2D* DrawHook_HudTexture();
 // XRSession uses this to decide whether to submit the HUD quad at all.
 bool DrawHook_HudCaptured();
 
+// TRUE while the game is NOT rendering an in-engine world -- a prerendered
+// movie, a menu, a loading screen. Measured discrimination against gameplay is
+// total: 0 of 4820 intro frames identified a scene target, 44890 of 44890
+// gameplay frames did. Latched with dwell time, so it is safe to switch
+// presentation mode on.
+bool DrawHook_NoWorldRender();
+
 // Hooks ID3D11DeviceContext::DrawIndexed and ::Draw so we can IDENTIFY and then
 // SUPPRESS individual draw calls -- the HUD, the reticle, the menus, coronas.
 //

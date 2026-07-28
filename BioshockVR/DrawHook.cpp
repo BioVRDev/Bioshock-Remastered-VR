@@ -175,8 +175,17 @@ static ID3D11Resource* g_hudHost = nullptr;   // set once per frame, or never
 // Indexed by CountKind: 0 ANY, 1 DRAW, 2 INDEXED, 3 INST, 4 IDXINST.
 static unsigned g_postByKind[5] = {};
 
+static unsigned long long g_hostNotBB = 0;
+static unsigned long long g_gateClosedFrames = 0;
 static unsigned long long g_leakTotal = 0;
 static unsigned long long g_hostFrames = 0, g_noHostFrames = 0;
+
+// Written on the render thread in EndFrame, read on the game thread by the
+// camera hook. A single aligned 32-bit flag, so a plain volatile read is
+// sufficient -- there is no multi-field state to tear.
+static volatile long g_noWorld = 0;
+bool DrawHook_NoWorldRender() { return g_noWorld != 0; }
+
 static bool g_boundaryReport = false;
 
 static void VoteScene(ID3D11Resource* r)
@@ -1065,7 +1074,17 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
             ID3D11Resource* scene = SceneLeader();
             const bool samplesScene = (srv0 && scene && srv0 == scene);
 
-            if (!g_hudHost && samplesScene)
+            // Two independent conditions, both true in every measured frame:
+            // the draw samples the scene target, AND it writes to the
+            // backbuffer. A vending machine's screen adds passes that can
+            // satisfy the first one alone, and locking onto one of those means
+            // the real interface is never captured -- so it paints into the eye
+            // image at full FOV, which reads as a big HUD flashing.
+            if (!g_hudHost && samplesScene && g_curRT != g_bbRes)
+            {
+                ++g_hostNotBB;
+            }
+            else if (!g_hudHost && samplesScene)
             {
                 // The composite. Passed through untouched, always.
                 g_hudHost = g_curRT;
@@ -1334,6 +1353,27 @@ void DrawHook_EndFrame()
 
     if (g_hudHost) ++g_hostFrames; else ++g_noHostFrames;
 
+    // Dwell time in BOTH directions. ON is slower than one frame so a single
+    // anomalous frame during gameplay cannot throw the player onto a flat
+    // screen; OFF is slower still so the first in-engine frame at the end of a
+    // movie does not snap them back mid-fade. At ~236 Present/s these are
+    // roughly 24 and 94 consecutive frames.
+    {
+        const bool raw = (g_hudHost == nullptr);
+        const DWORD now = GetTickCount();
+        static DWORD since = 0;
+        if (raw == (g_noWorld != 0))
+        {
+            since = now;
+        }
+        else if (now - since >= (raw ? 100u : 400u))
+        {
+            g_noWorld = raw ? 1 : 0;
+            since = now;
+            Log(">>> NO-WORLD-RENDER %s", raw ? "ON (movie/menu/loading)" : "off");
+        }
+    }
+
     if (g_boundaryReport)
     {
         ID3D11Resource* scene = SceneLeader();
@@ -1373,6 +1413,8 @@ void DrawHook_EndFrame()
     // Full-screen UI stays in the eye image so the existing menu/theater quad
     // can show it. Decided here, for the NEXT frame.
     g_hudGateOpen = !(GameState_MenuUp() || GameState_Paused());
+
+    if (!g_hudGateOpen) ++g_gateClosedFrames;
 
     g_hudDrawsThisFrame = 0;
     g_hudClearedThisFrame = false;

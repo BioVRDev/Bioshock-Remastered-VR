@@ -61,6 +61,18 @@ extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 
 bool GameState_Cutscene();   // GameState.cpp
+bool GameState_Theater();    // GameState.cpp
+extern bool g_cfgCutsceneTheater;   // dllmain.cpp
+
+// One predicate, four call sites. Cheap: a cached pointer and two strcmps.
+bool DrawHook_NoWorldRender();   // DrawHook.cpp
+
+static bool TheaterMode()
+{
+    return g_cfgCutsceneTheater &&
+        (DrawHook_NoWorldRender() || GameState_Theater());
+}
+
 bool GameState_Paused();     // GameState.cpp
 void GameState_PitchSample(double degThisSecond);   // GameState.cpp
 bool DrawHook_MenuUp();   // DrawHook.cpp
@@ -786,6 +798,7 @@ static bool     g_hwValid = false;
 void CameraHook_LateHandsWrite()
 {
     if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
+    if (GameState_Theater()) { g_hwValid = false; return; }
     if (GameState_Paused()) return;   // render-thread half of the same freeze
 
     // The hands actor is destroyed on level/save load. This runs on the RENDER
@@ -1242,6 +1255,28 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     GameState_Observe(pThis);
     HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
 
+    // Evaluated ONCE per CalcView and reused below, so the two halves of this
+    // function cannot disagree about which mode we are in mid-frame.
+    const bool theater = TheaterMode();
+    {
+        static bool wasTheater = false;
+        if (theater != wasTheater)
+        {
+            g_pairValid = false;          // never carry half a stereo pair across
+            if (!theater)
+            {
+                // You moved your head during the cutscene and none of it drove
+                // the camera, so the origin is stale by exactly that much.
+                g_posOriginSet = false;
+                g_aimInit = false;
+                g_lpValid = 0;
+                Log(">>> THEATER off -- head origin and aim base cleared");
+            }
+            else Log(">>> THEATER on -- scripted camera left untouched");
+            wasTheater = theater;
+        }
+    }
+
     // PHASE 10a: which delta-receiving object does the RENDER view's controller
     // reach? That one is the player world. Throttled -- this is a scan, and it
     // stops permanently the moment it locks (rule 1, section 11).
@@ -1276,11 +1311,17 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     // actually writing the camera -- read-only mode must stay read-only.
     if (eye == 0)
     {
-        g_pairRot = *CameraRotation;
-        g_pairLoc = *CameraLocation;
-        g_pairValid = true;
+        // Pair-lock runs BEFORE the main write block, so gating only the write
+        // still lets it stamp eye 0's camera onto eye 1 during a cutscene.
+        if (!theater)
+        {
+            g_pairRot = *CameraRotation;
+            g_pairLoc = *CameraLocation;
+            g_pairValid = true;
+        }
+        else g_pairValid = false;
     }
-    else if (g_cfgPairLock && g_pairValid &&
+    else if (!theater && g_cfgPairLock && g_pairValid &&
         g_cfgCameraWrite && g_calls >= kArmAfterCalls)
     {
         // Measure BEFORE discarding it.
@@ -1488,7 +1529,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             }
             else { px = hp[0]; py = hp[1]; pz = hp[2]; }
 
-            const bool applied = g_cfgCameraWrite && g_cfgHeadTracking &&
+            const bool applied = !theater && g_cfgCameraWrite && g_cfgHeadTracking &&
                 (g_calls >= kArmAfterCalls);
 
             // Which pose did the image ACTUALLY render from?
@@ -1517,8 +1558,28 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
     }
 
+    // Theater edge. On the way out, clear the origin and the aim base so the
+    // next frame re-seeds from where you are NOW instead of jumping back to
+    // wherever you were standing when the cutscene started.
+    {
+        static bool wasTheater = false;
+        const bool nowTheater = TheaterMode();
+        if (wasTheater && !nowTheater)
+        {
+            g_posOriginSet = false;
+            g_aimInit = false;
+            g_lpValid = 0;
+            Log(">>> THEATER off -- head origin and aim base cleared, re-seeding");
+        }
+        else if (!wasTheater && nowTheater)
+        {
+            Log(">>> THEATER on -- scripted camera left untouched");
+        }
+        wasTheater = nowTheater;
+    }
+
     // --- THE WRITE (§6e). Only when armed. ---
-    if (g_cfgCameraWrite && g_calls >= kArmAfterCalls)
+    if (!theater && g_cfgCameraWrite && g_calls >= kArmAfterCalls)
     {
         if (!IsMemoryWritable(CameraLocation, sizeof(FVector)))
         {
@@ -1599,6 +1660,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             }
 
             FRotator finalRot = cleanRot;
+            // Theater: the scripted camera goes through untouched. The screen is
+            // world-locked, so turning your head must move your gaze ACROSS it,
+            // not pan what is drawn on it.
             if (g_cfgHeadTracking)
             {
                 if (g_cfgHeadAim && g_cfgAimSource == 1 && g_aimInit)
@@ -1834,7 +1898,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // which cancels their disparity exactly. Result: correct in each eye
             // alone, painted flat onto the world with both open, and read as
             // huge because zero parallax means "very far away".
-            g_lastCamCenter = *CameraLocation;
+            g_lastCamCenter = *CameraLocation;   // hands still need this
             double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
             if (g_cfgSwapEyes) s = -s;
 

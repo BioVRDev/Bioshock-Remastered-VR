@@ -29,6 +29,13 @@
 bool GameState_Paused();   // GameState.cpp
 bool GameState_InGame();   // GameState.cpp
 bool GameState_Cutscene();   // GameState.cpp
+
+// THE theater signal. One predicate, read by the camera hook on the game thread
+// and by Present on the render thread, so both cannot disagree about what state
+// we are in. Context-driven and therefore instant; falls back to the pitch
+// heuristic only while the context field is still unlocked.
+bool GameState_Theater();
+
 extern bool g_cfgCutsceneTheater;   // dllmain.cpp
 
 extern void  LogFile(const char* msg);
@@ -445,12 +452,38 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             const bool starved = CameraHook_Starved();
             const bool drawMenu = DrawHook_MenuUp();
             const bool paused = GameState_Paused();
-            const bool theater = g_cfgCutsceneTheater && GameState_Cutscene();
+
+            // Two independent routes to the same quad. The classifier catches
+            // prerendered movies, which is what the intro is; the context
+            // whitelist is left in for in-engine cutscenes, where the world DOES
+            // render and the classifier will not fire.
+            const bool theater = g_cfgCutsceneTheater &&
+                (DrawHook_NoWorldRender() || GameState_Theater());
+
+            // Without this the cutscene inherits whatever anchor the previous
+            // screen left behind -- typically the main menu's, taken while you
+            // were facing somewhere else entirely.
+            {
+                static bool wasTheater = false;
+                if (theater != wasTheater)
+                {
+                    XR_ResetMenuAnchor();
+                    Log(">>> THEATER ROUTE: %s", theater ? "QUAD" : "stereo");
+                    wasTheater = theater;
+                }
+            }
 
             const bool anchorUi = DrawHook_AnchorUp();
 
-            if (g_cfgMenuScreen && (starved || paused || theater || anchorUi ||
-                (drawMenu && !GameState_InGame())))
+            // Theater is a RENDERING-MODE decision, not a menu feature. Gating
+            // it behind EnableMenuScreen means turning menus off also disables
+            // cutscene handling, which is not a relationship anyone would
+            // expect from either switch.
+            const bool ordinaryMenu = g_cfgMenuScreen &&
+                (starved || paused || anchorUi ||
+                    (drawMenu && !GameState_InGame()));
+
+            if (theater || ordinaryMenu)
             {
                 if (!menuMode)
                 {

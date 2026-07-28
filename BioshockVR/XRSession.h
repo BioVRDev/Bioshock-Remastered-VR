@@ -24,6 +24,10 @@ void XR_SubmitPair(ID3D11Texture2D* image, int eye);
 // hook is starved (CameraHook_Starved), i.e. the game isn't rendering a world.
 void XR_SubmitMenuMono(ID3D11Texture2D* image);
 
+// Drop the world-locked screen's anchor so the next menu/theater frame takes a
+// fresh one. Called from Present, which is the thread that owns the anchor.
+void XR_ResetMenuAnchor();
+
 // Latest HMD head orientation (OpenXR LOCAL-space quaternion x,y,z,w), published
 // from the render thread for the game-thread camera write. Seqlock-safe.
 void XR_GetHeadQuat(float out[4]);

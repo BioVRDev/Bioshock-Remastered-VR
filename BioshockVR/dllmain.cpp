@@ -59,6 +59,7 @@ int   g_cfgFgFovSrc = 0;         // ForegroundFovSrcOffset, 0 == off
 int   g_cfgWorldFovOff = 0;      // controller+N -> world FOV. 0 == off
 int   g_cfgWorldFovOff2 = 0;     // its mirror. 0 == off
 float g_cfgWorldFovMax = 0.0f;   // above this, snap back. 0 == off
+float g_cfgWorldFovMin = 0.0f;   // below this, snap back. 0 == off
 float g_cfgWorldFovVal = 75.0f;  // the value to snap back to
 float g_cfgHandsScale = 0.0f;    // DrawScale for the arms. 0 == leave alone
 float g_cfgGunScale = 0.0f;      // DrawScale for the weapon actor. 0 == off
@@ -297,6 +298,7 @@ static void LoadConfig()
     g_cfgWorldFovOff = CfgHex("WorldFovOffset", g_cfgWorldFovOff);
     g_cfgWorldFovOff2 = CfgHex("WorldFovOffset2", g_cfgWorldFovOff2);
     g_cfgWorldFovMax = CfgFloat("WorldFovMax", g_cfgWorldFovMax, 0.f, 170.f);
+    g_cfgWorldFovMin = CfgFloat("WorldFovMin", g_cfgWorldFovMin, 0.f, 170.f);
     g_cfgWorldFovVal = CfgFloat("WorldFovValue", g_cfgWorldFovVal, 5.f, 170.f);
     g_cfgHandsScale = CfgFloat("HandsScale", g_cfgHandsScale, 0.05f, 5.f);
     g_cfgGunScale = CfgFloat("GunScale", g_cfgGunScale, 0.05f, 5.f);
@@ -442,8 +444,9 @@ static void LoadConfig()
     CfgEcho("ForegroundFov", "offset 0x%X  value %.1f  %s",
         g_cfgFgFovOffset, g_cfgFgFovValue,
         g_cfgFgFovAuto ? "(AUTO -- recomputed from the real backbuffer)" : "(fixed)");
-    CfgEcho("WorldFov", "offset 0x%X / 0x%X   max %.1f -> %.1f",
-        g_cfgWorldFovOff, g_cfgWorldFovOff2, g_cfgWorldFovMax, g_cfgWorldFovVal);
+    CfgEcho("WorldFov", "offset 0x%X / 0x%X   max %.1f  min %.1f  -> %.1f",
+        g_cfgWorldFovOff, g_cfgWorldFovOff2, g_cfgWorldFovMax,
+        g_cfgWorldFovMin, g_cfgWorldFovVal);
     CfgEcho("HandsScale", "%.2f", g_cfgHandsScale);
     CfgEcho("GunScale", "%.2f  ptr %s+0x%03X", g_cfgGunScale,
         g_cfgGunPtrBase ? "hands" : "pawn", (unsigned)g_cfgGunPtrOff);

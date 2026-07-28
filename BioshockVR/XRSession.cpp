@@ -66,6 +66,11 @@ static XrPosef g_menuAnchor = {};
 static float g_menuAnchorHead[3] = { 0.f, 0.f, 0.f };
 static const float kMenuReanchorM = 0.45f;   // metres of head travel
 
+// Drop the anchor so the next menu/theater frame takes a fresh one. Called from
+// Present, the same thread that owns g_menuAnchorSet -- no synchronisation
+// needed, and it must live below the declaration above.
+void XR_ResetMenuAnchor() { g_menuAnchorSet = false; }
+
 static XrSwapchain g_sc[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 static std::vector<XrSwapchainImageD3D11KHR> g_scImages[2];
 
