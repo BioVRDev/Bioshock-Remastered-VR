@@ -1,0 +1,14 @@
+; dxgi.def
+;
+; Maps the names the game looks for onto our wrapper functions. The _Name@N
+; decoration is x86 __stdcall -- these WILL NOT LINK on an x64 build, which is
+; a useful accident: if this file errors, check the platform is Win32.
+
+LIBRARY "dxgi"
+
+EXPORTS
+    CreateDXGIFactory=_Proxy_CreateDXGIFactory@8
+    CreateDXGIFactory1=_Proxy_CreateDXGIFactory1@8
+    CreateDXGIFactory2=_Proxy_CreateDXGIFactory2@12
+    DXGIDeclareAdapterRemovalSupport=_Proxy_DXGIDeclareAdapterRemovalSupport@0
+    DXGIGetDebugInterface1=_Proxy_DXGIGetDebugInterface1@12

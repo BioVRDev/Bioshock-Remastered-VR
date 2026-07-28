@@ -31,6 +31,7 @@
 // hitch the game thread visibly.
 
 #include "HandsProbe.h"
+#include "ArmHide.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -50,6 +51,7 @@ extern float g_cfgGripSlot[9][3];  // per-weapon position, from the ini
 extern float g_cfgRotSlot[9][3];   // per-weapon rotation, from the ini
 extern float g_cfgCursorRot[3];    // CursorOffset pitch,yaw,roll deg. LIVE.
 extern float g_cfgCursorSlot[9][3];
+void Cfg_WriteVec3(const char* key, const float v[3]);   // dllmain.cpp
 extern int   g_cfgHandsArmCalls;
 extern int   g_cfgHandsRetryCalls;
 extern int   g_cfgIdleAnimMode;
@@ -351,15 +353,28 @@ static void PollGripKeys()
 
     if (changed)
     {
-        if (g_editMode == 0)
-            Log(">>> GRIP: GripOffset%d=%.1f,%.1f,%.1f   (fwd, right, up cm)",
-                g_wepSlot, g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2]);
-        else if (g_editMode == 1)
-            Log(">>> GRIP: RotOffset%d=%.2f,%.2f,%.2f   (pitch, yaw, roll deg)",
-                g_wepSlot, g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+        // Slot -1 means no weapon switch has happened yet, so there is no key
+        // to write to. Log it, don't invent a GripOffset-1.
+        const char* what = (g_editMode == 0) ? "GripOffset"
+            : (g_editMode == 1) ? "RotOffset" : "CursorOffset";
+        const float* val = (g_editMode == 0) ? g_cfgHandsGrip
+            : (g_editMode == 1) ? g_cfgHandsRot : g_cfgCursorRot;
+        const char* units = (g_editMode == 0) ? "(fwd, right, up cm)"
+            : "(pitch, yaw, roll deg)";
+
+        if (g_wepSlot >= 0 && g_wepSlot < 9)
+        {
+            char key[32];
+            _snprintf_s(key, sizeof(key), _TRUNCATE, "%s%d", what, g_wepSlot);
+            Cfg_WriteVec3(key, val);
+            Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   [SAVED]",
+                key, val[0], val[1], val[2], units);
+        }
         else
-            Log(">>> GRIP: CursorOffset%d=%.2f,%.2f,%.2f   (pitch, yaw, roll deg)",
-                g_wepSlot, g_cfgCursorRot[0], g_cfgCursorRot[1], g_cfgCursorRot[2]);
+        {
+            Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   (no weapon slot yet, NOT saved)",
+                what, val[0], val[1], val[2], units);
+        }
     }
 }
 
@@ -1699,6 +1714,10 @@ void HandsProbe_Observe(void* playerController,
 
 void HandsProbe_Reset()
 {
+    // Drop the cached skeleton WITHOUT restoring: on a level change the old
+    // actor may already be freed and its address handed to something else.
+    ArmHide_Reset();
+
     g_locOff = 0;
     g_pawn = nullptr;
     g_hands = nullptr;

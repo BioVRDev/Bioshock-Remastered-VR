@@ -70,6 +70,9 @@ int   g_cfgGunChildren = 0;      // 0 off, 1 sweep, 2 scale all
 
 // 6-DOF hands ----------------------------------------------------------------
 bool  g_cfg6DofHands = false;
+bool  g_cfgHideArmSleeves = false;
+int   g_cfgArmHideHandsVt = 0x00D8A28C;   // AHands vtable RVA, verified not trusted
+int   g_cfgArmHideSkelVt = 0x00E19ACC;    // SkeletonInstance vtable RVA
 bool  g_cfgHandsProbe = false;
 int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
 int   g_cfgHandsPosOff = 0;      // HandsPosOffset, e.g. 0x1D8
@@ -243,6 +246,24 @@ static void CfgStr(const char* key, const char* def, char* out, size_t sz)
     GetPrivateProfileStringA("VR", key, def, out, (DWORD)sz, g_iniPath);
 }
 
+// Live-tuned values written straight back to the ini, so a grip found in the
+// headset cannot be lost by closing the game. Same "%.2f,%.2f,%.2f" shape
+// CfgVec3 reads, so a value written here reloads exactly as it was.
+void Cfg_WriteVec3(const char* key, const float v[3])
+{
+    if (!g_iniPath[0] || !key || !v) return;
+
+    char b[64];
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "%.2f,%.2f,%.2f", v[0], v[1], v[2]);
+
+    if (!WritePrivateProfileStringA("VR", key, b, g_iniPath))
+        return;
+
+    // Windows caches ini writes. Without this flush a crash or a hard exit
+    // loses the value that was just "saved".
+    WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_iniPath);
+}
+
 // "fwd,right,up" -> out[3]; only assigns when all three parse.
 static void CfgVec3(const char* key, float out[3])
 {
@@ -324,6 +345,9 @@ static void LoadConfig()
 
     // 6-DOF hands
     g_cfg6DofHands = CfgBool("Enable6DofHands", false);
+    g_cfgHideArmSleeves = CfgBool("HideArmSleeves", false);
+    g_cfgArmHideHandsVt = CfgHex("ArmHideHandsVt", g_cfgArmHideHandsVt);
+    g_cfgArmHideSkelVt = CfgHex("ArmHideSkelVt", g_cfgArmHideSkelVt);
     g_cfgHandsProbe = CfgBool("EnableHandsProbe", false);
     g_cfgHandsPtrOff = CfgHex("HandsPtrOffset", g_cfgHandsPtrOff);
     g_cfgHandsPosOff = CfgHex("HandsPosOffset", g_cfgHandsPosOff);
@@ -481,6 +505,8 @@ static void LoadConfig()
 
     Log("[hands 6dof]");
     CfgEcho("Enable6DofHands", "%d", (int)g_cfg6DofHands);
+    CfgEcho("HideArmSleeves", "%d   hands vt 0x%X  skel vt 0x%X",
+        (int)g_cfgHideArmSleeves, g_cfgArmHideHandsVt, g_cfgArmHideSkelVt);
     CfgEcho("EnableHandsProbe", "%d", (int)g_cfgHandsProbe);
     CfgEcho("HandsPtrOffset", "0x%X", g_cfgHandsPtrOff);
     CfgEcho("HandsPosOffset", "0x%X", g_cfgHandsPosOff);

@@ -16,6 +16,7 @@
 // `final == clean` means writing it back would be a no-op anyway.
 
 #include "CameraHook.h"
+#include "ArmHide.h"
 #include "GameState.h"
 #include "EngineExec.h"
 #include "InputHook.h"
@@ -44,6 +45,7 @@ extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render threa
 extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 extern void  XR_GetHeadPos(float out[3]);
 extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
+extern bool  g_cfgHideArmSleeves;
 extern int   g_cfgDeltaClamp;     // 0 off, 1 player world, 2 both (dllmain.cpp)
 extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch-decoupled
 extern bool  g_cfgPairLock;
@@ -1283,6 +1285,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             else Log(">>> THEATER on -- scripted camera left untouched");
             wasTheater = theater;
         }
+    }
+
+    // ARMS. A skeleton write, NOT part of the camera calculation -- which is
+    // why it lives out here rather than inside DriveHands(). The whole
+    // camera-write block below is skipped during theater, and a hide that never
+    // gets un-hidden would leave the arms collapsed through every cutscene.
+    {
+        void* handsActor = nullptr;
+        unsigned locOff = 0, rotOff = 0;
+        const bool haveHands = HandsProbe_GetTargets(&handsActor, &locOff, &rotOff);
+
+        if (haveHands)
+        {
+            const bool hide = g_cfgHideArmSleeves && g_cfg6DofHands &&
+                !theater && !GameState_Paused();
+            ArmHide_Update(handsActor, hide);
+        }
+        else ArmHide_Reset();
     }
 
     // HEAD BOB. The engine adds walk bob, the landing dip and damage shake to
