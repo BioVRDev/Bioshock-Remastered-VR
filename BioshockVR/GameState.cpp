@@ -26,6 +26,7 @@
 // ever touch our snapshot, never the game's memory.
 
 #include "GameState.h"
+#include "EngineExec.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -36,6 +37,7 @@
 
 extern void LogFile(const char* msg);
 extern bool  g_cfgGameState;      // EnableGameState, default 1
+extern bool  g_cfgDisableReticle;
 extern int   g_cfgFgFovOffset;    // ForegroundFovOffset, 0 == off
 extern int   g_cfgWorldFovOff;
 extern int   g_cfgWorldFovOff2;
@@ -611,6 +613,47 @@ bool GameState_Paused() { return g_paused != 0; }
 // screen menu from a false draw-signature hit during play.
 bool GameState_InGame() { return g_level != nullptr; }
 
+bool GameState_GetPawnEyePoint(float outPos[3])
+{
+    if (!outPos || !g_pawn) return false;
+
+    const unsigned kLocOff = 0x1D8;    // CONFIRMED by the 6-DOF hands probe
+    const unsigned kEyeOff = 0x550;    // claimed; see the EYEHEIGHT log below
+
+    const uint8_t* p = (const uint8_t*)g_pawn;
+    if (!Readable(p + kLocOff, 12)) return false;
+    if (!Readable(p + kEyeOff, 4))  return false;
+
+    const float* loc = (const float*)(p + kLocOff);
+    const float  eye = *(const float*)(p + kEyeOff);
+
+    for (int i = 0; i < 3; ++i)
+        if (!(loc[i] == loc[i]) || loc[i] < -1e8f || loc[i] > 1e8f) return false;
+    if (!(eye == eye) || eye < 0.0f || eye > 250.0f) return false;
+
+    // Is this BaseEyeHeight (static) or EyeHeight (animated)? If it is the
+    // animated one the bob is INSIDE it and replacing the camera with it
+    // achieves nothing. One second of min/max settles it.
+    {
+        static float lo = 1e9f, hi = -1e9f;
+        static DWORD last = 0;
+        if (eye < lo) lo = eye;
+        if (eye > hi) hi = eye;
+        const DWORD t = GetTickCount();
+        if (t - last >= 1000)
+        {
+            last = t;
+            Log("EYEHEIGHT: +0x550 min %.2f max %.2f  (spread %.2f)", lo, hi, hi - lo);
+            lo = 1e9f; hi = -1e9f;
+        }
+    }
+
+    outPos[0] = loc[0];
+    outPos[1] = loc[1];
+    outPos[2] = loc[2] + eye;
+    return true;
+}
+
 // ============================================================================
 // CUTSCENE DETECTION via PlayerController.ViewTarget  (S68)
 //   During play ViewTarget == Pawn. During a scripted camera / bathysphere it
@@ -824,6 +867,40 @@ static void RefreshPawn(const void* controller)
     HandsProbe_Reset();                     // re-lock hands/gun on the new pawn
 }
 
+// ---- reticle upkeep --------------------------------------------------------
+// `set` writes the class default as well as the live instance, so this survives
+// respawn and level change -- but game script can still turn it back on, so the
+// state is re-asserted every 15 seconds rather than trusted once. Failures are
+// retried every 2 seconds, because the engine object does not exist yet during
+// the first moments of the process.
+static void Reticle_Tick()
+{
+    const int want = g_cfgDisableReticle ? 1 : 0;
+    const DWORD now = GetTickCount();
+
+    static int   applied = -1;
+    static DWORD lastTry = 0;
+    static DWORD lastOk = 0;
+
+    bool due = false;
+    if (want != applied)                        due = (now - lastTry >= 2000);
+    else if (want && (now - lastOk >= 15000))   due = true;
+    if (!due) return;
+
+    lastTry = now;
+
+    const char* cmd = want ? "set ShockPlayer bReticleDisabled True"
+        : "set ShockPlayer bReticleDisabled False";
+
+    if (EngineExec_Run(cmd))
+    {
+        applied = want;
+        lastOk = now;
+        if (want != applied || applied == want)
+            Log(">>> RETICLE: %s via engine SET", want ? "disabled" : "enabled");
+    }
+}
+
 void GameState_Observe(void* playerController)
 {
     if (!playerController) return;
@@ -837,6 +914,10 @@ void GameState_Observe(void* playerController)
     FovAutoDiff((const uint8_t*)playerController);
     ApplyForegroundFov((const uint8_t*)playerController);
     ClampWorldFov((const uint8_t*)playerController);
+
+    // Before the EnableGameState early-return: the reticle should still go away
+    // when the context scan is switched off. Different feature, different switch.
+    Reticle_Tick();
 
     if (!g_cfgGameState) return;
     RefreshPawn(playerController);

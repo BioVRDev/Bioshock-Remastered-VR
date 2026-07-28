@@ -17,6 +17,7 @@
 
 #include "CameraHook.h"
 #include "GameState.h"
+#include "EngineExec.h"
 #include "InputHook.h"
 #include "HandsProbe.h"
 
@@ -48,6 +49,8 @@ extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch
 extern bool  g_cfgPairLock;
 extern bool  g_cfgHeadAim;
 extern bool g_cfgHeadRoll;
+extern bool g_cfgDisableHeadBob;
+bool GameState_GetPawnEyePoint(float outPos[3]);   // GameState.cpp
 extern int   g_cfgAimSource;     // 0 head, 1 right controller
 extern float g_cfgPlasmidAimPitch;  // deg, added to the plasmid hand's aim pitch
 extern float g_cfgAimClampDeg;   // max angle between aim and view
@@ -86,6 +89,11 @@ bool DrawHook_MenuUp();   // DrawHook.cpp
 bool DrawHook_AnchorUp();
 
 bool GameState_InGame();  // GameState.cpp
+
+// Pawn eye point: actor Location + eye height, i.e. the view origin BEFORE the
+// engine adds walk bob, landing dip and damage shake in CalcView. Returns false
+// unless the pawn is known and both fields read sane.
+bool GameState_GetPawnEyePoint(float outPos[3]);
 
 static void Log(const char* fmt, ...)
 {
@@ -1274,6 +1282,29 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             }
             else Log(">>> THEATER on -- scripted camera left untouched");
             wasTheater = theater;
+        }
+    }
+
+    // HEAD BOB. The engine adds walk bob, the landing dip and damage shake to
+    // the camera location inside CalcView. Rather than filter that out after the
+    // fact -- which cannot tell bob from a lift, a stair or a slope -- take the
+    // view origin the engine started from: the pawn's own Location plus eye
+    // height. Everything downstream (HMD translation, height offset, IPD) still
+    // stacks on top, and pair-lock below now caches the stable point for both
+    // eyes rather than a bobbed one.
+    //
+    // NOT during theater: a cinematic camera position is authored, not derived.
+    if (g_cfgDisableHeadBob && !theater && CameraLocation)
+    {
+        float eye[3];
+        if (GameState_GetPawnEyePoint(eye))
+        {
+            CameraLocation->x = eye[0];
+            CameraLocation->y = eye[1];
+            CameraLocation->z = eye[2];
+
+            static bool once = false;
+            if (!once) { once = true; Log(">>> HEADBOB: camera base = Pawn.Location + EyeHeight"); }
         }
     }
 

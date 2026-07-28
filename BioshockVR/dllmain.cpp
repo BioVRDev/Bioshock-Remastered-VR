@@ -45,6 +45,7 @@ bool  g_cfgHeadTracking = false; // compose HMD orientation onto the camera
 bool  g_cfgHeadPosition = false; // apply the head's translation
 bool  g_cfgHeadRoll = true;
 bool  g_cfgHeadAim = false;      // make Controller.Rotation follow the aim
+bool  g_cfgDisableHeadBob = false;   // start OFF until EYEHEIGHT is verified
 int   g_cfgHeadAimMode = 1;      // 0 additive, 1 local compose, 2 pitch-decoupled
 bool  g_cfgPairLock = true;      // render both eyes from the same instant
 float g_cfgHeightOffset = 0.0f;  // CameraHeightOffset, cm, +up
@@ -93,9 +94,22 @@ int   g_cfgAimSource = 0;        // 0 head, 1 right controller
 float g_cfgAimClampDeg = 20.0f;
 float g_cfgAimSmooth = 0.35f;
 float g_cfgPlasmidAimPitch = -50.0f;   // deg added to the plasmid hand's aim pitch
+bool g_cfgDisableReticle = true;
+int  g_cfgEngPtrRva = 0x1375368;    // UGameEngine* location
+int  g_cfgEngVtRva = 0x00E0DFF4;    // its expected vtable, for verification
+int  g_cfgEngExecRva = 0x004C5970;  // UGameEngine::Exec
+int  g_cfgEngExecThis = 0x40;       // FExec subobject offset
+
+// HUD quad ------------------------------------------------------------------
+bool  g_cfgHudRedirect = true;    // capture the interface off the eye texture
+float g_cfgHudWidthDeg = 70.0f;   // angular width of the quad -- THE scale knob
+float g_cfgHudDist = 2.0f;        // metres; affects vergence, not apparent size
+float g_cfgHudPitchDeg = 0.0f;    // + up
+float g_cfgHudYawDeg = 0.0f;      // + right
 bool  g_cfgCrosshair = true;
 float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
+bool g_cfgHudAlphaFix = true;
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
@@ -284,11 +298,13 @@ static void LoadConfig()
     g_cfgHeadPosition = CfgBool("EnableHeadPosition", false);
     g_cfgHeadRoll = CfgBool("EnableHeadRoll", true);
     g_cfgHeadAim = CfgBool("EnableHeadAim", false);
+    g_cfgDisableHeadBob = CfgBool("DisableHeadBob", false);
     g_cfgHeadAimMode = CfgIntRange("HeadAimMode", 1, 0, 2);
     g_cfgPairLock = CfgBool("PairLockCamera", true);
     g_cfgHeightOffset = CfgFloat("CameraHeightOffset", g_cfgHeightOffset, -100.f, 100.f);
     g_cfgCutsceneTheater = CfgBool("CutsceneTheater", false);
     g_cfgDeltaClamp = CfgInt("DeltaClamp", 0);
+    g_cfgHudAlphaFix = CfgBool("HudAlphaFix", true);
 
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
@@ -355,9 +371,19 @@ static void LoadConfig()
     g_cfgAimClampDeg = CfgFloat("AimClampDeg", g_cfgAimClampDeg, 1.f, 80.f);
     g_cfgPlasmidAimPitch = CfgFloat("PlasmidAimPitch", g_cfgPlasmidAimPitch, -90.f, 90.f);
     g_cfgAimSmooth = CfgFloat("AimSmoothing", g_cfgAimSmooth, 0.f, 0.95f);
+    g_cfgHudRedirect = CfgBool("HudRedirect", true);
+    g_cfgHudWidthDeg = CfgFloat("HudWidthDeg", g_cfgHudWidthDeg, 10.f, 140.f);
+    g_cfgHudDist = CfgFloat("HudDistance", g_cfgHudDist, 0.4f, 8.f);
+    g_cfgHudPitchDeg = CfgFloat("HudPitchDeg", g_cfgHudPitchDeg, -60.f, 60.f);
+    g_cfgHudYawDeg = CfgFloat("HudYawDeg", g_cfgHudYawDeg, -90.f, 90.f);
     g_cfgCrosshair = CfgBool("EnableCrosshair", true);
     g_cfgXhSize = CfgFloat("CrosshairSize", g_cfgXhSize, 0.0005f, 0.5f);
     g_cfgXhDist = CfgFloat("CrosshairDistance", g_cfgXhDist, 0.2f, 50.f);
+    g_cfgDisableReticle = CfgBool("DisableReticle", true);
+    g_cfgEngPtrRva = CfgHex("EnginePtrRva", g_cfgEngPtrRva);
+    g_cfgEngVtRva = CfgHex("EngineVtableRva", g_cfgEngVtRva);
+    g_cfgEngExecRva = CfgHex("EngineExecRva", g_cfgEngExecRva);
+    g_cfgEngExecThis = CfgHex("EngineExecThis", g_cfgEngExecThis);
 
     // controller
     g_cfgController = CfgBool("EnableController", true);
@@ -428,6 +454,7 @@ static void LoadConfig()
     CfgEcho("EnableHeadPosition", "%d", (int)g_cfgHeadPosition);
     CfgEcho("EnableHeadRoll", "%d", (int)g_cfgHeadRoll);
     CfgEcho("EnableHeadAim", "%d", (int)g_cfgHeadAim);
+    CfgEcho("DisableHeadBob", "%d", (int)g_cfgDisableHeadBob);
     CfgEcho("HeadAimMode", "%d  %s", g_cfgHeadAimMode,
         g_cfgHeadAimMode == 0 ? "(legacy additive -- turn artifact)" :
         g_cfgHeadAimMode == 1 ? "(local compose, mouse pitch kept)" :
@@ -483,6 +510,11 @@ static void LoadConfig()
             g_cfgCursorSlot[s][0], g_cfgCursorSlot[s][1], g_cfgCursorSlot[s][2],
             g_cfgIdleModeSlot[s], g_cfgHideArmsSlot[s]);
     CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
+    CfgEcho("HudQuad", "%d  %.1f deg wide at %.2f m  pitch %.1f  yaw %.1f",
+        (int)g_cfgHudRedirect, g_cfgHudWidthDeg, g_cfgHudDist,
+        g_cfgHudPitchDeg, g_cfgHudYawDeg);
+    CfgEcho("DisableReticle", "%d   engine ptr 0x%X  exec 0x%X",
+        (int)g_cfgDisableReticle, g_cfgEngPtrRva, g_cfgEngExecRva);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
         g_cfgXhSize * 1000.f, g_cfgXhDist);
 

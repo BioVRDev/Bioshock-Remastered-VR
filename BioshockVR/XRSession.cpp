@@ -24,6 +24,10 @@ extern bool  g_cfgSwapEyes;
 extern float g_cfgMenuSize;
 extern float g_cfgMenuDist;
 extern bool  g_cfgCrosshair;
+extern float g_cfgHudWidthDeg;
+extern float g_cfgHudDist;
+extern float g_cfgHudPitchDeg;
+extern float g_cfgHudYawDeg;
 extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
 extern float g_cfgXhDist;
 extern float g_cfgMenuHeight;
@@ -423,6 +427,13 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     Log(">>> XR: CHOSE swapchain format DXGI %d  %s", (int)chosen, FmtName(chosen));
 
     g_scFormat = chosen;
+
+    // Seeded from the ini; DEL / F11 / F12 still adjust these live, and every
+    // change logs a line you can paste straight back into the ini.
+    g_hudWidthDeg = g_cfgHudWidthDeg;
+    g_hudDist = g_cfgHudDist;
+    g_hudPitchDeg = g_cfgHudPitchDeg;
+    g_hudYawDeg = g_cfgHudYawDeg;
 
     for (int eye = 0; eye < 2; ++eye)
     {

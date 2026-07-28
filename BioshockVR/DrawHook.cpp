@@ -67,10 +67,12 @@ extern float g_cfgHudScale;
 extern int   g_cfgMenuMaxIndexed;
 extern int   g_cfgMenuMaxDraw;
 extern bool  g_cfgHookInstanced;
+extern bool  g_cfgHudRedirect;
 extern char  g_cfgArrowList[256];
 extern float g_cfgArrowScale;
 extern float g_cfgArrowX;
 extern float g_cfgArrowY;
+extern bool g_cfgHudAlphaFix;
 
 static void Log(const char* fmt, ...)
 {
@@ -1129,7 +1131,7 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                     FLOAT factor[4] = {}; UINT sampleMask = 0xFFFFFFFF;
                     ctx->OMGetBlendState(&bs, factor, &sampleMask);
                     ID3D11BlendState* fixedBs = CorrectedBlend(ctx, bs);
-                    if (fixedBs && fixedBs != bs)
+                    if (g_cfgHudAlphaFix && fixedBs && fixedBs != bs)
                         ctx->OMSetBlendState(fixedBs, factor, sampleMask);
                     if (bs) bs->Release();
 
@@ -1756,6 +1758,11 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
     }
 
     ParseConfigLists();
+
+    // Home still toggles it live; the ini only decides where it starts.
+    g_hudRedirect = g_cfgHudRedirect;
+    Log("drawhook: HUD redirect starts %s (HudRedirect=%d)",
+        g_hudRedirect ? "ON" : "off", (int)g_cfgHudRedirect);
 
     MH_STATUS s = MH_CreateHook(pDrawIndexed, &hkDrawIndexed,
         (LPVOID*)&g_origDrawIndexed);

@@ -145,6 +145,7 @@
     <ClCompile Include="CameraHook.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="DrawHook.cpp" />
+    <ClCompile Include="EngineExec.cpp" />
     <ClCompile Include="GameIni.cpp" />
     <ClCompile Include="GameState.cpp" />
     <ClCompile Include="HandsProbe.cpp" />
@@ -155,6 +156,7 @@
   <ItemGroup>
     <ClInclude Include="CameraHook.h" />
     <ClInclude Include="DrawHook.h" />
+    <ClInclude Include="EngineExec.h" />
     <ClInclude Include="GameIni.h" />
     <ClInclude Include="GameState.h" />
     <ClInclude Include="HandsProbe.h" />
