@@ -9,6 +9,12 @@ for the interface. The engine is a heavily modified Unreal 2.5 fork with no
 reflection system, so everything here was found by scanning and measuring rather
 than read out of an SDK dump.
 
+I would highly recommend you install these two mods for the best experience:
+
+HD Textures: https://www.nexusmods.com/bioshock/mods/54
+
+Cutscene Black Bar Removal: https://www.nexusmods.com/bioshock/mods/81?tab=description
+
 ---
 
 ## Install
