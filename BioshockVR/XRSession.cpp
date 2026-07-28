@@ -83,6 +83,24 @@ static std::vector<XrSwapchainImageD3D11KHR> g_xhImages;
 static ID3D11Texture2D* g_xhSrc = nullptr;
 static bool             g_xhReady = false;
 
+// ---- HUD quad --------------------------------------------------------------
+// The interface, captured off the eye texture by DrawHook, composited by the
+// runtime as its own quad. Created LAZILY on first use rather than in XR_Init:
+// the capture surface only exists once the classifier has locked, and its size
+// comes from the game's composite target, which we should read rather than
+// assume matches the values XR_Init was handed.
+static XrSwapchain g_hudSc = XR_NULL_HANDLE;
+static std::vector<XrSwapchainImageD3D11KHR> g_hudImages;
+static unsigned    g_hudScW = 0, g_hudScH = 0;
+static int64_t     g_scFormat = 0;          // filled in XR_Init from `chosen`
+
+// Live-tunable placement. Angular width is the scale; the rest is where it sits.
+static float g_hudWidthDeg = 70.0f;
+static float g_hudDist = 2.0f;      // metres
+static float g_hudYawDeg = 0.0f;      // + right
+static float g_hudPitchDeg = 0.0f;      // + up
+static int   g_hudEditParam = 0;        // 0 width, 1 dist, 2 pitch, 3 yaw
+
 static XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 static bool g_running = false;
 static bool g_init = false;
@@ -123,6 +141,59 @@ static XrFovf ScaleFov(const XrFovf& f, float sh, float sv)
     return o;
 }
 
+ID3D11Texture2D* DrawHook_HudTexture();   // DrawHook.cpp
+bool             DrawHook_HudCaptured();  // DrawHook.cpp
+
+// Returns false until the capture surface exists and a matching swapchain has
+// been made for it. Re-creates on a resolution change.
+static bool EnsureHudSwapchain()
+{
+    ID3D11Texture2D* src = DrawHook_HudTexture();
+    if (!src || !g_scFormat) return false;
+
+    D3D11_TEXTURE2D_DESC d = {};
+    src->GetDesc(&d);
+    if (!d.Width || !d.Height) return false;
+
+    if (g_hudSc != XR_NULL_HANDLE && d.Width == g_hudScW && d.Height == g_hudScH)
+        return true;
+
+    if (g_hudSc != XR_NULL_HANDLE)
+    {
+        xrDestroySwapchain(g_hudSc);
+        g_hudSc = XR_NULL_HANDLE;
+        g_hudImages.clear();
+    }
+
+    XrSwapchainCreateInfo xc = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+    xc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+        XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    xc.format = g_scFormat;
+    xc.sampleCount = 1;
+    xc.width = d.Width;
+    xc.height = d.Height;
+    xc.faceCount = 1;
+    xc.arraySize = 1;
+    xc.mipCount = 1;
+
+    if (XR_FAILED(xrCreateSwapchain(g_session, &xc, &g_hudSc)))
+    {
+        Log(">>> XR: !!! hud xrCreateSwapchain failed (%ux%u)", d.Width, d.Height);
+        g_hudSc = XR_NULL_HANDLE;
+        return false;
+    }
+
+    uint32_t n = 0;
+    xrEnumerateSwapchainImages(g_hudSc, 0, &n, nullptr);
+    g_hudImages.resize(n, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+    xrEnumerateSwapchainImages(g_hudSc, n, &n,
+        (XrSwapchainImageBaseHeader*)g_hudImages.data());
+
+    g_hudScW = d.Width; g_hudScH = d.Height;
+    Log(">>> XR: HUD quad swapchain %ux%u, %u images", d.Width, d.Height, n);
+    return true;
+}
+
 static bool KeyFired(int vk, bool& prev)
 {
     const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
@@ -131,11 +202,61 @@ static bool KeyFired(int vk, bool& prev)
     return fired;
 }
 
+// S56: the FOV keys are superseded by ForegroundFovValue, and numpad 0/2/4/5/6/7/8
+// now tune HandsGripOffset in HandsProbe.cpp. Reused for HUD quad placement,
+// which is the same kind of problem: a number nobody can guess from a desk.
 static void PollFovKeys()
 {
-    return;   // S56: superseded by ForegroundFovValue; numpad 0/2/4/5/6/7/8 now
-    // tune HandsGripOffset live in HandsProbe.cpp.
+
+    // What does this keyboard ACTUALLY send? Legends lie, Fn layers remap, and
+    // NumLock silently swaps the whole numpad between two VK sets. Restricted to
+    // the nav cluster, numpad and F-row, so ordinary WASD play logs nothing.
+    {
+        static bool prev[256] = {};
+        for (int vk = 0x21; vk <= 0x87; ++vk)
+        {
+            if (vk == 0x30) vk = 0x60;              // skip the alphanumerics
+            const bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            if (d && !prev[vk]) Log("KEY: vk 0x%02X (%d)", vk, vk);
+            prev[vk] = d;
+        }
+    }
+
+    static bool pEnd = false, pIns = false, pDel = false;
+
+    if (KeyFired(VK_DELETE, pEnd))
+    {
+        g_hudEditParam = (g_hudEditParam + 1) % 4;
+        static const char* names[4] = { "WIDTH (deg)", "DISTANCE (m)",
+                                        "PITCH (deg)", "YAW (deg)" };
+        Log(">>> HUD QUAD: now editing %s", names[g_hudEditParam]);
+    }
+
+    int dir = 0;
+    if (KeyFired(VK_F11, pIns)) dir = -1;
+    if (KeyFired(VK_F12, pDel)) dir = +1;
+    if (!dir) return;
+
+    switch (g_hudEditParam)
+    {
+    case 0: g_hudWidthDeg += dir * 2.0f;
+        if (g_hudWidthDeg < 10.f)  g_hudWidthDeg = 10.f;
+        if (g_hudWidthDeg > 140.f) g_hudWidthDeg = 140.f;
+        break;
+    case 1: g_hudDist += dir * 0.1f;
+        if (g_hudDist < 0.4f) g_hudDist = 0.4f;
+        if (g_hudDist > 8.0f) g_hudDist = 8.0f;
+        break;
+    case 2: g_hudPitchDeg += dir * 1.0f;  break;
+    case 3: g_hudYawDeg += dir * 1.0f;  break;
+    }
+
+    // Printed in a form you can paste straight into the ini once these become
+    // config keys, so a good setting found in the headset cannot be lost.
+    Log(">>> HUD QUAD: HudWidthDeg=%.1f HudDist=%.2f HudPitchDeg=%.1f HudYawDeg=%.1f",
+        g_hudWidthDeg, g_hudDist, g_hudPitchDeg, g_hudYawDeg);
 }
+
 // ---------------------------------------------------------------------------
 
 // Head orientation published render-thread -> game-thread for the camera write
@@ -295,6 +416,8 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
         return false;
     }
     Log(">>> XR: CHOSE swapchain format DXGI %d  %s", (int)chosen, FmtName(chosen));
+
+    g_scFormat = chosen;
 
     for (int eye = 0; eye < 2; ++eye)
     {
@@ -510,9 +633,10 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     XrCompositionLayerProjection layer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerProjectionView pv[2] = {};
     XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
-    const XrCompositionLayerBaseHeader* layers[2] = { nullptr, nullptr };
+    const XrCompositionLayerBaseHeader* layers[3] = { nullptr, nullptr, nullptr };
     uint32_t layerCount = 0;
     XrCompositionLayerQuad xh = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+    XrCompositionLayerQuad hq = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 
     if (fs.shouldRender)
     {
@@ -726,6 +850,55 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                                          xd * dl[2] };
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
                     layerCount = 2;
+                }
+            }
+
+            // ---- HUD quad ------------------------------------------------
+            // Indexed by layerCount, not by a hardcoded slot: the crosshair may
+            // or may not have claimed slot 1, and a null hole in the middle of
+            // the array is an invalid submission.
+            if (DrawHook_HudCaptured() && EnsureHudSwapchain())
+            {
+                uint32_t hi = 0;
+                XrSwapchainImageAcquireInfo hai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+                XrSwapchainImageWaitInfo    hwi = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+                hwi.timeout = XR_INFINITE_DURATION;
+
+                if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_hudSc, &hai, &hi)) &&
+                    XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSc, &hwi)))
+                {
+                    g_ctx->CopyResource(g_hudImages[hi].texture, DrawHook_HudTexture());
+                    XrSwapchainImageReleaseInfo hri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+                    xrReleaseSwapchainImage(g_hudSc, &hri);
+
+                    hq.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                        XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+                    hq.space = g_viewSpace;              // head-locked for now
+                    hq.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                    hq.subImage.swapchain = g_hudSc;
+                    hq.subImage.imageRect.offset = { 0, 0 };
+                    hq.subImage.imageRect.extent = { (int32_t)g_hudScW, (int32_t)g_hudScH };
+                    hq.subImage.imageArrayIndex = 0;
+
+                    // Angular width IS the scale control. Height follows from the
+                    // capture's aspect -- deriving it any other way stretches the
+                    // interface, and a stretched HUD reads as a broken one.
+                    const float rad = g_hudWidthDeg * 0.5f * 0.01745329f;
+                    const float wM = 2.f * g_hudDist * tanf(rad);
+                    const float hM = wM * (float)g_hudScH / (float)g_hudScW;
+                    hq.size = { wM, hM };
+
+                    const float yaw = g_hudYawDeg * 0.01745329f;
+                    const float pit = g_hudPitchDeg * 0.01745329f;
+                    const float cy = cosf(yaw * 0.5f), sy = sinf(yaw * 0.5f);
+                    const float cp = cosf(pit * 0.5f), sp = sinf(pit * 0.5f);
+                    hq.pose.orientation = { sp * cy, sy * cp, -sp * sy, cp * cy };
+                    hq.pose.position = { g_hudDist * sinf(yaw),
+                                         g_hudDist * sinf(pit),
+                                        -g_hudDist * cosf(yaw) * cosf(pit) };
+
+                    layers[layerCount] = (const XrCompositionLayerBaseHeader*)&hq;
+                    ++layerCount;
                 }
             }
         }
@@ -1008,6 +1181,9 @@ void XR_Shutdown()
     if (g_xhSrc) { g_xhSrc->Release(); g_xhSrc = nullptr; }
     g_xhReady = false;
     if (g_xhSc) { xrDestroySwapchain(g_xhSc); g_xhSc = XR_NULL_HANDLE; }
+
+    if (g_hudSc != XR_NULL_HANDLE) { xrDestroySwapchain(g_hudSc); g_hudSc = XR_NULL_HANDLE; }
+    g_hudImages.clear();
 
     for (int eye = 0; eye < 2; ++eye)
         if (g_sc[eye]) { xrDestroySwapchain(g_sc[eye]); g_sc[eye] = XR_NULL_HANDLE; }

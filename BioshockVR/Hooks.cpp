@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_5.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
@@ -23,6 +24,7 @@
 #include <MinHook.h>
 
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 bool GameState_Paused();   // GameState.cpp
 bool GameState_InGame();   // GameState.cpp
@@ -33,6 +35,8 @@ extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;
 extern bool  g_cfgCameraHook;
 extern bool  g_cfgDisableVSync;
+extern bool  g_cfgForceFlip;
+extern int   g_cfgMirrorEvery;
 extern bool  g_cfgMenuScreen;
 extern bool g_cfgCutsceneTheater;
 extern float g_cfgFgFovValue;
@@ -55,9 +59,132 @@ typedef HRESULT(__stdcall* PresentFn)(IDXGISwapChain*, UINT SyncInterval, UINT F
 static PresentFn g_origPresent = nullptr;
 static void* g_presentAddr = nullptr;
 
+// ---- FLIP-MODEL CONVERSION (ForceFlipModel) -----------------------------
+// MEASURED, same machine same hour on a 60 Hz monitor: windowed 60 Present/s,
+// exclusive fullscreen 119. Windowed BitBlt presents are throttled by the
+// desktop compositor to one per composition no matter what SyncInterval says,
+// which is why DisableVSync never helped. Fullscreen escapes the cap but snaps
+// the buffer to a real display mode -- 2750x2850 became 3840x2160 -- so it is
+// not usable.
+//
+// The only route that is BOTH uncapped and free to pick any resolution is
+// DXGI_PRESENT_ALLOW_TEARING, and that requires a FLIP swap effect. Neither the
+// swap effect nor the buffer count can be changed after creation, so the
+// description has to be rewritten on its way through CreateSwapChain.
+//
+// The probe confirmed all three prerequisites on this machine: OS/driver
+// ALLOW_TEARING = 1, MSAA count already 1, and only GetBuffer(0) is ever used.
+typedef HRESULT(__stdcall* CreateSwapChainFn)(IDXGIFactory*, IUnknown*,
+    DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+
+static CreateSwapChainFn g_origCreateSwapChain = nullptr;
+static void* g_createSwapChainAddr = nullptr;
+static bool  g_flipLive = false;   // the rewrite actually took
+
+// DXGI 1.2's entry point. MEASURED: slot 10 armed correctly and NEVER fired, so
+// the game is not using the legacy call. IDXGIFactory2 vtable continues from
+// IDXGIFactory1: 12 EnumAdapters1, 13 IsCurrent, 14 IsWindowedStereoEnabled,
+// 15 CreateSwapChainForHwnd. Read from the header.
+typedef HRESULT(__stdcall* CreateSCForHwndFn)(IDXGIFactory2*, IUnknown*, HWND,
+    const DXGI_SWAP_CHAIN_DESC1*, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*,
+    IDXGIOutput*, IDXGISwapChain1**);
+
+static CreateSCForHwndFn g_origCreateSCForHwnd = nullptr;
+static void* g_createSCForHwndAddr = nullptr;
+
+static HRESULT __stdcall hkCreateSCForHwnd(IDXGIFactory2* self, IUnknown* dev,
+    HWND hwnd, const DXGI_SWAP_CHAIN_DESC1* pDesc,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFs, IDXGIOutput* out,
+    IDXGISwapChain1** ppSC)
+{
+    if (!pDesc) return g_origCreateSCForHwnd(self, dev, hwnd, pDesc, pFs, out, ppSC);
+
+    // Log BEFORE the key check: with ForceFlipModel=0 this still tells you
+    // which entry point the game actually uses, which is the open question.
+    Log(">>> FLIP: CreateSwapChainForHwnd  %ux%u  effect %d  buffers %u  flags 0x%08X  msaa %u",
+        pDesc->Width, pDesc->Height, (int)pDesc->SwapEffect,
+        pDesc->BufferCount, pDesc->Flags, pDesc->SampleDesc.Count);
+
+    if (!g_cfgForceFlip || pDesc->SampleDesc.Count > 1 ||
+        (pDesc->Width <= 128 && pDesc->Height <= 128))
+        return g_origCreateSCForHwnd(self, dev, hwnd, pDesc, pFs, out, ppSC);
+
+    DXGI_SWAP_CHAIN_DESC1 d = *pDesc;
+    if (d.SwapEffect == DXGI_SWAP_EFFECT_DISCARD)
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    else if (d.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL)
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    if (d.BufferCount < 2) d.BufferCount = 2;
+    d.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    HRESULT hr = g_origCreateSCForHwnd(self, dev, hwnd, &d, pFs, out, ppSC);
+    if (SUCCEEDED(hr))
+    {
+        g_flipLive = true;
+        Log(">>> FLIP: CONVERTED (ForHwnd) -> effect %d, buffers %u, ALLOW_TEARING set.",
+            (int)d.SwapEffect, d.BufferCount);
+        return hr;
+    }
+
+    Log("!!! FLIP: ForHwnd rewrite REJECTED hr=0x%08X. Falling back to stock.",
+        (unsigned)hr);
+    return g_origCreateSCForHwnd(self, dev, hwnd, pDesc, pFs, out, ppSC);
+}
+
+static HRESULT __stdcall hkCreateSwapChain(IDXGIFactory* self, IUnknown* dev,
+    DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSC)
+{
+    if (pDesc)
+        Log(">>> FLIP: CreateSwapChain (legacy)  %ux%u  effect %d  buffers %u",
+            pDesc->BufferDesc.Width, pDesc->BufferDesc.Height,
+            (int)pDesc->SwapEffect, pDesc->BufferCount);
+
+    if (!g_cfgForceFlip || !pDesc)
+        return g_origCreateSwapChain(self, dev, pDesc, ppSC);;
+
+    // Flip model cannot do MSAA on the backbuffer. The game's count is 1, but
+    // refuse rather than fail the creation if that ever changes.
+    if (pDesc->SampleDesc.Count > 1)
+    {
+        Log(">>> FLIP: skipping -- MSAA count %u, flip model requires 1.",
+            pDesc->SampleDesc.Count);
+        return g_origCreateSwapChain(self, dev, pDesc, ppSC);
+    }
+
+    // GrabVTable's own 100x100 throwaway is created BEFORE this hook is armed
+    // so it cannot reach here, but the guard costs nothing and documents why.
+    if (pDesc->BufferDesc.Width <= 128 && pDesc->BufferDesc.Height <= 128)
+        return g_origCreateSwapChain(self, dev, pDesc, ppSC);
+
+    Log(">>> FLIP: intercepted CreateSwapChain  %ux%u  effect %d  buffers %u  flags 0x%08X",
+        pDesc->BufferDesc.Width, pDesc->BufferDesc.Height,
+        (int)pDesc->SwapEffect, pDesc->BufferCount, pDesc->Flags);
+
+    DXGI_SWAP_CHAIN_DESC d = *pDesc;
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    if (d.BufferCount < 2) d.BufferCount = 2;
+    d.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+    HRESULT hr = g_origCreateSwapChain(self, dev, &d, ppSC);
+    if (SUCCEEDED(hr))
+    {
+        g_flipLive = true;
+        Log(">>> FLIP: CONVERTED -> FLIP_DISCARD, buffers %u, ALLOW_TEARING set.",
+            d.BufferCount);
+        return hr;
+    }
+
+    // SAFETY NET. A rejected description must never take the game down with it.
+    // Fall straight back to exactly what the game asked for.
+    Log("!!! FLIP: rewritten desc REJECTED hr=0x%08X. Falling back to stock.",
+        (unsigned)hr);
+    return g_origCreateSwapChain(self, dev, pDesc, ppSC);
+}
+
 static void* g_drawIndexedAddr = nullptr;
 static void* g_drawAddr = nullptr;
 static void* g_drawIdxInstAddr = nullptr;
+static void* g_omSetRTAddr = nullptr;
 static void* g_drawInstAddr = nullptr;
 static bool  g_drawTried = false;
 
@@ -93,10 +220,50 @@ static void DescribeOnce(IDXGISwapChain* sc)
         Log("--- GAME SWAPCHAIN ---");
         Log("  backbuffer : %u x %u", d.BufferDesc.Width, d.BufferDesc.Height);
         Log("  format     : DXGI %d", (int)d.BufferDesc.Format);
-        Log("  buffers    : %u", d.BufferCount);
-        Log("  windowed   : %s", d.Windowed ? "YES" : "NO  <-- FIX THIS");
-        Log("  samples    : %u (MSAA count)", d.SampleDesc.Count);
+        Log("  buffers    : %u  (flip model needs >= 2)", d.BufferCount);
+        Log("  windowed   : %s", d.Windowed ? "YES  (compositor caps the rate)"
+            : "NO   (exclusive -- no cap)");
+        Log("  samples    : %u (MSAA -- flip model needs 1)", d.SampleDesc.Count);
         Log("  hwnd       : 0x%08X", (unsigned)(uintptr_t)d.OutputWindow);
+
+        // ---- CAN THIS SWAPCHAIN EVER TEAR? ------------------------------
+        // ALLOW_TEARING is the only route to an uncapped framerate in a
+        // WINDOW, and it needs a FLIP swap effect. Both the flag and the
+        // effect are fixed at CREATION -- ResizeBuffers can change flags but
+        // never the effect -- so a BitBlt swapchain cannot be upgraded in
+        // place. This says whether that route is open before anyone writes a
+        // creation hook. Read-only.
+        const char* eff = "UNKNOWN";
+        switch (d.SwapEffect)
+        {
+        case DXGI_SWAP_EFFECT_DISCARD:         eff = "DISCARD (BitBlt -- cannot tear)"; break;
+        case DXGI_SWAP_EFFECT_SEQUENTIAL:      eff = "SEQUENTIAL (BitBlt -- cannot tear)"; break;
+        case DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL: eff = "FLIP_SEQUENTIAL (can tear)"; break;
+        case DXGI_SWAP_EFFECT_FLIP_DISCARD:    eff = "FLIP_DISCARD (can tear)"; break;
+        }
+        Log("  swapeffect : %d  %s", (int)d.SwapEffect, eff);
+        Log("  flags      : 0x%08X", d.Flags);
+        Log("  refresh    : %u/%u Hz",
+            d.BufferDesc.RefreshRate.Numerator,
+            d.BufferDesc.RefreshRate.Denominator);
+
+        IDXGIFactory* fac = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory), (void**)&fac)) && fac)
+        {
+            IDXGIFactory5* f5 = nullptr;
+            if (SUCCEEDED(fac->QueryInterface(__uuidof(IDXGIFactory5), (void**)&f5)) && f5)
+            {
+                BOOL allow = FALSE;
+                if (SUCCEEDED(f5->CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))))
+                    Log("  tearing    : OS/driver support = %d", (int)allow);
+                else
+                    Log("  tearing    : CheckFeatureSupport failed");
+                f5->Release();
+            }
+            else Log("  tearing    : no IDXGIFactory5 -- unavailable on this OS");
+            fac->Release();
+        }
     }
     else
     {
@@ -244,7 +411,20 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         {
             g_drawTried = true;
             DrawHook_Install(g_drawIndexedAddr, g_drawAddr,
-                g_drawIdxInstAddr, g_drawInstAddr);
+                g_drawIdxInstAddr, g_drawInstAddr, g_omSetRTAddr);
+        }
+    }
+
+    // Resource identity for the redirect. Done every Present rather than once,
+    // because the backbuffer is recreated on a resize or a fullscreen toggle and
+    // a cached pointer would then match nothing -- silently, for the rest of the
+    // run. GetBuffer is a refcount op; this is not a measurable cost.
+    {
+        ID3D11Texture2D* bb0 = nullptr;
+        if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb0)) && bb0)
+        {
+            DrawHook_SetBackbuffer(bb0);
+            bb0->Release();
         }
     }
 
@@ -365,13 +545,62 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         SyncInterval = 0;
     }
 
+    // Tearing is only legal at SyncInterval 0, and only on a swapchain actually
+    // CREATED with the flag -- passing it otherwise fails the Present outright.
+    if (g_flipLive && SyncInterval == 0)
+    {
+        static bool loggedTear = false;
+        if (!loggedTear)
+        {
+            loggedTear = true;
+            Log(">>> FLIP: presenting with ALLOW_TEARING. Compositor cap is off.");
+        }
+        Flags |= DXGI_PRESENT_ALLOW_TEARING;
+    }
+
     DrawHook_EndFrame();
     Input_Tick();
     CameraHook_LateHandsWrite();
 
+    // MEASURED, 60 Hz monitor, gameplay:
+    //   every frame  ->  60 Present/s, origPresent 6.5 ms   (compositor tax)
+    //   never        ->  85 Present/s, game 11.7 ms         (driver stalls)
+    //   every 4th    -> 240 Present/s, origPresent 0.03 ms  (both avoided)
+    //
+    // Present is not just a display operation -- it is the frame boundary the
+    // driver needs to flush and pipeline. Skipping it entirely cost 5x more
+    // than the compositor did. So we need SOME presents, just not many.
+    //
+    // A fixed divisor is wrong for release: the right N is framerate / refresh,
+    // and both vary per user. Throttling by TIME auto-tunes to any monitor and
+    // any framerate -- it can never exceed the compositor's rate, and it can
+    // never starve the driver at low framerates the way a divisor does.
+    //
+    // MirrorPresentEvery: 0 = time-throttled (recommended), N = every Nth frame.
+    bool doMirror;
+    if (g_cfgMirrorEvery > 0)
+    {
+        static unsigned mirrorTick = 0;
+        ++mirrorTick;
+        doMirror = ((mirrorTick % (unsigned)g_cfgMirrorEvery) == 0);
+    }
+    else
+    {
+        // 17 ms == just under 60 Hz, the lowest refresh worth designing for.
+        static LARGE_INTEGER lastMirror = {};
+        LARGE_INTEGER nowM;
+        QueryPerformanceCounter(&nowM);
+        const double sinceMs = lastMirror.QuadPart
+            ? (double)(nowM.QuadPart - lastMirror.QuadPart) * 1000.0 / (double)g_qpf.QuadPart
+            : 1e9;
+        doMirror = (sinceMs >= 17.0);
+        if (doMirror) lastMirror = nowM;
+    }
+
+    HRESULT hr = S_OK;
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
-    HRESULT hr = g_origPresent(sc, SyncInterval, Flags);
+    if (doMirror) hr = g_origPresent(sc, SyncInterval, Flags);
     QueryPerformanceCounter(&p1);
     g_msPresent += (double)(p1.QuadPart - p0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
 
@@ -380,7 +609,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
 }
 
 static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw,
-    void** outDrawIdxInst, void** outDrawInst)
+    void** outDrawIdxInst, void** outDrawInst, void** outOMSetRT)
 {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -425,6 +654,35 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw,
     void** scVT = *(void***)sc;
     void** ctxVT = *(void***)ctx;
 
+    // The factory that made THIS throwaway swapchain also makes the game's, and
+    // the vtable lives in dxgi.dll -- so hooking slot 10 patches CreateSwapChain
+    // process-wide, exactly the way the Present hook works.
+    // IDXGIFactory vtable: 0-2 IUnknown, 3-6 IDXGIObject, 7 EnumAdapters,
+    // 8 MakeWindowAssociation, 9 GetWindowAssociation, 10 CreateSwapChain.
+    // Read from the header, not guessed from a pattern.
+    {
+        IDXGIFactory* fac = nullptr;
+        if (SUCCEEDED(sc->GetParent(__uuidof(IDXGIFactory), (void**)&fac)) && fac)
+        {
+            g_createSwapChainAddr = (*(void***)fac)[10];
+            Log("vtable  CreateSwapChain = 0x%08X",
+                (unsigned)(uintptr_t)g_createSwapChainAddr);
+
+            IDXGIFactory2* f2 = nullptr;
+            if (SUCCEEDED(fac->QueryInterface(__uuidof(IDXGIFactory2), (void**)&f2)) && f2)
+            {
+                g_createSCForHwndAddr = (*(void***)f2)[15];
+                Log("vtable  CreateSCForHwnd = 0x%08X",
+                    (unsigned)(uintptr_t)g_createSCForHwndAddr);
+                f2->Release();
+            }
+            else Log("!!! no IDXGIFactory2 -- CreateSwapChainForHwnd unavailable.");
+
+            fac->Release();
+        }
+        else Log("!!! GetParent(IDXGIFactory) failed -- ForceFlipModel unavailable.");
+    }
+
     *outPresent = scVT[8];
     *outDrawIndexed = ctxVT[12];
     *outDraw = ctxVT[13];
@@ -434,14 +692,18 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw,
     // The draw calls are NOT contiguous -- 14/15 are Map/Unmap, and detouring
     // those with draw-shaped handlers crashes the moment a menu streams
     // textures. Verified against the header, not guessed from 12/13.
-    *outDrawIdxInst = ctxVT[20];
-    *outDrawInst = ctxVT[21];
+    // OMSetRenderTargets. Same discipline as the draw slots -- counted from the
+    // header, not guessed. ID3D11DeviceContext: ...31 GSSetShaderResources,
+    // 32 GSSetSamplers, 33 OMSetRenderTargets, 34 OMSetRenderTargetsAndUAVs,
+    // 35 OMSetBlendState.
+    *outOMSetRT = ctxVT[33];
 
     Log("vtable  Present     = 0x%08X", (unsigned)(uintptr_t)*outPresent);
     Log("vtable  DrawIndexed = 0x%08X", (unsigned)(uintptr_t)*outDrawIndexed);
     Log("vtable  Draw        = 0x%08X", (unsigned)(uintptr_t)*outDraw);
     Log("vtable  DrawIdxInst = 0x%08X", (unsigned)(uintptr_t)*outDrawIdxInst);
     Log("vtable  DrawInst    = 0x%08X", (unsigned)(uintptr_t)*outDrawInst);
+    Log("vtable  OMSetRT     = 0x%08X", (unsigned)(uintptr_t)*outOMSetRT);
 
     ctx->Release();
     dev->Release();
@@ -454,8 +716,9 @@ static bool GrabVTable(void** outPresent, void** outDrawIndexed, void** outDraw,
 bool Hooks_Install()
 {
     void* pPresent = nullptr, * pDrawIndexed = nullptr, * pDraw = nullptr;
-    void* pDrawIdxInst = nullptr, * pDrawInst = nullptr;
-    if (!GrabVTable(&pPresent, &pDrawIndexed, &pDraw, &pDrawIdxInst, &pDrawInst))
+    void* pDrawIdxInst = nullptr, * pDrawInst = nullptr, * pOMSetRT = nullptr;
+    if (!GrabVTable(&pPresent, &pDrawIndexed, &pDraw, &pDrawIdxInst, &pDrawInst,
+        &pOMSetRT))
         return false;
 
     g_presentAddr = pPresent;
@@ -463,12 +726,43 @@ bool Hooks_Install()
     g_drawAddr = pDraw;
     g_drawIdxInstAddr = pDrawIdxInst;
     g_drawInstAddr = pDrawInst;
+    g_omSetRTAddr = pOMSetRT;
 
     MH_STATUS s = MH_CreateHook(pPresent, &hkPresent, (LPVOID*)&g_origPresent);
     if (s != MH_OK) { Log("!!! MH_CreateHook(Present) -> %d", (int)s); return false; }
 
     s = MH_EnableHook(pPresent);
     if (s != MH_OK) { Log("!!! MH_EnableHook(Present) -> %d", (int)s); return false; }
+
+    // Arm the conversion NOW: the description can only be rewritten as the
+    // swapchain is CREATED. MEASURED margin -- the 18:08 log has our init at
+    // :10.5 and the game's swapchain at :28.1, so ~17 seconds. Comfortable.
+    if (g_cfgForceFlip && g_createSwapChainAddr)
+    {
+        MH_STATUS f = MH_CreateHook(g_createSwapChainAddr, &hkCreateSwapChain,
+            (LPVOID*)&g_origCreateSwapChain);
+        if (f == MH_OK) f = MH_EnableHook(g_createSwapChainAddr);
+
+        if (f == MH_OK) Log(">>> FLIP: CreateSwapChain hook ARMED (ForceFlipModel=1).");
+        else Log("!!! FLIP: hook failed -> %d. Running with the stock swapchain.", (int)f);
+    }
+
+    // Arm the DXGI 1.2 entry point too. Slot 10 never fired, so this is the
+    // likelier path -- but arm both, because whichever one the game uses, the
+    // other costs nothing and the log now names it explicitly.
+    if (g_createSCForHwndAddr)
+    {
+        MH_STATUS f2 = MH_CreateHook(g_createSCForHwndAddr, &hkCreateSCForHwnd,
+            (LPVOID*)&g_origCreateSCForHwnd);
+        if (f2 == MH_OK) f2 = MH_EnableHook(g_createSCForHwndAddr);
+
+        if (f2 == MH_OK) Log(">>> FLIP: CreateSwapChainForHwnd hook ARMED.");
+        else Log("!!! FLIP: ForHwnd hook failed -> %d.", (int)f2);
+    }
+    else if (g_cfgForceFlip)
+    {
+        Log("!!! FLIP: no CreateSwapChain address. Running with the stock swapchain.");
+    }
 
     Log(">>> Present hook ARMED. Waiting for the game to draw a frame...");
     return true;

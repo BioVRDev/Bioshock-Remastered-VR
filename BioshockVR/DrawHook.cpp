@@ -96,6 +96,286 @@ static void* g_addrDraw = nullptr;
 static void* g_addrDrawIndexedInstanced = nullptr;
 static void* g_addrDrawInstanced = nullptr;
 
+// ---- render-target tracking (HUD redirect, stage 1: OBSERVE ONLY) ----------
+// The interface is drawn AFTER the world is composited to the backbuffer. If
+// that is true here, the boundary is structural and we never have to name a
+// single HUD element again. This block proves it or disproves it; it redirects
+// nothing.
+typedef void(__stdcall* OMSetRenderTargetsFn)(ID3D11DeviceContext*, UINT,
+    ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
+
+static OMSetRenderTargetsFn g_origOMSetRT = nullptr;
+static void* g_addrOMSetRT = nullptr;
+
+static ID3D11Resource* g_bbRes = nullptr;   // backbuffer, POINTER IDENTITY ONLY
+static ID3D11Resource* g_curRT = nullptr;   // currently bound RT, same deal
+static bool     g_curDSVNull = false;
+
+static unsigned g_curW = 0, g_curH = 0;
+static int      g_curFmt = 0;
+
+// Descriptor cache. The bind hook runs ~200 times a frame and QueryInterface is
+// an interlocked op, so each resource is measured once and remembered. Entries
+// are added, never evicted -- this game uses five render targets.
+struct RtDesc { ID3D11Resource* res; unsigned w, h; int fmt; };
+static RtDesc g_rtCache[16];
+static int    g_rtCacheN = 0;
+
+static void LookupDesc(ID3D11Resource* res, unsigned* w, unsigned* h, int* fmt)
+{
+    *w = 0; *h = 0; *fmt = 0;
+    if (!res) return;
+    for (int i = 0; i < g_rtCacheN; ++i)
+        if (g_rtCache[i].res == res)
+        {
+            *w = g_rtCache[i].w; *h = g_rtCache[i].h; *fmt = g_rtCache[i].fmt; return;
+        }
+
+    ID3D11Texture2D* t = nullptr;
+    if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t)
+    {
+        D3D11_TEXTURE2D_DESC d = {};
+        t->GetDesc(&d);
+        t->Release();
+        *w = d.Width; *h = d.Height; *fmt = (int)d.Format;
+        if (g_rtCacheN < 16)
+        {
+            g_rtCache[g_rtCacheN].res = res;
+            g_rtCache[g_rtCacheN].w = d.Width;
+            g_rtCache[g_rtCacheN].h = d.Height;
+            g_rtCache[g_rtCacheN].fmt = (int)d.Format;
+            ++g_rtCacheN;
+        }
+    }
+}
+
+// ---- the classifier -------------------------------------------------------
+// Boundary by RESOURCE FLOW, not by bind order or batch size. Bind order is what
+// made the first dump ambiguous: the same structural position held either the
+// interface or the world, and nothing in the ordering could say which.
+//
+//   scene RT -- the target receiving the most depth-bound INDEXED draws. That
+//               is world geometry by definition. The floor rejects small
+//               foreground passes that would otherwise win in a quiet frame.
+//   host RT  -- the target of the first draw that SAMPLES the scene RT. That
+//               draw is the composite and is never a candidate.
+//   after    -- everything landing on the host RT is a candidate, counted by
+//               entry point because only one lane will end up redirected.
+//
+// Reset every frame. Detecting nothing therefore means redirecting nothing,
+// which is the behaviour we want on menus, loading screens and cutscenes.
+static const unsigned kMinSceneDraws = 32;
+
+struct RtVote { ID3D11Resource* res; unsigned indexed; };
+static RtVote g_vote[8];
+static int    g_voteN = 0;
+
+static ID3D11Resource* g_hudHost = nullptr;   // set once per frame, or never
+
+// Indexed by CountKind: 0 ANY, 1 DRAW, 2 INDEXED, 3 INST, 4 IDXINST.
+static unsigned g_postByKind[5] = {};
+
+static unsigned long long g_leakTotal = 0;
+static unsigned long long g_hostFrames = 0, g_noHostFrames = 0;
+static bool g_boundaryReport = false;
+
+static void VoteScene(ID3D11Resource* r)
+{
+    for (int i = 0; i < g_voteN; ++i)
+        if (g_vote[i].res == r) { ++g_vote[i].indexed; return; }
+    if (g_voteN < 8) { g_vote[g_voteN].res = r; g_vote[g_voteN].indexed = 1; ++g_voteN; }
+}
+
+static ID3D11Resource* SceneLeader()
+{
+    ID3D11Resource* best = nullptr; unsigned bestN = 0;
+    for (int i = 0; i < g_voteN; ++i)
+        if (g_vote[i].indexed > bestN) { bestN = g_vote[i].indexed; best = g_vote[i].res; }
+    return (bestN >= kMinSceneDraws) ? best : nullptr;
+}
+
+// Identity of whatever texture sits in pixel-shader slot 0. The COM reference is
+// dropped immediately -- we compare pointers, we never hold it.
+static ID3D11Resource* PSSrv0Res(ID3D11DeviceContext* ctx)
+{
+    ID3D11ShaderResourceView* srv = nullptr;
+    ctx->PSGetShaderResources(0, 1, &srv);
+    if (!srv) return nullptr;
+    ID3D11Resource* r = nullptr;
+    srv->GetResource(&r);
+    srv->Release();
+    if (r) r->Release();
+    return r;
+}
+
+// A plausible destination for the composite: full size, 8- or 10-bit, no float.
+// Deliberately NOT checking viewport or vertex count -- a fullscreen-geometry
+// test would be one more assumption to be wrong about, and this is enough.
+static bool IsLargeLdr(unsigned w, unsigned h, int fmt)
+{
+    if (w < 512 || h < 512) return false;
+    switch (fmt)
+    {
+    case 28: case 29:      // R8G8B8A8_UNORM / _SRGB
+    case 87: case 91:      // B8G8R8A8_UNORM / _SRGB
+    case 24:               // R10G10B10A2_UNORM
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ---- capture surfaces ------------------------------------------------------
+// Colour target matches the game's composite target exactly, because GameSWF
+// positions in screen pixels against the bound viewport -- a different size and
+// every element lands somewhere else.
+//
+// The depth/stencil is OURS, not the game's. GameSWF implements masking with
+// STENCIL, so the capture needs its own stencil storage: reuse the game's and
+// Flash masks either fail or write into the world's stencil. Private, same size,
+// cleared once per frame.
+static bool g_hudRedirect = false;          // Home toggles. Starts OFF.
+static ID3D11Texture2D* g_hudTex = nullptr;
+static ID3D11RenderTargetView* g_hudRTV = nullptr;
+static ID3D11ShaderResourceView* g_hudSRV = nullptr;
+static ID3D11Texture2D* g_hudDepthTex = nullptr;
+static ID3D11DepthStencilView* g_hudDSV = nullptr;
+static unsigned g_hudW = 0, g_hudH = 0;
+static int      g_hudFmt = 0;
+static bool     g_hudClearedThisFrame = false;
+
+// Latched ONCE per frame, never read live. A gate that flips mid-frame captures
+// half the interface and leaves the other half on the eye image, which looks
+// far worse than either state on its own.
+static bool     g_hudGateOpen = true;
+
+static unsigned g_hudDrawsThisFrame = 0;
+static unsigned g_hudDrawsLastFrame = 0;
+static unsigned long long g_hudDrawsTotal = 0;
+
+ID3D11Texture2D* DrawHook_HudTexture() { return g_hudTex; }
+bool DrawHook_HudCaptured() { return g_hudDrawsLastFrame > 0; }
+
+static void ReleaseHudResources()
+{
+    if (g_hudDSV) { g_hudDSV->Release();      g_hudDSV = nullptr; }
+    if (g_hudDepthTex) { g_hudDepthTex->Release(); g_hudDepthTex = nullptr; }
+    if (g_hudSRV) { g_hudSRV->Release();      g_hudSRV = nullptr; }
+    if (g_hudRTV) { g_hudRTV->Release();      g_hudRTV = nullptr; }
+    if (g_hudTex) { g_hudTex->Release();      g_hudTex = nullptr; }
+    g_hudW = g_hudH = 0; g_hudFmt = 0;
+}
+
+static bool EnsureHudResources(ID3D11DeviceContext* ctx,
+    unsigned w, unsigned h, int fmt)
+{
+    if (g_hudTex && g_hudW == w && g_hudH == h && g_hudFmt == fmt) return true;
+    ReleaseHudResources();
+    if (!w || !h) return false;
+
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) { Log("!!! hud: GetDevice failed."); return false; }
+
+    bool ok = false;
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = (DXGI_FORMAT)fmt;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &g_hudTex)) && g_hudTex &&
+        SUCCEEDED(dev->CreateRenderTargetView(g_hudTex, nullptr, &g_hudRTV)) &&
+        SUCCEEDED(dev->CreateShaderResourceView(g_hudTex, nullptr, &g_hudSRV)))
+    {
+        D3D11_TEXTURE2D_DESC dd = {};
+        dd.Width = w; dd.Height = h; dd.MipLevels = 1; dd.ArraySize = 1;
+        dd.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        dd.SampleDesc.Count = 1;
+        dd.Usage = D3D11_USAGE_DEFAULT;
+        dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+
+        if (SUCCEEDED(dev->CreateTexture2D(&dd, nullptr, &g_hudDepthTex)) &&
+            g_hudDepthTex &&
+            SUCCEEDED(dev->CreateDepthStencilView(g_hudDepthTex, nullptr, &g_hudDSV)))
+        {
+            ok = true;
+        }
+    }
+
+    dev->Release();
+
+    if (!ok) {
+        Log("!!! hud: capture surface creation FAILED (%ux%u fmt %d)", w, h, fmt);
+        ReleaseHudResources(); return false;
+    }
+
+    g_hudW = w; g_hudH = h; g_hudFmt = fmt;
+    Log(">>> hud: capture surfaces %ux%u fmt %d + private D24S8", w, h, fmt);
+    return true;
+}
+
+// ---- alpha correction ------------------------------------------------------
+// Drawing the interface over an opaque world hides a problem that appears the
+// moment it lands on transparent black: GameSWF's blend states do not produce
+// usable destination alpha, so dark panels, fades and menu backgrounds come out
+// invisible on the quad. Colour blending is left EXACTLY as the game set it;
+// only the alpha channel is rewritten to a proper "over".
+struct BlendFix { ID3D11BlendState* orig; ID3D11BlendState* fixed; };
+static BlendFix g_blendFix[32];
+static int      g_blendFixN = 0;
+
+static ID3D11BlendState* CorrectedBlend(ID3D11DeviceContext* ctx,
+    ID3D11BlendState* src)
+{
+    if (!src) return nullptr;               // default state: no blending, alpha is fine
+
+    for (int i = 0; i < g_blendFixN; ++i)
+    {
+        if (g_blendFix[i].fixed == src) return src;   // already one of ours
+        if (g_blendFix[i].orig == src)  return g_blendFix[i].fixed;
+    }
+    if (g_blendFixN >= 32) return nullptr;
+
+    D3D11_BLEND_DESC d = {};
+    src->GetDesc(&d);
+    const int n = d.IndependentBlendEnable ? 8 : 1;
+    for (int i = 0; i < n; ++i)
+    {
+        d.RenderTarget[i].SrcBlendAlpha = D3D11_BLEND_ONE;
+        d.RenderTarget[i].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        d.RenderTarget[i].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        d.RenderTarget[i].RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
+    }
+
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return nullptr;
+
+    ID3D11BlendState* fixed = nullptr;
+    const HRESULT hr = dev->CreateBlendState(&d, &fixed);
+    dev->Release();
+    if (FAILED(hr) || !fixed) return nullptr;
+
+    g_blendFix[g_blendFixN].orig = src;
+    g_blendFix[g_blendFixN].fixed = fixed;
+    ++g_blendFixN;
+    return fixed;
+}
+
+static unsigned g_drawsSinceBind = 0;
+static bool     g_structDump = false;
+static int      g_structSeq = 0;
+
+void DrawHook_SetBackbuffer(ID3D11Texture2D* bb)
+{
+    ID3D11Resource* r = (ID3D11Resource*)bb;
+    if (r == g_bbRes) return;
+    g_bbRes = r;
+    Log("drawhook: backbuffer resource = %p", (void*)r);
+}
+
 // ---- entry-point kinds ----------------------------------------------------
 // A count alone is ambiguous: there are separate Draw and DrawIndexed buckets
 // numbered 6, and hiding "6" hid both (128 draws/frame) when only one was
@@ -420,6 +700,8 @@ static void SortByPersistence(int* order)
 // and neither overrides the other.
 extern int g_cfgHideArmsSlot[9];   // dllmain.cpp
 int HandsProbe_WeaponSlot();       // HandsProbe.cpp
+bool GameState_MenuUp();           // GameState.cpp
+bool GameState_Paused();           // GameState.cpp
 
 static bool ArmsAutoHidden()
 {
@@ -687,7 +969,7 @@ static void NoteMenuCount(unsigned count, int kind, ID3D11DeviceContext* ctx)
 
 static void PollKeys()
 {
-    static bool k1 = false, k3 = false, kM = false;
+    static bool k1 = false, k3 = false, kM = false, k9 = false;
 
     // Numpad * : CLEAR. Open the thing you want to sample, press *, wait, dump.
     const bool dM = (GetAsyncKeyState(VK_MULTIPLY) & 0x8000) != 0;
@@ -704,6 +986,33 @@ static void PollKeys()
         Log(">>> DRAWHOOK: table CLEARED");
     }
     kM = dM;
+
+    // Numpad 9 : dump ONE frame's render-target structure. PollKeys runs at the
+    // END of EndFrame, so arming here captures the NEXT frame whole -- never a
+    // half frame, which would put the boundary in the wrong place.
+    const bool d9 = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
+    if (d9 && !k9)
+    {
+        g_structDump = true;
+        g_boundaryReport = true;
+        g_structSeq = 0;
+        g_drawsSinceBind = 0;
+        Log(">>> DRAWHOOK: frame structure dump START (backbuffer = %p)",
+            (void*)g_bbRes);
+    }
+    k9 = d9;
+
+    // Home : toggle the interface redirect. Every numpad key in this project is
+    // already spoken for, and Numpad 9 is read by HandsProbe too -- see notes.
+    static bool kHome = false;
+    const bool dHome = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
+    if (dHome && !kHome)
+    {
+        g_hudRedirect = !g_hudRedirect;
+        Log(">>> HUD REDIRECT %s", g_hudRedirect ? "ON" : "off");
+        if (!g_hudRedirect) g_hudDrawsLastFrame = 0;
+    }
+    kHome = dHome;
 
     const bool d3 = (GetAsyncKeyState(VK_NUMPAD3) & 0x8000) != 0;
     if (d3 && !k3) DumpTable();
@@ -742,6 +1051,89 @@ static void PollKeys()
 // should SKIP the real draw.
 static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
 {
+    ++g_drawsSinceBind;
+
+    {
+        const bool indexed = (kind == KIND_INDEXED || kind == KIND_IDXINST);
+
+        // Depth-bound indexed geometry is world rendering. One vote each.
+        if (indexed && !g_curDSVNull && g_curRT) VoteScene(g_curRT);
+
+        if (g_curRT && IsLargeLdr(g_curW, g_curH, g_curFmt))
+        {
+            ID3D11Resource* srv0 = PSSrv0Res(ctx);
+            ID3D11Resource* scene = SceneLeader();
+            const bool samplesScene = (srv0 && scene && srv0 == scene);
+
+            if (!g_hudHost && samplesScene)
+            {
+                // The composite. Passed through untouched, always.
+                g_hudHost = g_curRT;
+
+                // The composite has just run, so the capture is stale from here
+                // on. Cleared once per frame, at the boundary, and only when we
+                // are actually redirecting -- a frame where detection fails
+                // leaves the previous capture untouched rather than blanking it.
+                if (g_hudRedirect && g_hudGateOpen &&
+                    EnsureHudResources(ctx, g_curW, g_curH, g_curFmt))
+                {
+                    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                    ctx->ClearRenderTargetView(g_hudRTV, clear);
+                    ctx->ClearDepthStencilView(g_hudDSV,
+                        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+                    g_hudClearedThisFrame = true;
+                }
+                if (g_boundaryReport)
+                    Log("    >> BOUNDARY: %u%c samples scene %p -> host %p",
+                        count, KindSuffix(kind), (void*)scene, (void*)g_curRT);
+            }
+            else if (g_hudHost && g_curRT == g_hudHost)
+            {
+                if (kind >= 0 && kind <= 4) ++g_postByKind[kind];
+
+                // THE REDIRECT. Measured over 44,890 frames: every draw that
+                // lands here is a plain Draw, so that is the only lane taken.
+                //
+                // Rebound EVERY draw, not once at the boundary: the game may
+                // rebind its own target mid-batch, and a single missed rebind
+                // silently drops part of the interface back onto the eye image.
+                //
+                // Through g_origOMSetRT deliberately -- going through our own
+                // hook would overwrite g_curRT and the next draw would no longer
+                // match the host.
+                if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
+                    kind == KIND_DRAW && g_hudRTV && g_hudDSV)
+                {
+                    g_origOMSetRT(ctx, 1, &g_hudRTV, g_hudDSV);
+
+                    ID3D11BlendState* bs = nullptr;
+                    FLOAT factor[4] = {}; UINT sampleMask = 0xFFFFFFFF;
+                    ctx->OMGetBlendState(&bs, factor, &sampleMask);
+                    ID3D11BlendState* fixedBs = CorrectedBlend(ctx, bs);
+                    if (fixedBs && fixedBs != bs)
+                        ctx->OMSetBlendState(fixedBs, factor, sampleMask);
+                    if (bs) bs->Release();
+
+                    ++g_hudDrawsThisFrame;
+                    ++g_hudDrawsTotal;
+                }
+
+                // Only the plain Draw lane gets redirected in stage 3. Anything
+                // else arriving here would stay baked into the eye image while
+                // the rest moved to the quad -- split UI, not missing UI. Count
+                // it separately so the log names the lane instead of guessing.
+                if (kind != KIND_DRAW) ++g_leakTotal;
+            }
+
+            if (g_boundaryReport)
+                Log("    %6u%c | rt %p %ux%u | dsv %s | srv0 %p%s%s",
+                    count, KindSuffix(kind), (void*)g_curRT, g_curW, g_curH,
+                    g_curDSVNull ? "NULL" : "yes ", (void*)srv0,
+                    samplesScene ? "  <= SAMPLES SCENE" : "",
+                    (g_hudHost && g_curRT == g_hudHost) ? "  [after boundary]" : "");
+        }
+    }
+
     Bucket* b = FindBucket(count, kind);
     if (b) { ++b->total; ++b->perFrame; }
 
@@ -804,6 +1196,43 @@ static bool ViewportPush(ID3D11DeviceContext* ctx, D3D11_VIEWPORT* saved, float 
 
     ctx->RSSetViewports(1, &s);
     return true;
+}
+
+// Called thousands of times per frame. Keep it lean: one AddRef/Release pair and
+// two stores on the quiet path, and it only formats a log line while armed.
+static void __stdcall hkOMSetRenderTargets(ID3D11DeviceContext* ctx, UINT n,
+    ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
+{
+    ID3D11Resource* res = nullptr;
+    if (n && rtvs && rtvs[0]) rtvs[0]->GetResource(&res);
+
+    if (g_structDump)
+    {
+        unsigned w = 0, h = 0; int fmt = 0;
+        if (res)
+        {
+            ID3D11Texture2D* t = nullptr;
+            if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t)
+            {
+                D3D11_TEXTURE2D_DESC d = {};
+                t->GetDesc(&d);
+                w = d.Width; h = d.Height; fmt = (int)d.Format;
+                t->Release();
+            }
+        }
+        Log("  RT[%02d] %u draw(s) since last bind | res %p %ux%u fmt %d | dsv %s%s",
+            g_structSeq++, g_drawsSinceBind, (void*)res, w, h, fmt,
+            dsv ? "yes" : "NULL",
+            (res && res == g_bbRes) ? "   <<<< BACKBUFFER" : "");
+        g_drawsSinceBind = 0;
+    }
+
+    g_curRT = res;
+    g_curDSVNull = (dsv == nullptr);
+    LookupDesc(res, &g_curW, &g_curH, &g_curFmt);   // must precede the Release
+    if (res) res->Release();
+
+    g_origOMSetRT(ctx, n, rtvs, dsv);
 }
 
 static void __stdcall hkDrawIndexed(ID3D11DeviceContext* ctx,
@@ -894,6 +1323,64 @@ static void __stdcall hkDrawInstanced(ID3D11DeviceContext* ctx,
 
 void DrawHook_EndFrame()
 {
+    if (g_structDump)
+    {
+        Log("  RT[--] %u draw(s) after the last bind (end of frame)", g_drawsSinceBind);
+        Log(">>> DRAWHOOK: frame structure dump END");
+        g_structDump = false;
+    }
+    g_structSeq = 0;
+    g_drawsSinceBind = 0;
+
+    if (g_hudHost) ++g_hostFrames; else ++g_noHostFrames;
+
+    if (g_boundaryReport)
+    {
+        ID3D11Resource* scene = SceneLeader();
+        Log(">>> HUD CLASSIFIER: scene %p | host %p", (void*)scene, (void*)g_hudHost);
+        Log(">>> after boundary:  Draw %u | Indexed %u | Inst %u | IdxInst %u",
+            g_postByKind[KIND_DRAW], g_postByKind[KIND_INDEXED],
+            g_postByKind[KIND_INST], g_postByKind[KIND_IDXINST]);
+        if (!scene)
+            Log("!!! no scene leader this frame -- would redirect nothing (fail-closed).");
+        else if (!g_hudHost)
+            Log("!!! scene found but no draw sampled it -- would redirect nothing.");
+        if (g_postByKind[KIND_INDEXED] || g_postByKind[KIND_INST] ||
+            g_postByKind[KIND_IDXINST])
+            Log("!!! non-Draw entry points after the boundary. Redirecting only Draw");
+        Log("!!! would leave those baked into the eye image. See notes.");
+        Log(">>> HUD CLASSIFIER: report END");
+        g_boundaryReport = false;
+    }
+
+    // Once a second, armed or not. This line, not the one-frame dumps, is what
+    // decides whether the redirect is safe to switch on.
+    {
+        static DWORD s_last = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_last >= 1000)
+        {
+            s_last = now;
+            Log("hud: host found %llu frames, missing %llu | non-Draw after boundary %llu",
+                g_hostFrames, g_noHostFrames, g_leakTotal);
+            Log("hud: redirect %s | %u draws captured last frame | %llu total",
+                g_hudRedirect ? "ON" : "off", g_hudDrawsLastFrame, g_hudDrawsTotal);
+        }
+    }
+
+    g_hudDrawsLastFrame = g_hudDrawsThisFrame;
+
+    // Full-screen UI stays in the eye image so the existing menu/theater quad
+    // can show it. Decided here, for the NEXT frame.
+    g_hudGateOpen = !(GameState_MenuUp() || GameState_Paused());
+
+    g_hudDrawsThisFrame = 0;
+    g_hudClearedThisFrame = false;
+    g_voteN = 0;
+    g_hudHost = nullptr;
+
+    for (int i = 0; i < 5; ++i) g_postByKind[i] = 0;
+
     ++g_frames;
     for (int i = 0; i < g_bucketCount; ++i)
     {
@@ -1212,7 +1699,8 @@ static void ParseConfigLists()
 }
 
 bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
-    void* pDrawIndexedInstanced, void* pDrawInstanced)
+    void* pDrawIndexedInstanced, void* pDrawInstanced,
+    void* pOMSetRenderTargets)
 {
     if (!g_cfgDrawHook)
     {
@@ -1239,6 +1727,21 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
 
     g_addrDrawIndexed = pDrawIndexed;
     g_addrDraw = pDraw;
+
+    // NOT fatal if this fails -- everything above still works, we just cannot
+    // see the frame structure. Log loudly either way.
+    if (pOMSetRenderTargets &&
+        MH_CreateHook(pOMSetRenderTargets, &hkOMSetRenderTargets,
+            (LPVOID*)&g_origOMSetRT) == MH_OK &&
+        MH_EnableHook(pOMSetRenderTargets) == MH_OK)
+    {
+        g_addrOMSetRT = pOMSetRenderTargets;
+        Log("drawhook: OMSetRenderTargets hooked. Numpad 9 = frame structure dump.");
+    }
+    else
+    {
+        Log("!!! drawhook: OMSetRenderTargets NOT hooked. Numpad 9 will do nothing.");
+    }
 
     // The instanced pair is NOT fatal if it fails -- we still fingerprint the
     // other two. But something on screen every frame that appears in no bucket
@@ -1279,6 +1782,14 @@ void DrawHook_Remove()
     if (g_addrDraw)                 MH_DisableHook(g_addrDraw);
     if (g_addrDrawIndexedInstanced) MH_DisableHook(g_addrDrawIndexedInstanced);
     if (g_addrDrawInstanced)        MH_DisableHook(g_addrDrawInstanced);
+    if (g_addrOMSetRT)              MH_DisableHook(g_addrOMSetRT);
+
+    ReleaseHudResources();
+    for (int i = 0; i < g_blendFixN; ++i)
+        if (g_blendFix[i].fixed) g_blendFix[i].fixed->Release();
+    g_blendFixN = 0;
+
     g_addrDrawIndexed = g_addrDraw = nullptr;
     g_addrDrawIndexedInstanced = g_addrDrawInstanced = nullptr;
+    g_addrOMSetRT = nullptr;
 }

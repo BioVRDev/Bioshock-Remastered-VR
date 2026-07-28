@@ -28,8 +28,11 @@ static char              g_iniPath[MAX_PATH] = {};
 
 // core -----------------------------------------------------------------------
 float g_cfgFovDeg = 100.0f;      // MUST equal Bioshock.ini HorizontalFOV
-int   g_cfgResX = 0;             // written to WindowedViewportX/Y; 0 = leave
+int   g_cfgResX = 0;
 int   g_cfgResY = 0;
+int   g_cfgFullscreen = -1;      // -1 leave alone / 0 windowed / 1 exclusive
+bool  g_cfgForceFlip = false;    // rewrite the swapchain flip-model + ALLOW_TEARING
+int   g_cfgMirrorEvery = 1;      // present the desktop mirror every Nth frame. 0 = never
 float g_cfgEyeSep = 3.2f;        // half-IPD, game units == cm. 3.2 = 64mm IPD
 bool  g_cfgSwapEyes = false;     // flip if depth is inverted
 bool  g_cfgDisableVSync = true;
@@ -265,7 +268,13 @@ static void LoadConfig()
     g_cfgEyeSep = CfgFloat("EyeSeparation", g_cfgEyeSep, 0.f, 20.f);
     g_cfgSwapEyes = CfgBool("SwapEyes", false);
     g_cfgDisableVSync = CfgBool("DisableVSync", true);
+    g_cfgForceFlip = CfgBool("ForceFlipModel", false);
+    g_cfgMirrorEvery = CfgIntRange("MirrorPresentEvery", 1, 0, 240);
     g_cfgSyncGameIni = CfgBool("SyncGameIni", true);
+    // Via CfgFloat, not CfgInt: CfgFloat's (name, default, min, max) form is
+    // the one proven to compile here, and this needs the min/max clamp because
+    // -1 / 0 / 1 are three distinct meanings and a typo must not become mode 7.
+    g_cfgFullscreen = CfgIntRange("Fullscreen", -1, -1, 1);
 
     // camera & comfort
     g_cfgCameraHook = CfgBool("EnableCameraHook", true);
@@ -398,7 +407,16 @@ static void LoadConfig()
     CfgEcho("EyeSeparation", "%.2f cm  (%.0f mm IPD)", g_cfgEyeSep, g_cfgEyeSep * 20.f);
     CfgEcho("SwapEyes", "%d", (int)g_cfgSwapEyes);
     CfgEcho("DisableVSync", "%d", (int)g_cfgDisableVSync);
+    CfgEcho("ForceFlipModel", "%d  %s", (int)g_cfgForceFlip,
+        g_cfgForceFlip ? "(rewriting swapchain for tearing)" : "(stock swapchain)");
+    CfgEcho("MirrorPresentEvery", "%d  %s", g_cfgMirrorEvery,
+        g_cfgMirrorEvery <= 0 ? "(time-throttled to ~58/s -- auto-tunes to any monitor)"
+        : g_cfgMirrorEvery == 1 ? "(every frame == stock, compositor will cap you)"
+        : "(fixed divisor)");
     CfgEcho("SyncGameIni", "%d", (int)g_cfgSyncGameIni);
+    CfgEcho("Fullscreen", "%d  %s", g_cfgFullscreen,
+        g_cfgFullscreen < 0 ? "(leaving the game's own choice alone)" :
+        g_cfgFullscreen ? "(exclusive -- ignores the refresh cap)" : "(windowed)");
 
     Log("[camera]");
     CfgEcho("EnableCameraHook", "%d", (int)g_cfgCameraHook);

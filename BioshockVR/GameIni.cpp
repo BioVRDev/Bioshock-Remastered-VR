@@ -32,6 +32,7 @@ extern void  LogFile(const char* msg);
 extern float g_cfgFovDeg;
 extern int   g_cfgResX;
 extern int   g_cfgResY;
+extern int   g_cfgFullscreen;
 extern bool  g_cfgSyncGameIni;
 
 static void Log(const char* fmt, ...)
@@ -155,11 +156,27 @@ void SyncGameIni()
     WritePrivateProfileStringA(kSecRender, "HorizontalFOVLock", "True", path);
 
     // Resolution. 0 means "don't touch it".
+    //
+    // FULLSCREEN vs WINDOWED: UE2 keeps TWO viewport sizes and reads whichever
+    // mode it starts in. Writing only the Windowed pair is why setting the
+    // resolution silently stopped working the moment fullscreen was enabled.
+    // Both pairs get the same value, so switching modes cannot change the
+    // buffer shape -- which ForegroundFovAuto derives the weapon FOV from.
     if (g_cfgResX > 0 && g_cfgResY > 0)
     {
         WriteInt(path, kSecWin, "WindowedViewportX", g_cfgResX);
         WriteInt(path, kSecWin, "WindowedViewportY", g_cfgResY);
+        WriteInt(path, kSecWin, "FullscreenViewportX", g_cfgResX);
+        WriteInt(path, kSecWin, "FullscreenViewportY", g_cfgResY);
     }
+
+    // Fullscreen EXCLUSIVE is the only mode MEASURED to ignore the display
+    // refresh cap -- windowed presents are throttled by the compositor to one
+    // per composition no matter what SyncInterval says, which is why
+    // DisableVSync=1 never helped. -1 leaves the game's own choice alone.
+    if (g_cfgFullscreen >= 0)
+        WritePrivateProfileStringA(kSecWin, "StartupFullscreen",
+            g_cfgFullscreen ? "True" : "False", path);
 
     WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);   // flush cache
 
@@ -168,8 +185,16 @@ void SyncGameIni()
     const int gotX = GetPrivateProfileIntA(kSecWin, "WindowedViewportX", -1, path);
     const int gotY = GetPrivateProfileIntA(kSecWin, "WindowedViewportY", -1, path);
 
+    const int gotFsX = GetPrivateProfileIntA(kSecWin, "FullscreenViewportX", -1, path);
+    const int gotFsY = GetPrivateProfileIntA(kSecWin, "FullscreenViewportY", -1, path);
+
     Log("gameini: HorizontalFOV      = %d   (we want %d)", gotFov, fov);
     Log("gameini: WindowedViewport   = %d x %d", gotX, gotY);
+    Log("gameini: FullscreenViewport = %d x %d", gotFsX, gotFsY);
+    Log("gameini: NOTE -- what the ini says is only a REQUEST. Compare against");
+    Log("gameini: the 'backbuffer :' line later in this log. In exclusive");
+    Log("gameini: fullscreen the buffer must be a real DISPLAY MODE, so a");
+    Log("gameini: non-standard size can be silently snapped to the nearest one.");
 
     if (gotFov != fov)
     {

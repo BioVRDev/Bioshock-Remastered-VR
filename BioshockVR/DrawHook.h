@@ -1,6 +1,20 @@
 // BioshockVR/DrawHook.h
 #pragma once
 
+struct ID3D11Texture2D;
+
+// The swapchain backbuffer, handed over once per Present. We only ever compare
+// the POINTER -- this is resource identity, not a reference we keep.
+void DrawHook_SetBackbuffer(ID3D11Texture2D* bb);
+
+// The captured interface, on transparent black, or null before the first
+// successful capture. Same dimensions as the game's composite target.
+ID3D11Texture2D* DrawHook_HudTexture();
+
+// TRUE if at least one interface draw was redirected during the last frame.
+// XRSession uses this to decide whether to submit the HUD quad at all.
+bool DrawHook_HudCaptured();
+
 // Hooks ID3D11DeviceContext::DrawIndexed and ::Draw so we can IDENTIFY and then
 // SUPPRESS individual draw calls -- the HUD, the reticle, the menus, coronas.
 //
@@ -15,10 +29,13 @@
 // S24: the instanced entry points are hooked too. Six sessions of fingerprinting
 // eliminated every persistent Draw/DrawIndexed count as the cursor -- something
 // on screen every frame that lands in no bucket is being issued through a
-// function we were not watching. ctxVT[14] == DrawIndexedInstanced,
-// ctxVT[15] == DrawInstanced. The last two may be null; that is not fatal.
+// function we were not watching.
+// ctxVT[20] == DrawIndexedInstanced,
+// ctxVT[21] == DrawInstanced -- 14/15 are Map/Unmap, do NOT hook those.
+// The last two may be null; that is not fatal.
 bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
-    void* pDrawIndexedInstanced, void* pDrawInstanced);
+    void* pDrawIndexedInstanced, void* pDrawInstanced,
+    void* pOMSetRenderTargets);
 void DrawHook_Remove();
 
 // Call ONCE per Present, before the real Present. Rolls the per-frame table.
