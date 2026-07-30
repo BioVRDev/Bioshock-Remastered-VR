@@ -113,6 +113,7 @@ bool  g_cfgCrosshair = true;
 float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
 bool g_cfgHudAlphaFix = true;
+int g_cfgHudDsvMode = 1;   // 0 none, 1 private D24S8, 2 the game's
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
@@ -326,6 +327,7 @@ static void LoadConfig()
     g_cfgCutsceneTheater = CfgBool("CutsceneTheater", false);
     g_cfgDeltaClamp = CfgInt("DeltaClamp", 0);
     g_cfgHudAlphaFix = CfgBool("HudAlphaFix", true);
+    g_cfgHudDsvMode = CfgIntRange("HudDsvMode", g_cfgHudDsvMode, 0, 2);
 
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
@@ -419,6 +421,15 @@ static void LoadConfig()
     g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
     g_cfgControllerLog = CfgBool("ControllerLog", true);
     g_cfgJumpOnR3 = CfgBool("JumpOnR3", false);
+
+    // R3 cannot both jump and be the D-pad modifier. Quest 1 and Quest 2
+    // controllers have no thumbrest sensor, so mode 2 is their only D-pad
+    // option and it has to win.
+    if (g_cfgDpadModifier == 2 && g_cfgJumpOnR3)
+    {
+        g_cfgJumpOnR3 = false;
+        Log("!!! JumpOnR3 forced OFF -- ControllerDpadModifier=2 needs R3.");
+    }
 
     // menus
     g_cfgMenuScreen = CfgBool("EnableMenuScreen", true);
@@ -569,6 +580,7 @@ static void LoadConfig()
     CfgEcho("MenuMaxIndexed", "%d", g_cfgMenuMaxIndexed);
     CfgEcho("MenuIndexCounts", "'%s'", g_cfgMenuList);
     CfgEcho("AnchorIndexCounts", "'%s'", g_cfgAnchorList);
+    CfgEcho("HudDsvMode", "%d  (0 none, 1 private, 2 game's)", g_cfgHudDsvMode);
 
     Log("[debug/probe]");
     CfgEcho("EnableDrawHook", "%d", (int)g_cfgDrawHook);

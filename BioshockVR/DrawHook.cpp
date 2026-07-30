@@ -73,6 +73,7 @@ extern float g_cfgArrowScale;
 extern float g_cfgArrowX;
 extern float g_cfgArrowY;
 extern bool g_cfgHudAlphaFix;
+extern int g_cfgHudDsvMode;
 
 static void Log(const char* fmt, ...)
 {
@@ -112,6 +113,7 @@ static void* g_addrOMSetRT = nullptr;
 static ID3D11Resource* g_bbRes = nullptr;   // backbuffer, POINTER IDENTITY ONLY
 static ID3D11Resource* g_curRT = nullptr;   // currently bound RT, same deal
 static bool     g_curDSVNull = false;
+static ID3D11DepthStencilView* g_curDSV = nullptr;   // the game's, tracked not owned
 
 static unsigned g_curW = 0, g_curH = 0;
 static int      g_curFmt = 0;
@@ -188,7 +190,12 @@ static unsigned long long g_hostFrames = 0, g_noHostFrames = 0;
 static volatile long g_noWorld = 0;
 bool DrawHook_NoWorldRender() { return g_noWorld != 0; }
 
+// Pre-game menus are pure Scaleform: exactly ONE DrawIndexed per frame.
+// Gameplay runs hundreds. No count list separates them -- 4d/5d/6d/36i appear
+// in both -- but the indexed-draw COUNT separates them by two orders of
+// magnitude. Structure beats enumeration, and it covers menus we have not seen.
 static bool g_boundaryReport = false;
+static unsigned g_indexedThisFrame = 0;
 
 static void VoteScene(ID3D11Resource* r)
 {
@@ -352,6 +359,30 @@ static ID3D11BlendState* CorrectedBlend(ID3D11DeviceContext* ctx,
     D3D11_BLEND_DESC d = {};
     src->GetDesc(&d);
     const int n = d.IndependentBlendEnable ? 8 : 1;
+
+    // Do NOT touch a state whose COLOUR blend reads destination alpha. Those
+    // draws are using the alpha channel as a mask built by an earlier pass --
+    // GameSWF does exactly this for the health and EVE tubes. Rewriting what
+    // alpha contains changes the colour they produce, which is what collapsed
+    // the bars into slivers. Everything else still gets corrected, so the panel
+    // stays visible.
+    for (int i = 0; i < n; ++i)
+    {
+        const D3D11_BLEND sb = d.RenderTarget[i].SrcBlend;
+        const D3D11_BLEND db = d.RenderTarget[i].DestBlend;
+        if (sb == D3D11_BLEND_DEST_ALPHA || sb == D3D11_BLEND_INV_DEST_ALPHA ||
+            db == D3D11_BLEND_DEST_ALPHA || db == D3D11_BLEND_INV_DEST_ALPHA)
+        {
+            static int noted = 0;
+            if (noted < 3)
+            {
+                ++noted;
+                Log("hud: blend state %p reads DEST_ALPHA -- left untouched", (void*)src);
+            }
+            return nullptr;
+        }
+    }
+
     for (int i = 0; i < n; ++i)
     {
         d.RenderTarget[i].SrcBlendAlpha = D3D11_BLEND_ONE;
@@ -615,12 +646,6 @@ static int       g_menuGroupN = 0;
 static int       g_menuHits = 0;
 static int       g_menuMiss = 0;
 static bool      g_menuUp = false;
-
-// Pre-game menus are pure Scaleform: exactly ONE DrawIndexed per frame.
-// Gameplay runs hundreds. No count list separates them -- 4d/5d/6d/36i appear
-// in both -- but the indexed-draw COUNT separates them by two orders of
-// magnitude. Structure beats enumeration, and it covers menus we have not seen.
-static unsigned g_indexedThisFrame = 0;
 
 // S30: and the in-game menus -- pause, load, save, options and its four
 // sub-screens, weapon select -- render OVER a live world, so the indexed test
@@ -1067,6 +1092,8 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
     {
         const bool indexed = (kind == KIND_INDEXED || kind == KIND_IDXINST);
 
+        if (indexed) ++g_indexedThisFrame;
+
         // Depth-bound indexed geometry is world rendering. One vote each.
         if (indexed && !g_curDSVNull && g_curRT) VoteScene(g_curRT);
 
@@ -1125,7 +1152,15 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                 if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
                     kind == KIND_DRAW && g_hudRTV && g_hudDSV)
                 {
-                    g_origOMSetRT(ctx, 1, &g_hudRTV, g_hudDSV);
+                    // Which depth-stencil the captured draws see. MEASURED: the
+                    // health and EVE tubes render correctly on the backbuffer and
+                    // as slivers in the capture, and the DSV is one of only two
+                    // things the redirect changes. If their mask is built before
+                    // the composite it lives in the GAME's stencil, not ours.
+                    ID3D11DepthStencilView* useDsv =
+                        (g_cfgHudDsvMode == 0) ? nullptr :
+                        (g_cfgHudDsvMode == 2) ? g_curDSV : g_hudDSV;
+                    g_origOMSetRT(ctx, 1, &g_hudRTV, useDsv);
 
                     ID3D11BlendState* bs = nullptr;
                     FLOAT factor[4] = {}; UINT sampleMask = 0xFFFFFFFF;
@@ -1250,6 +1285,7 @@ static void __stdcall hkOMSetRenderTargets(ID3D11DeviceContext* ctx, UINT n,
 
     g_curRT = res;
     g_curDSVNull = (dsv == nullptr);
+    g_curDSV = dsv;
     LookupDesc(res, &g_curW, &g_curH, &g_curFmt);   // must precede the Release
     if (res) res->Release();
 
@@ -1361,14 +1397,19 @@ void DrawHook_EndFrame()
     // movie does not snap them back mid-fade. At ~236 Present/s these are
     // roughly 24 and 94 consecutive frames.
     {
-        const bool raw = (g_hudHost == nullptr);
+        // "No scene target" alone is not enough: a streaming hitch looks
+        // identical to a movie by that test, and MEASURED a door transition
+        // holds it for over two seconds -- long past any sane dwell time.
+        // A prerendered movie submits almost no geometry at all, so requiring
+        // both separates them cleanly.
+        const bool raw = (g_hudHost == nullptr) && (g_indexedThisFrame <= 8);
         const DWORD now = GetTickCount();
         static DWORD since = 0;
         if (raw == (g_noWorld != 0))
         {
             since = now;
         }
-        else if (now - since >= (raw ? 100u : 400u))
+        else if (now - since >= (raw ? 250u : 400u))
         {
             g_noWorld = raw ? 1 : 0;
             since = now;
@@ -1422,6 +1463,7 @@ void DrawHook_EndFrame()
     g_hudClearedThisFrame = false;
     g_voteN = 0;
     g_hudHost = nullptr;
+    g_indexedThisFrame = 0;
 
     for (int i = 0; i < 5; ++i) g_postByKind[i] = 0;
 

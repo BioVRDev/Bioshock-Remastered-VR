@@ -899,6 +899,21 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // Angular width IS the scale control. Height follows from the
                     // capture's aspect -- deriving it any other way stretches the
                     // interface, and a stretched HUD reads as a broken one.
+                    // A zero or nonsense width submits a zero-size quad: present,
+                    // composited, invisible, and the config echo still shows the
+                    // value nothing is using. Report BOTH numbers once, and fall
+                    // back to config rather than drawing nothing.
+                    if (g_hudWidthDeg < 5.0f || g_hudWidthDeg > 160.0f)
+                        g_hudWidthDeg = (g_cfgHudWidthDeg > 5.0f) ? g_cfgHudWidthDeg : 60.0f;
+
+                    static bool loggedHud = false;
+                    if (!loggedHud)
+                    {
+                        loggedHud = true;
+                        Log(">>> XR: HUD quad LIVE %.1f deg at %.2f m  (ini says %.1f / %.2f)",
+                            g_hudWidthDeg, g_hudDist, g_cfgHudWidthDeg, g_cfgHudDist);
+                    }
+
                     const float rad = g_hudWidthDeg * 0.5f * 0.01745329f;
                     const float wM = 2.f * g_hudDist * tanf(rad);
                     const float hM = wM * (float)g_hudScH / (float)g_hudScW;
@@ -925,7 +940,31 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     fei.layerCount = layerCount;
     fei.layers = layers;
-    QPC(a); xrEndFrame(g_session, &fei); QPC(b);
+
+    // What are we ACTUALLY handing the runtime? Capture, swapchain and key
+    // presses all log healthy while nothing appears, so the gap is between
+    // building the layer and the compositor accepting it. The return code was
+    // being discarded, which is exactly how a rejected layer stays invisible.
+    {
+        static int shown = 0;
+        if (shown < 5)
+        {
+            ++shown;
+            Log(">>> XR: submit %u layer(s) | hud %.3f x %.3f m at %.2f,%.2f,%.2f | tex %p",
+                layerCount, hq.size.width, hq.size.height,
+                hq.pose.position.x, hq.pose.position.y, hq.pose.position.z,
+                (void*)DrawHook_HudTexture());
+        }
+    }
+
+    QPC(a);
+    XrResult efr = xrEndFrame(g_session, &fei);
+    QPC(b);
+    if (XR_FAILED(efr))
+    {
+        static int efErr = 0;
+        if (efErr < 5) { ++efErr; Log(">>> XR: !!! xrEndFrame FAILED %d", (int)efr); }
+    }
     g_tb.endFrame += MS(a, b);
 
     ++g_tb.submits;
@@ -961,6 +1000,12 @@ void XR_SubmitPair(ID3D11Texture2D* image, int eye)
 
 void XR_SubmitMenuMono(ID3D11Texture2D* image)
 {
+
+    // The tuning keys have to work here too. This path handles menus, pauses,
+    // loading and cutscenes -- i.e. exactly when someone stops to adjust
+    // something. Polling only in the stereo path made them silently dead.
+    PollFovKeys();
+
     if (!g_init) return;
     PumpEvents();
     if (!g_running || !image) return;
