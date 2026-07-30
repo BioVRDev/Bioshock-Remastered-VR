@@ -82,7 +82,29 @@ static void* ResolveExecThis()
     __try
     {
         uint8_t* engine = *(uint8_t**)(base + (unsigned)g_cfgEngPtrRva);
-        if (!engine) return nullptr;
+        if (!engine)
+        {
+            // This used to return SILENTLY. The engine pointer is legitimately
+            // null for the first seconds of the process, so a single miss means
+            // nothing -- but if it is STILL null after ~30 seconds of retries,
+            // EnginePtrRva is simply not the UGameEngine pointer on this build.
+            // MEASURED: that is exactly what happens on the Epic Games Store
+            // version, whose data sections sit ~3 KB below the Steam version's.
+            // Without this the reticle never dies and the log says nothing at
+            // all, which is the most expensive kind of failure to support.
+            static int misses = 0;
+            if (++misses == 15)
+            {
+                Log("!!! exec: EnginePtrRva (module+0x%X) has read NULL 15 times.",
+                    (unsigned)g_cfgEngPtrRva);
+                Log("!!! exec: That address is not the UGameEngine pointer on this");
+                Log("!!! exec: build -- most likely a different STORE version of the");
+                Log("!!! exec: game (Epic vs Steam). The stock crosshair will stay.");
+                Log("!!! exec: Set EnginePtrRva / EngineVtableRva / EngineExecRva in");
+                Log("!!! exec: BioshockVR.ini, or DisableReticle=0 to silence this.");
+            }
+            return nullptr;
+        }
 
         void* actualVt = *(void**)engine;
         void* expectVt = base + (unsigned)g_cfgEngVtRva;

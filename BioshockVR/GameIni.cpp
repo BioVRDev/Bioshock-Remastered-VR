@@ -96,7 +96,16 @@ static bool FindGameIni(char* out, size_t outSz)
     SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
     SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr, 0, docs);
 
+    // MEASURED from real user logs, most specific first. Epic writes
+    // "Bioshock Epic HD" and Steam writes "BioshockHD"; BOTH appear with and
+    // without an intervening "My Games" folder, so all four combinations are
+    // tried. The two original bare names stay last as a catch-all.
     const char* candidates[] = {
+        "%s\\My Games\\Bioshock Epic HD\\Bioshock\\Bioshock.ini",
+        "%s\\Bioshock Epic HD\\Bioshock\\Bioshock.ini",
+        "%s\\My Games\\BioshockHD\\Bioshock\\Bioshock.ini",
+        "%s\\BioshockHD\\Bioshock\\Bioshock.ini",
+        "%s\\My Games\\Bioshock\\Bioshock.ini",
         "%s\\Bioshock\\Bioshock.ini",
         "%s\\BioShock Remastered\\Bioshock.ini",
     };

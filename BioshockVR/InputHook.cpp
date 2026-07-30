@@ -39,6 +39,7 @@ extern int   g_cfgControllerLayout;  // 0 literal / 1 jump-on-A       default 0
 extern bool  g_cfgJumpOnR3;          // R3 -> jump instead of zoom    default 0
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
+bool GameState_Paused();             // GameState.cpp
 
 static void Log(const char* fmt, ...)
 {
@@ -603,11 +604,22 @@ static inline BYTE ToTrigger(float v)
 // standing still anyway:
 //     right A -> Jump     right B -> Hack / Reload
 //     left  X -> Use      left  Y -> Med hypo
+
+// D-pad modifier telemetry. Three separate things can silently suppress it and
+// none of them logged anything, so "it doesn't work" was unfalsifiable.
+static bool  s_dbgRest = false, s_dbgThumb = false, s_dbgMenu = false, s_dbgMod = false;
+static float s_dbgGripL = 0.0f, s_dbgGripR = 0.0f;
+
 static void FillFromPad(const PadState& s, XI_STATE* out)
 {
     ZeroMemory(out, sizeof(*out));
 
-    const bool menuUp = DrawHook_MenuUp();
+    // Was DrawHook_MenuUp(), the legacy draw-signature detector. MEASURED: it
+    // reads TRUE through normal gameplay -- its MenuMaxIndexed rule fires on any
+    // low-geometry frame -- so it silently disabled the d-pad modifier the
+    // entire time. GameState_Paused reads the game's own Level.Pauser and is
+    // the signal that actually means a full-screen UI is up.
+    const bool menuUp = GameState_Paused();
 
     // ---- is the d-pad modifier held? -----------------------------------
     bool mod = false;
@@ -620,6 +632,9 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     }
     if (menuUp) mod = false;                          // menus navigate on the stick
     if (s.gripL > 0.5f || s.gripR > 0.5f) mod = false; // radial owns the sticks
+    s_dbgRest = s.restR;   s_dbgThumb = s.thumbR;
+    s_dbgGripL = s.gripL;  s_dbgGripR = s.gripR;
+    s_dbgMenu = menuUp;    s_dbgMod = mod;
 
     if (mod)
     {
@@ -1109,6 +1124,9 @@ void Input_Tick()
     Log("  POLL: getState %ld/s  getCaps %ld/s  synth %ld/s  realpad %ld/s  hook=%s xr=%s",
         gs - lastGet, cp - lastCaps, sy - lastSynth, rp - lastReal,
         g_installed ? "ON" : "off", g_xrReady ? "ON" : "off");
+    Log("  DPAD: restR=%d thumbR=%d gripL=%.2f gripR=%.2f menuUp=%d -> modifier %s",
+        (int)s_dbgRest, (int)s_dbgThumb, s_dbgGripL, s_dbgGripR,
+        (int)s_dbgMenu, s_dbgMod ? "HELD" : "off");
 
     lastGet = gs; lastCaps = cp; lastSynth = sy; lastReal = rp;
 
