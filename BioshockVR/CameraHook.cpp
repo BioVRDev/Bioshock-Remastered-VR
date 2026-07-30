@@ -2172,6 +2172,97 @@ void CameraHook_EyeQueueStats(int* minDepth, int* maxDepth, unsigned* underruns)
 // TRUE when no camera view has been produced for >250ms (menu/loading/movie).
 bool CameraHook_Starved();
 
+// ---------------------------------------------------------------- delta scan
+//
+// FINDING THE FRAME-DELTA FUNCTION WITHOUT A FIXED OFFSET.
+//
+// kDelta_FnOff was measured on the Steam build. MEASURED: the Epic Games Store
+// build has the same code at DIFFERENT addresses -- module+0x53D850 there lands
+// in the middle of an unrelated instruction, so the prologue check refused and
+// DeltaClamp was silently off for every Epic player.
+//
+// So the offset is now only a FIRST GUESS. If the prologue is there, nothing
+// changes and the scan never runs -- the shipping Steam path is untouched. If
+// it is not, we search executable module memory for the function's own bytes.
+//
+// The four bytes at index 6..9 are the absolute address pushed for the SEH
+// scope table. That value lives in the data section, which moves between
+// builds, so it is WILDCARDED. Everything else is register/stack code.
+static const uint8_t kDeltaSig[] = {
+    0x55,0x8B,0xEC,0x6A,0xFF,0x68,0x00,0x00,0x00,0x00,0x64,0xA1,0x00,0x00,0x00,
+    0x00,0x50,0x64,0x89,0x25,0x00,0x00,0x00,0x00,0x83,0xEC,0x44,0x53,0x56,0x8B,
+    0xF1,0xC7,0x45,0xE4,0x00,0x00,0x00,0x00,0x57,0x89,0x75,0xDC,0x8B,0x46,0x44,
+    0x8B,0x38
+};
+// 'x' == must match, '?' == wildcard. Must be the same length as kDeltaSig.
+static const char kDeltaMask[] =
+"xxxxxx" "????" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+static_assert(sizeof(kDeltaMask) - 1 == sizeof(kDeltaSig),
+    "kDeltaMask must have exactly one character per kDeltaSig byte");
+
+// EXACTLY ONE match, or nothing. Zero or several means the signature stopped
+// being discriminating on that build, and hooking the wrong function here
+// corrupts the simulation clock -- so we refuse, the same way the prologue
+// check already does.
+static void* FindDeltaFn()
+{
+    std::vector<Region> regs;
+    EnumReadableRegions(regs);
+
+    const size_t n = sizeof(kDeltaSig);
+    void* hit = nullptr;
+    int   hits = 0;
+
+    for (const Region& r : regs)
+    {
+        if (r.size < n) continue;
+        if (!IsExecutable(r.base)) continue;
+
+        uint8_t* e = r.base + r.size - n;
+        for (uint8_t* p = r.base; p <= e; ++p)
+        {
+            size_t i = 0;
+            for (; i < n; ++i)
+                if (kDeltaMask[i] == 'x' && p[i] != kDeltaSig[i]) break;
+            if (i != n) continue;
+
+            ++hits;
+            if (!hit) hit = (void*)p;
+            if (hits > 1) break;
+        }
+        if (hits > 1) break;
+    }
+
+    if (hits == 1)
+    {
+        Log(">>> delta: signature scan found ONE match at module+0x%X",
+            (unsigned)((uint8_t*)hit - g_modBase));
+        return hit;
+    }
+    Log("!!! delta: signature scan found %d matches. Refusing to hook.", hits);
+    return nullptr;
+}
+
+// The fixed offset first, the scan only as a fallback.
+static void* ResolveDeltaFn()
+{
+    uint8_t* guess = g_modBase + kDelta_FnOff;
+    if (IsMemoryValid(guess, 5) && guess[0] == 0x55 && guess[1] == 0x8B &&
+        guess[2] == 0xEC && guess[3] == 0x6A && guess[4] == 0xFF)
+    {
+        Log("delta: module+0x%X still looks right. No scan needed.", kDelta_FnOff);
+        return (void*)guess;
+    }
+
+    Log("delta: module+0x%X is NOT the function on this build -- expected on", kDelta_FnOff);
+    Log("delta: non-Steam builds. Scanning for the signature instead...");
+
+    const DWORD t0 = GetTickCount();
+    void* found = FindDeltaFn();
+    Log("delta: scan took %lu ms", GetTickCount() - t0);
+    return found;      // null == refuse; the prologue check below refuses too
+}
+
 // ---------------------------------------------------------------- install
 
 bool CameraHook_Install()
@@ -2206,8 +2297,27 @@ bool CameraHook_Install()
     // works and the mod runs exactly as it does today.
     if (g_cfgDeltaClamp)
     {
-        void* dfn = (void*)(g_modBase + kDelta_FnOff);
+        void* dfn = ResolveDeltaFn();
         const uint8_t* pb = (const uint8_t*)dfn;
+
+        // DIAGNOSTIC: dump what is actually at this address on THIS build.
+        // On the build the offset was derived from, this is the reference
+        // signature -- it becomes a pattern scan so the offset stops being
+        // build-specific. On any other build it shows what is there instead.
+        // Read-only; delete once the scan replaces the fixed offset.
+        if (IsMemoryValid(pb, 48))
+        {
+            char hex[160] = {};
+            for (int i = 0; i < 48; ++i)
+                _snprintf_s(hex + i * 3, 4, _TRUNCATE, "%02X ", pb[i]);
+            Log("delta: bytes at module+0x%X: %s",
+                (unsigned)(pb - g_modBase), hex);
+        }
+        else
+        {
+            Log("delta: module+0x%X is not readable on this build.", kDelta_FnOff);
+        }
+
         // Prologue confirmed in phase 10: 55 8B EC 6A FF. If this build differs,
         // REFUSE -- hooking the wrong address here corrupts the sim clock.
         if (IsMemoryValid(pb, 5) && pb[0] == 0x55 && pb[1] == 0x8B &&
@@ -2218,7 +2328,7 @@ bool CameraHook_Install()
             {
                 g_deltaFnAddr = dfn;
                 Log(">>> DELTA HOOK ARMED at module+0x%X (one world advance per eye pair)",
-                    kDelta_FnOff);
+                    (unsigned)((uint8_t*)dfn - g_modBase));
             }
             else Log("!!! delta: MinHook failed at module+0x%X. Clamp OFF.", kDelta_FnOff);
         }

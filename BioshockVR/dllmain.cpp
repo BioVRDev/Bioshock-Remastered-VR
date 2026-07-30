@@ -71,8 +71,17 @@ int   g_cfgGunChildren = 0;      // 0 off, 1 sweep, 2 scale all
 // 6-DOF hands ----------------------------------------------------------------
 bool  g_cfg6DofHands = false;
 bool  g_cfgHideArmSleeves = false;
-int   g_cfgArmHideHandsVt = 0x00D8A28C;   // AHands vtable RVA, verified not trusted
-int   g_cfgArmHideSkelVt = 0x00E19ACC;    // SkeletonInstance vtable RVA
+
+// 0 == do not check this vtable. MEASURED: Steam and Epic have DIFFERENT vtable
+// RVAs (AHands 0xD8A28C vs 0xD8959C, SkeletonInstance 0xE19ACC vs 0xE190EC) and
+// the shift is not a constant -- 0xCF0 for one, 0x9E0 for the other -- so no
+// single value can serve both stores. The check was only ever a fourth guard:
+// HandsProbe identifies the actor positionally, the skeleton must point back at
+// that same actor, and the bone count must be exactly 47. Put a real RVA here
+// to re-enable it on a build you have measured.
+int   g_cfgArmHideHandsVt = 0;
+int   g_cfgArmHideSkelVt = 0;
+
 bool  g_cfgHandsProbe = false;
 int   g_cfgHandsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724
 int   g_cfgHandsPosOff = 0;      // HandsPosOffset, e.g. 0x1D8
@@ -605,6 +614,10 @@ static void LoadConfig()
 static DWORD WINAPI InitThread(LPVOID)
 {
     Log("=== BioshockVR ===");
+    // Bump this on every release. It is the first thing to check on any log a
+    // stranger sends you -- "which build is this?" has already cost one round
+    // trip in this project, and __DATE__/__TIME__ alone cannot answer it.
+    Log("BioshockVR version: 1.02");
     Log("dllmain build: cleaned config  (%s %s)", __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};

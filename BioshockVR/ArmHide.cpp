@@ -100,6 +100,17 @@ static unsigned RvaOf(const void* addr)
     return (unsigned)((const uint8_t*)addr - base);
 }
 
+// What vtable does this object ACTUALLY have? Used only for logging, so a
+// build with different addresses reports the numbers you need instead of just
+// refusing. Returns 0 if the object cannot be read.
+static unsigned VtableRvaOf(const void* obj)
+{
+    if (!obj) return 0;
+    void* vt = nullptr;
+    if (!SafeRead(obj, &vt, sizeof(vt))) return 0;
+    return RvaOf(vt);
+}
+
 static bool VtableIs(const void* obj, int expectedRva)
 {
     if (!obj || expectedRva <= 0) return false;
@@ -137,30 +148,36 @@ static bool LocateSkeleton(void* hands)
 {
     if (!hands) return false;
 
-    if (!VtableIs(hands, g_cfgArmHideHandsVt))
-    {
-        if (!g_loggedFail)
-        {
-            g_loggedFail = true;
-            Log("!!! ARMHIDE: AHands vtable mismatch (expected module+0x%X).",
-                (unsigned)g_cfgArmHideHandsVt);
-            Log("!!! ARMHIDE: different build, or the probe locked another actor.");
-            Log("!!! ARMHIDE: refusing all writes. Set ArmHideHandsVt in the ini,");
-            Log("!!! ARMHIDE: or HideArmSleeves=0 to silence this.");
-        }
-        return false;
-    }
-
+    // The skeleton pointer is read FIRST, so a build with different addresses
+    // can report BOTH actual vtables in one run instead of costing a round trip
+    // per value. Read-only and SEH-guarded either way.
     void* skel = nullptr;
     if (!SafeRead((uint8_t*)hands + kActorSkelOff, &skel, sizeof(skel)) || !skel)
         return false;
 
-    if (!VtableIs(skel, g_cfgArmHideSkelVt))
+    // A configured value of 0 means "do not check this vtable". That is safe
+    // here because it is not the only guard: HandsProbe identifies the actor
+    // POSITIONALLY (it tracks the camera and the view rotator), the skeleton
+    // must point back at this same actor, and the bone count must be exactly
+    // 47. A wrong object fails all three.
+    const bool handsOk = (g_cfgArmHideHandsVt <= 0) || VtableIs(hands, g_cfgArmHideHandsVt);
+    const bool skelOk = (g_cfgArmHideSkelVt <= 0) || VtableIs(skel, g_cfgArmHideSkelVt);
+
+    if (!handsOk || !skelOk)
     {
         if (!g_loggedFail)
         {
             g_loggedFail = true;
-            Log("!!! ARMHIDE: SkeletonInstance vtable mismatch. Refusing writes.");
+            Log("!!! ARMHIDE: vtable mismatch -- this is a DIFFERENT BUILD of the game.");
+            Log("!!! ARMHIDE:   AHands            expected 0x%X   ACTUAL 0x%X",
+                (unsigned)g_cfgArmHideHandsVt, VtableRvaOf(hands));
+            Log("!!! ARMHIDE:   SkeletonInstance  expected 0x%X   ACTUAL 0x%X",
+                (unsigned)g_cfgArmHideSkelVt, VtableRvaOf(skel));
+            Log("!!! ARMHIDE: Refusing all writes. To enable arm hiding on this build,");
+            Log("!!! ARMHIDE: put the two ACTUAL values into BioshockVR.ini:");
+            Log("!!! ARMHIDE:   ArmHideHandsVt=0x%X", VtableRvaOf(hands));
+            Log("!!! ARMHIDE:   ArmHideSkelVt=0x%X", VtableRvaOf(skel));
+            Log("!!! ARMHIDE: or set HideArmSleeves=0 to silence this.");
         }
         return false;
     }
