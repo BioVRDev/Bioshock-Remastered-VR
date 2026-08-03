@@ -126,7 +126,7 @@ int   g_cfgHudDsvMode = 1;   // 0 none, 1 private D24S8, 2 the game's
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
-int   g_cfgControllerMode = 0;   // 0 merge (real pad wins), 1 replace
+int   g_cfgControllerMode = 1;   // 0 = XInput slot 0 wins, 1 = VR replaces it
 int   g_cfgControllerLayout = 1; // 0 literal Xbox, 1 jump on right-A
 bool  g_cfgControllerPitch = false;
 bool  g_cfgStickYToDpad = false;
@@ -173,6 +173,9 @@ int   g_cfgSwingCooldownMs = 300;
 int   g_cfgSwingPulseMs = 120;
 int   g_cfgSwingDelayMs = 0;
 int   g_cfgSwingLog = 0;
+float g_cfgGripThreshold = 0.80f;
+float g_cfgGripHysteresis = 0.15f;
+int   g_cfgHeadRelativeMove = 1;
 int   g_cfgPitchServo = 1;
 float g_cfgPitchServoGain = 0.030f;
 float g_cfgPitchServoDead = 2.0f;
@@ -591,7 +594,7 @@ static void LoadConfig()
 
     // controller
     g_cfgController = CfgBool("EnableController", true);
-    g_cfgControllerMode = CfgIntRange("ControllerMode", 0, 0, 1);
+    g_cfgControllerMode = CfgIntRange("ControllerMode", 1, 0, 1);
     g_cfgControllerLayout = CfgIntRange("ControllerLayout", 0, 0, 1);
     g_cfgControllerPitch = CfgBool("ControllerPitch", false);
     g_cfgStickDeadzone = CfgFloat("ControllerDeadzone", g_cfgStickDeadzone, 0.f, 0.9f);
@@ -606,6 +609,9 @@ static void LoadConfig()
     g_cfgSwingPulseMs = CfgIntRange("SwingPulseMs", 120, 20, 1000);
     g_cfgSwingDelayMs = CfgIntRange("SwingDelayMs", 0, 0, 1000);
     g_cfgSwingLog = CfgIntRange("SwingLog", 0, 0, 1);
+    g_cfgGripThreshold = CfgFloat("GripThreshold", 0.80f, 0.30f, 0.99f);
+    g_cfgGripHysteresis = CfgFloat("GripHysteresis", 0.15f, 0.00f, 0.50f);
+    g_cfgHeadRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
     g_cfgPitchServo = CfgIntRange("PitchServo", 1, 0, 1);
     g_cfgPitchServoGain = CfgFloat("PitchServoGain", 0.030f, 0.001f, 0.500f);
     g_cfgPitchServoDead = CfgFloat("PitchServoDeadzoneDeg", 2.0f, 0.0f, 30.0f);
@@ -788,6 +794,9 @@ static void LoadConfig()
     CfgEcho("Swing", "%d  thr %.2f  rearm %.2f  cd %d  pulse %d",
         g_cfgSwingEnabled, g_cfgSwingThreshold, g_cfgSwingRearm,
         g_cfgSwingCooldownMs, g_cfgSwingPulseMs);
+    CfgEcho("Grip", "on %.2f  off %.2f", g_cfgGripThreshold,
+        g_cfgGripThreshold - g_cfgGripHysteresis);
+    CfgEcho("HeadRelativeMove", "%d", g_cfgHeadRelativeMove);
     CfgEcho("PitchServo", "%d  gain %.3f  dead %.1f deg  max %.2f",
         g_cfgPitchServo, g_cfgPitchServoGain, g_cfgPitchServoDead, g_cfgPitchServoMax);
     CfgEcho("SuppressIndexCounts", "'%s'", g_cfgSuppressList);

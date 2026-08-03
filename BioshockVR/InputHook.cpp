@@ -16,6 +16,7 @@
 // back on the table.
 
 #include "InputHook.h"
+#include "CameraHook.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -38,7 +39,12 @@ extern float g_cfgPitchServoGain;
 extern float g_cfgPitchServoDead;
 extern float g_cfgPitchServoMax;
 extern int   g_cfgSwingLog;
+extern int g_cfgHeadRelativeMove;
+extern float g_cfgGripThreshold;
+extern float g_cfgGripHysteresis;
+
 bool CameraHook_GetPitchError(float* outDeg);
+bool CameraHook_GetHeadYawOffset(float* outDeg);
 
 extern float g_cfgStickDeadzone;     // radial, 0..0.9          default 0.15
 extern bool  g_cfgControllerLog;     // heartbeat               default 1
@@ -223,7 +229,7 @@ bool Input_WeaponWheelHeld()
 {
     PadState s;
     if (!ReadPad(&s) || !s.active) return false;
-    return (s.gripL > 0.5f) || (s.gripR > 0.5f);
+    return (s.gripL > g_cfgGripThreshold) || (s.gripR > g_cfgGripThreshold);
 }
 
 // ---------------------------------------------------------------- OpenXR side
@@ -637,6 +643,19 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
 {
     ZeroMemory(out, sizeof(*out));
 
+    // Index grips read high from a RESTING hand, so a single 0.5 threshold
+    // leaves LB/RB permanently held and BioShock permanently in its radial
+    // context, where face buttons get eaten. Hysteresis: a deliberate squeeze
+    // to engage, a real release to let go.
+    //
+    // Computed HERE, at the top, because three separate things below need the
+    // answer -- the d-pad modifier, the radial test, and LB/RB themselves.
+    static bool gripLOn = false, gripROn = false;
+    const float onT = g_cfgGripThreshold;
+    const float offT = g_cfgGripThreshold - g_cfgGripHysteresis;
+    gripLOn = gripLOn ? (s.gripL > offT) : (s.gripL > onT);
+    gripROn = gripROn ? (s.gripR > offT) : (s.gripR > onT);
+
     // Was DrawHook_MenuUp(), the legacy draw-signature detector. MEASURED: it
     // reads TRUE through normal gameplay -- its MenuMaxIndexed rule fires on any
     // low-geometry frame -- so it silently disabled the d-pad modifier the
@@ -651,11 +670,11 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     case 1: mod = g_cfgDpadFlip ? s.restL : s.restR;   break;
     case 4: mod = s.restL;   break;      // explicit left thumbrest
     case 2: mod = s.thumbR;  break;
-    case 3: mod = (s.gripL > 0.5f); break;
+    case 3: mod = gripLOn; break;
     default: mod = false;    break;
     }
     if (menuUp) mod = false;                          // menus navigate on the stick
-    if (s.gripL > 0.5f || s.gripR > 0.5f) mod = false; // radial owns the sticks
+    if (gripLOn || gripROn) mod = false;               // radial owns the sticks
     s_dbgRest = s.restR;   s_dbgThumb = s.thumbR;
     s_dbgGripL = s.gripL;  s_dbgGripR = s.gripR;
     s_dbgMenu = menuUp;    s_dbgMod = mod;
@@ -698,8 +717,21 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     }
     else
     {
-        out->Gamepad.sThumbLX = ToAxis(s.moveX);
-        out->Gamepad.sThumbLY = ToAxis(s.moveY);
+        float mx = s.moveX, my = s.moveY;
+        if (g_cfgHeadRelativeMove)
+        {
+            float hy = 0.0f;
+            if (CameraHook_GetHeadYawOffset(&hy))
+            {
+                const float r = hy * 0.01745329f;      // deg -> rad
+                const float c = cosf(r), sn = sinf(r);
+                const float nx = mx * c + my * sn;
+                const float ny = -mx * sn + my * c;
+                mx = nx; my = ny;
+            }
+        }
+        out->Gamepad.sThumbLX = ToAxis(mx);
+        out->Gamepad.sThumbLY = ToAxis(my);
     }
 
     // Flipped mode owns the right stick while the modifier is held, so the
@@ -711,7 +743,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a
     // grip is held the weapon/plasmid radial NEEDS it or its top and bottom
     // entries are unreachable.
-    const bool radialOpen = (s.gripL > 0.5f) || (s.gripR > 0.5f);
+    const bool radialOpen = gripLOn || gripROn;
     if (g_cfgControllerPitch || menuUp || radialOpen)
     {
         out->Gamepad.sThumbRY = ToAxis(s.turnY);
@@ -802,14 +834,13 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (s.menu)          btn |= (mod ? XI_BACK : XI_START);
     if (chordPause)      btn |= (mod ? XI_BACK : XI_START);
     if (s.thumbL)        btn |= XI_LTHUMB;
-    if (s.thumbL)        btn |= XI_LTHUMB;
 
     // A control used as the modifier must not ALSO send its normal button, or
     // every d-pad press would come with a stray R3 / LB. Same for one rebound
     // to jump: without this, every jump would also zoom.
     if (s.thumbR && g_cfgDpadModifier != 2 && !g_cfgJumpOnR3) btn |= XI_RTHUMB;
-    if (s.gripL > 0.5f && g_cfgDpadModifier != 3)  btn |= XI_LSHOULDER;
-    if (s.gripR > 0.5f)                            btn |= XI_RSHOULDER;
+    if (gripLOn && g_cfgDpadModifier != 3) btn |= XI_LSHOULDER;
+    if (gripROn)                           btn |= XI_RSHOULDER;
 
     out->Gamepad.wButtons = btn;
 }

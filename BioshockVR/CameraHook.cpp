@@ -566,6 +566,19 @@ static void PublishPitchError(int engineRot)
     g_pitchErrOk = 1;
 }
 
+// Head yaw relative to the movement heading. Walking is relative to the PAWN,
+// so with the head turned 60 deg you still walk where the pawn faces. Rotating
+// the stick by this makes "forward" mean "where I am looking".
+bool CameraHook_GetHeadYawOffset(float* outDeg)
+{
+    if (!outDeg) return false;
+    double y = g_headYaw;
+    while (y > 180.0) y -= 360.0;
+    while (y < -180.0) y += 360.0;
+    *outDeg = (float)y;
+    return true;
+}
+
 bool CameraHook_GetPitchError(float* outDeg)
 {
     if (!outDeg || !g_pitchErrOk) return false;
