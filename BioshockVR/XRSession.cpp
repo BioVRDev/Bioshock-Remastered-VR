@@ -3,6 +3,7 @@
 
 #include "XRSession.h"
 #include "InputHook.h"
+#include "Swing.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -654,6 +655,17 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     XrCompositionLayerQuad xh = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     XrCompositionLayerQuad hq = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 
+    // DIAGNOSTIC: 'submitted 0' means no layer was ever built. Why, once a second.
+    {
+        static ULONGLONG lastSr = 0;
+        const ULONGLONG nowSr = GetTickCount64();
+        if (nowSr - lastSr > 1000)
+        {
+            lastSr = nowSr;
+            Log(">>> XRDIAG: shouldRender=%d", (int)fs.shouldRender);
+        }
+    }
+
     if (fs.shouldRender)
     {
         XrViewLocateInfo vli = { XR_TYPE_VIEW_LOCATE_INFO };
@@ -669,6 +681,17 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
         QPC(b);
         g_tb.locateViews += MS(a, b);
 
+        {
+            static ULONGLONG lastLv = 0;
+            const ULONGLONG nowLv = GetTickCount64();
+            if (nowLv - lastLv > 1000)
+            {
+                lastLv = nowLv;
+                Log(">>> XRDIAG: locate=%d got=%u flags=0x%X",
+                    (int)lr, got, (unsigned)vs.viewStateFlags);
+            }
+        }
+
         if (XR_SUCCEEDED(lr) && got == 2 &&
             (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
             (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
@@ -677,6 +700,8 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             // and view[1] share head orientation in our symmetric rig (the cant
             // is in the FOV, not the pose), so eye 0's is the head's.
             PublishHead(views);
+
+            Swing_Update();
 
             // --- LAYER POSE (flicker fix, §2): stamp the pose the image was
             // RENDERED from -- the eye-0 latched pose -- not the fresh one.
@@ -762,12 +787,51 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         views[e].fov.angleUp * R2D, views[e].fov.angleDown * R2D);
             }
 
-            layer.space = g_space;
-            layer.viewCount = 2;
-            layer.views = pv;
-            layers[0] = (const XrCompositionLayerBaseHeader*)&layer;
-            layerCount = 1;
-            ++g_xrSubmitted;
+            // A real runtime VALIDATES poses; the shim never did. A non-unit
+            // quaternion -- including the all-zero one left in pv[e] when an eye
+            // texture was missing -- makes xrEndFrame return -39
+            // (XR_ERROR_POSE_INVALID) and NOTHING reaches the compositor.
+            bool poseOk = true;
+            for (int e = 0; e < 2; ++e)
+            {
+                if (!pv[e].subImage.swapchain) { poseOk = false; break; }
+
+                XrQuaternionf& q = pv[e].pose.orientation;
+                const float n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+                if (!(n2 > 0.0001f)) { poseOk = false; break; }
+
+                static bool loggedNorm = false;
+                if (!loggedNorm && (n2 < 0.9999f || n2 > 1.0001f))
+                {
+                    loggedNorm = true;
+                    Log(">>> XR: layer quat NOT unit (len2 %.6f) -- normalising", n2);
+                }
+
+                const float inv = 1.0f / sqrtf(n2);
+                q.x *= inv; q.y *= inv; q.z *= inv; q.w *= inv;
+            }
+
+            if (poseOk)
+            {
+                layer.space = g_space;
+                layer.viewCount = 2;
+                layer.views = pv;
+                layers[0] = (const XrCompositionLayerBaseHeader*)&layer;
+                layerCount = 1;
+                ++g_xrSubmitted;
+            }
+            else
+            {
+                static int skipped = 0;
+                if (++skipped < 6)
+                    Log(">>> XR: layer SKIPPED | eye0 sc=%p q=(%.4f %.4f %.4f %.4f) | eye1 sc=%p q=(%.4f %.4f %.4f %.4f)",
+                        (void*)pv[0].subImage.swapchain,
+                        pv[0].pose.orientation.x, pv[0].pose.orientation.y,
+                        pv[0].pose.orientation.z, pv[0].pose.orientation.w,
+                        (void*)pv[1].subImage.swapchain,
+                        pv[1].pose.orientation.x, pv[1].pose.orientation.y,
+                        pv[1].pose.orientation.z, pv[1].pose.orientation.w);
+            }
 
             // ---- crosshair quad: head-locked, aim offset computed HERE on the
             //      render thread from fresh poses so head motion can't drag it --

@@ -59,3 +59,4 @@ bool DrawHook_MenuUp();
 // is FALSE. Separate list, separate consumer -- so a wrong entry here can never
 // freeze the camera the way a wrong MenuIndexCounts entry did.
 bool DrawHook_AnchorUp();
+bool DrawHook_CutsceneBarsActive();

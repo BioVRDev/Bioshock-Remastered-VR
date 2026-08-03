@@ -106,11 +106,11 @@ int   g_cfgAimSource = 0;        // 0 head, 1 right controller
 float g_cfgAimClampDeg = 20.0f;
 float g_cfgAimSmooth = 0.35f;
 float g_cfgPlasmidAimPitch = -50.0f;   // deg added to the plasmid hand's aim pitch
-bool g_cfgDisableReticle = true;
-int  g_cfgEngPtrRva = 0x1375368;    // UGameEngine* location
-int  g_cfgEngVtRva = 0x00E0DFF4;    // its expected vtable, for verification
-int  g_cfgEngExecRva = 0x004C5970;  // UGameEngine::Exec
-int  g_cfgEngExecThis = 0x40;       // FExec subobject offset
+bool  g_cfgDisableReticle = true;
+int   g_cfgEngPtrRva = 0x1375368;    // UGameEngine* location
+int   g_cfgEngVtRva = 0x00E0DFF4;    // its expected vtable, for verification
+int   g_cfgEngExecRva = 0x004C5970;  // UGameEngine::Exec
+int   g_cfgEngExecThis = 0x40;       // FExec subobject offset
 
 // HUD quad ------------------------------------------------------------------
 bool  g_cfgHudRedirect = true;    // capture the interface off the eye texture
@@ -121,8 +121,8 @@ float g_cfgHudYawDeg = 0.0f;      // + right
 bool  g_cfgCrosshair = true;
 float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
-bool g_cfgHudAlphaFix = true;
-int g_cfgHudDsvMode = 1;   // 0 none, 1 private D24S8, 2 the game's
+bool  g_cfgHudAlphaFix = true;
+int   g_cfgHudDsvMode = 1;   // 0 none, 1 private D24S8, 2 the game's
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
@@ -133,6 +133,8 @@ bool  g_cfgStickYToDpad = false;
 float g_cfgStickDeadzone = 0.15f;
 bool  g_cfgControllerLog = true;
 int   g_cfgDpadModifier = 1;     // 0 off / 1 right thumbrest / 2 R3 / 3 left grip
+int   g_cfgDpadFlip = 0;   // ControllerDpadFlip: 1 = left thumbrest + right stick
+int   g_cfgPauseChord = 1;       // X+Y together -> START (pause)
 bool  g_cfgJumpOnR3 = false;     // R3 -> jump instead of zoom
 
 // menus ----------------------------------------------------------------------
@@ -161,49 +163,216 @@ float g_cfgArrowX = 0.0f;         // fraction of viewport width, + == right
 float g_cfgArrowY = 0.0f;         // fraction of viewport height, - == up
 int   g_cfgArrowPtrOff = 0;                    // pawn+N -> the arrow actor. 0 == off
 float g_cfgArrowWorld[3] = { 0.f, 0.f, 60.f }; // fwd,right,up from the camera, cm
+int   g_cfgHideInactiveHand = 1;   // HideInactiveHand
+int   g_cfgHideCutsceneBars = 1;   // HideCutsceneBars
+int   g_cfgCutsceneBarVerts = 29;  // CutsceneBarVertices
+int   g_cfgSwingEnabled = 1;
+float g_cfgSwingThreshold = 3.6f;
+float g_cfgSwingRearm = 1.0f;
+int   g_cfgSwingCooldownMs = 300;
+int   g_cfgSwingPulseMs = 120;
+int   g_cfgSwingDelayMs = 0;
+int   g_cfgSwingLog = 0;
+int   g_cfgPitchServo = 1;
+float g_cfgPitchServoGain = 0.030f;
+float g_cfgPitchServoDead = 2.0f;
+float g_cfgPitchServoMax = 0.80f;
 
 // ============================================================================
 //  LOGGING
 // ============================================================================
 
+// TRUE once the log had to move out of the game folder. Reported in the header
+// so a log someone sends us says where it came from.
+static bool g_logRelocated = false;
+
+// Does a write to this directory ACTUALLY land there?
+//
+// MEASURED: on a Program Files install without admin rights, Windows silently
+// redirects the write into %LOCALAPPDATA%\VirtualStore\Program Files\... The
+// open SUCCEEDS, the file exists, and the user never finds it -- which is why
+// "I have no log file" reports could never be confirmed or denied. Opening the
+// file and asking Windows where the handle really points is the only reliable
+// test; checking the return code is not enough.
+static bool DirTakesOurLog(const char* dir, char* out, size_t outSz)
+{
+    char probe[MAX_PATH] = {};
+    _snprintf_s(probe, MAX_PATH, _TRUNCATE, "%sBioshockVR.log", dir);
+
+    HANDLE h = CreateFileA(probe, FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    char real[MAX_PATH] = {};
+    const DWORD n = GetFinalPathNameByHandleA(h, real, MAX_PATH, FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    if (n == 0 || n >= MAX_PATH) return false;
+
+    // The returned path is \\?\ prefixed; skip that before comparing.
+    const char* r = real;
+    if (strncmp(r, "\\\\?\\", 4) == 0) r += 4;
+    if (_stricmp(r, probe) != 0) return false;      // redirected -- not ours
+
+    strncpy_s(out, outSz, probe, _TRUNCATE);
+    return true;
+}
+
 static void InitLogPath()
 {
-    char p[MAX_PATH] = {};
-    if (GetModuleFileNameA(g_hSelf, p, MAX_PATH) == 0) { g_logPath[0] = 0; return; }
+    char gameDir[MAX_PATH] = {};
 
-    char* slash = strrchr(p, '\\');
-    if (!slash) { g_logPath[0] = 0; return; }
-    *(slash + 1) = 0;                       // truncate to the directory
+    if (GetModuleFileNameA(
+        g_hSelf,
+        gameDir,
+        MAX_PATH) == 0)
+    {
+        g_logPath[0] = 0;
+        return;
+    }
 
-    _snprintf_s(g_logPath, MAX_PATH, _TRUNCATE, "%sBioshockVR.log", p);
-    _snprintf_s(g_iniPath, MAX_PATH, _TRUNCATE, "%sBioshockVR.ini", p);
+    char* slash = strrchr(gameDir, '\\');
+
+    if (!slash)
+    {
+        g_logPath[0] = 0;
+        return;
+    }
+
+    // Keep the trailing slash.
+    *(slash + 1) = 0;
+
+    // BioshockVR.ini remains beside BioshockHD.exe.
+    _snprintf_s(
+        g_iniPath,
+        MAX_PATH,
+        _TRUNCATE,
+        "%sBioshockVR.ini",
+        gameDir);
+
+    // First choice:
+    // <game folder>\logs\BioshockVR.log
+    char logDir[MAX_PATH] = {};
+
+    _snprintf_s(
+        logDir,
+        MAX_PATH,
+        _TRUNCATE,
+        "%slogs\\",
+        gameDir);
+
+    CreateDirectoryA(logDir, nullptr);
+
+    if (DirTakesOurLog(
+        logDir,
+        g_logPath,
+        MAX_PATH))
+    {
+        return;
+    }
+
+    // Fallback:
+    // %LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log
+    //
+    // This is only used when the game folder is not writable.
+    char localAppData[MAX_PATH] = {};
+
+    if (GetEnvironmentVariableA(
+        "LOCALAPPDATA",
+        localAppData,
+        MAX_PATH) > 0 &&
+        localAppData[0])
+    {
+        char fallbackBase[MAX_PATH] = {};
+
+        _snprintf_s(
+            fallbackBase,
+            MAX_PATH,
+            _TRUNCATE,
+            "%s\\BioshockVR",
+            localAppData);
+
+        CreateDirectoryA(
+            fallbackBase,
+            nullptr);
+
+        char fallbackLogs[MAX_PATH] = {};
+
+        _snprintf_s(
+            fallbackLogs,
+            MAX_PATH,
+            _TRUNCATE,
+            "%s\\logs\\",
+            fallbackBase);
+
+        CreateDirectoryA(
+            fallbackLogs,
+            nullptr);
+
+        if (DirTakesOurLog(
+            fallbackLogs,
+            g_logPath,
+            MAX_PATH))
+        {
+            g_logRelocated = true;
+            return;
+        }
+    }
+
+    // Logging failed everywhere. The mod still runs.
+    g_logPath[0] = 0;
 }
 
 void LogFile(const char* msg)
 {
-    if (!g_logPath[0]) return;
+    if (!msg || !g_logPath[0])
+        return;
 
     EnterCriticalSection(&g_logLock);
-    FILE* f = nullptr;
-    if (fopen_s(&f, g_logPath, "a") == 0 && f)
+
+    FILE* file = nullptr;
+
+    if (fopen_s(
+        &file,
+        g_logPath,
+        "a") == 0 &&
+        file)
     {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        fprintf(f, "[%02u:%02u:%02u.%03u] %s\n",
-            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, msg);
-        fclose(f);
+        SYSTEMTIME time = {};
+        GetLocalTime(&time);
+
+        fprintf(
+            file,
+            "[%02u:%02u:%02u.%03u] %s\n",
+            time.wHour,
+            time.wMinute,
+            time.wSecond,
+            time.wMilliseconds,
+            msg);
+
+        fclose(file);
     }
+
     LeaveCriticalSection(&g_logLock);
 }
 
-static void Log(const char* fmt, ...)
+static void Log(const char* format, ...)
 {
-    char b[1024];
-    va_list a;
-    va_start(a, fmt);
-    _vsnprintf_s(b, sizeof(b), _TRUNCATE, fmt, a);
-    va_end(a);
-    LogFile(b);
+    char message[1024] = {};
+
+    va_list args;
+    va_start(args, format);
+
+    _vsnprintf_s(
+        message,
+        sizeof(message),
+        _TRUNCATE,
+        format,
+        args);
+
+    va_end(args);
+
+    LogFile(message);
 }
 
 // ============================================================================
@@ -426,7 +595,22 @@ static void LoadConfig()
     g_cfgControllerLayout = CfgIntRange("ControllerLayout", 0, 0, 1);
     g_cfgControllerPitch = CfgBool("ControllerPitch", false);
     g_cfgStickDeadzone = CfgFloat("ControllerDeadzone", g_cfgStickDeadzone, 0.f, 0.9f);
-    g_cfgDpadModifier = CfgIntRange("ControllerDpadModifier", 1, 0, 3);
+    g_cfgDpadModifier = CfgIntRange("ControllerDpadModifier", 1, 0, 4);
+    g_cfgHideInactiveHand = CfgIntRange("HideInactiveHand", 1, 0, 1);
+    g_cfgHideCutsceneBars = CfgIntRange("HideCutsceneBars", 1, 0, 1);
+    g_cfgCutsceneBarVerts = CfgIntRange("CutsceneBarVertices", 29, 1, 4096);
+    g_cfgSwingEnabled = CfgIntRange("SwingEnabled", 1, 0, 1);
+    g_cfgSwingThreshold = CfgFloat("SwingThreshold", 3.6f, 0.5f, 20.0f);
+    g_cfgSwingRearm = CfgFloat("SwingRearm", 1.0f, 0.1f, 10.0f);
+    g_cfgSwingCooldownMs = CfgIntRange("SwingCooldownMs", 300, 0, 5000);
+    g_cfgSwingPulseMs = CfgIntRange("SwingPulseMs", 120, 20, 1000);
+    g_cfgSwingDelayMs = CfgIntRange("SwingDelayMs", 0, 0, 1000);
+    g_cfgSwingLog = CfgIntRange("SwingLog", 0, 0, 1);
+    g_cfgPitchServo = CfgIntRange("PitchServo", 1, 0, 1);
+    g_cfgPitchServoGain = CfgFloat("PitchServoGain", 0.030f, 0.001f, 0.500f);
+    g_cfgPitchServoDead = CfgFloat("PitchServoDeadzoneDeg", 2.0f, 0.0f, 30.0f);
+    g_cfgPitchServoMax = CfgFloat("PitchServoMax", 0.80f, 0.05f, 1.00f);
+    g_cfgDpadFlip = CfgIntRange("ControllerDpadFlip", 0, 0, 1);
     g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
     g_cfgControllerLog = CfgBool("ControllerLog", true);
     g_cfgJumpOnR3 = CfgBool("JumpOnR3", false);
@@ -578,9 +762,13 @@ static void LoadConfig()
         g_cfgDpadModifier == 0 ? "(off)" :
         g_cfgDpadModifier == 1 ? "(right thumbrest)" :
         g_cfgDpadModifier == 2 ? "(right stick click)" : "(left grip)");
+    CfgEcho("DpadFlip", "%d  %s", (int)g_cfgDpadFlip,
+        g_cfgDpadFlip ? "(left thumbrest + right stick)" : "(right thumbrest + left stick)");
     CfgEcho("StickYToDpad / Log", "%d / %d", (int)g_cfgStickYToDpad, (int)g_cfgControllerLog);
     CfgEcho("JumpOnR3", "%d  %s", (int)g_cfgJumpOnR3,
         g_cfgJumpOnR3 ? "(R3 jumps, zoom unbound)" : "(R3 is zoom, stock)");
+    CfgEcho("PauseChord", "%d  %s", (int)g_cfgPauseChord,
+        g_cfgPauseChord ? "(hold X+Y to pause)" : "(off, menu button only)");
 
     Log("[menus]");
     CfgEcho("EnableMenuScreen", "%d", (int)g_cfgMenuScreen);
@@ -595,6 +783,13 @@ static void LoadConfig()
     CfgEcho("EnableDrawHook", "%d", (int)g_cfgDrawHook);
     CfgEcho("EnableGameState", "%d", (int)g_cfgGameState);
     CfgEcho("HookInstanced", "%d", (int)g_cfgHookInstanced);
+    CfgEcho("HideInactiveHand", "%d", g_cfgHideInactiveHand);
+    CfgEcho("HideCutsceneBars", "%d  verts %d", g_cfgHideCutsceneBars, g_cfgCutsceneBarVerts);
+    CfgEcho("Swing", "%d  thr %.2f  rearm %.2f  cd %d  pulse %d",
+        g_cfgSwingEnabled, g_cfgSwingThreshold, g_cfgSwingRearm,
+        g_cfgSwingCooldownMs, g_cfgSwingPulseMs);
+    CfgEcho("PitchServo", "%d  gain %.3f  dead %.1f deg  max %.2f",
+        g_cfgPitchServo, g_cfgPitchServoGain, g_cfgPitchServoDead, g_cfgPitchServoMax);
     CfgEcho("SuppressIndexCounts", "'%s'", g_cfgSuppressList);
     CfgEcho("WeaponCounts", "'%s'  scale %.2f", g_cfgWeaponList, g_cfgWeaponScale);
     CfgEcho("HudCounts", "'%s'  scale %.2f", g_cfgHudList, g_cfgHudScale);
@@ -617,7 +812,7 @@ static DWORD WINAPI InitThread(LPVOID)
     // Bump this on every release. It is the first thing to check on any log a
     // stranger sends you -- "which build is this?" has already cost one round
     // trip in this project, and __DATE__/__TIME__ alone cannot answer it.
-    Log("BioshockVR version: 1.02");
+    Log("BioshockVR version: 1.0.3");
     Log("dllmain build: cleaned config  (%s %s)", __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};
@@ -626,6 +821,15 @@ static DWORD WINAPI InitThread(LPVOID)
     exeName = exeName ? exeName + 1 : exe;
 
     Log("host process : %s", exeName);
+
+    if (g_logRelocated)
+    {
+        Log("log path     : %s", g_logPath);
+        Log("log NOTE     : the game folder is not writable, so this log was");
+        Log("log NOTE     : written to LocalAppData instead. That is expected on");
+        Log("log NOTE     : a Program Files install without admin rights.");
+    }
+
     Log("pointer size : %u bytes  (4 == x86, correct)", (unsigned)sizeof(void*));
     Log("dll base     : 0x%08X", (unsigned)(uintptr_t)g_hSelf);
 

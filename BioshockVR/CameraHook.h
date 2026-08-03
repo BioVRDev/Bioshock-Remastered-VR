@@ -51,3 +51,4 @@ bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 // Re-applies the hands rotator from the RENDER thread, after the game tick has
 // had its say. Call once per Present.
 void CameraHook_LateHandsWrite();
+bool CameraHook_GetPitchError(float* outDeg);

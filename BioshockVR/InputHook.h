@@ -83,3 +83,4 @@ bool Input_GetTurnX(float* out);
 void Input_Tick();
 
 void Input_Remove();
+bool Input_WeaponWheelHeld();

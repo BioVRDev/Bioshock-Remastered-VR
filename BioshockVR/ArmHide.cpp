@@ -1,6 +1,13 @@
 // BioshockVR/ArmHide.cpp
 //
-// See ArmHide.h for what this does and why every write is guarded.
+// TWO features, one skeleton. See ArmHide.h.
+//
+//   1. SLEEVE HIDING       the ten forearm bones, always, both hands.
+//   2. INACTIVE HAND       the whole non-active hand, when only one is in use.
+//
+// They share LocateSkeleton() deliberately. Both write into the same bone
+// array, and every guard in this file -- the vtable checks, the owner check,
+// the 47-bone count, the dirty byte -- has to hold for both or neither.
 //
 // MEASURED LAYOUT (BioShock Remastered, Win32):
 //   AHands           + 0x3FC -> SkeletonInstance*
@@ -28,6 +35,7 @@
 extern void LogFile(const char* msg);
 extern int  g_cfgArmHideHandsVt;   // dllmain.cpp, ini-overridable
 extern int  g_cfgArmHideSkelVt;    // dllmain.cpp, ini-overridable
+extern int  g_cfgHideInactiveHand; // dllmain.cpp, HideInactiveHand
 
 static const unsigned kActorSkelOff = 0x3FC;
 static const unsigned kSkelActorOff = 0x04;
@@ -43,7 +51,22 @@ static const int kRightWrist = 27;
 static const int kLeftWrist = 6;
 static const int kRightSleeve[5] = { 24, 25, 26, 45, 46 };   // clavicle..twist
 static const int kLeftSleeve[5] = { 3,  4,  5, 22, 23 };
-// Untouched: right hand 27-44, left hand 6-21.
+
+// The full hand clusters, for INACTIVE HAND hiding. These are the bones the
+// sleeve pass deliberately leaves alone.
+static const int kLeftClusterFirst = 6;
+static const int kLeftClusterLast = 21;
+static const int kRightClusterFirst = 27;
+static const int kRightClusterLast = 44;
+
+// Same bone 43, same reason, different treatment. Zeroing its scale breaks the
+// attachment decomposition. It gets pushed far below the world instead, with
+// its scale left exactly as the engine wrote it.
+static const int kWeaponAttachBone = 43;
+static const float kFarBelow[3] = { 0.0f, 0.0f, -5000.0f };
+
+#define HAND_LEFT   0
+#define HAND_RIGHT  1
 
 struct BoneTransform
 {
@@ -69,6 +92,12 @@ static SavedBone g_saved[10] = {};
 static bool  g_hidden = false;
 static bool  g_loggedOk = false;
 static bool  g_loggedFail = false;
+
+// Inactive-hand state. Its own save array: the right cluster is 18 bones plus
+// 5 sleeve, which does not fit in the sleeve pass's ten slots.
+static SavedBone g_handSaved[24] = {};
+static int  g_hiddenHand = -1;
+static bool g_loggedHandOk = false;
 
 static void Log(const char* fmt, ...)
 {
@@ -144,6 +173,27 @@ static void ClearSaved()
     g_hidden = false;
 }
 
+static SavedBone* HandSlotFor(int index)
+{
+    for (int i = 0; i < 24; ++i)
+        if (g_handSaved[i].valid && g_handSaved[i].index == index)
+            return &g_handSaved[i];
+    for (int i = 0; i < 24; ++i)
+        if (!g_handSaved[i].valid)
+        {
+            g_handSaved[i].index = index;
+            return &g_handSaved[i];
+        }
+    return nullptr;
+}
+
+static void ClearHandSaved()
+{
+    memset(g_handSaved, 0, sizeof(g_handSaved));
+    for (int i = 0; i < 24; ++i) g_handSaved[i].index = -1;
+    g_hiddenHand = -1;
+}
+
 static bool LocateSkeleton(void* hands)
 {
     if (!hands) return false;
@@ -207,8 +257,14 @@ static bool LocateSkeleton(void* hands)
 
     if (hands != g_actor || skel != g_skeleton || bones != g_bones)
     {
+        // NEW SKELETON. Every saved reference pose belonged to the old one and
+        // is now meaningless -- restoring through a stale pointer after a level
+        // change silently corrupts reused memory, which is the single most
+        // expensive bug this file can produce. Drop the saves, do not replay
+        // them.
         g_actor = hands; g_skeleton = skel; g_bones = bones; g_boneCount = count;
         ClearSaved();
+        ClearHandSaved();
         Log(">>> ARMHIDE: skeleton locked: actor=0x%08X skel=0x%08X bones=0x%08X count=%d",
             (unsigned)(uintptr_t)hands, (unsigned)(uintptr_t)skel,
             (unsigned)(uintptr_t)bones, count);
@@ -300,6 +356,144 @@ bool ArmHide_Update(void* handsActor, bool hide)
     return true;
 }
 
+// ===========================================================================
+//  INACTIVE HAND
+//
+//  BioShock only ever uses one hand at a time -- the weapon hand or the
+//  plasmid hand. The other one is still animated and still drawn, hanging in
+//  the view doing nothing. This collapses it entirely.
+//
+//  Same technique as the sleeve pass, three differences:
+//
+//    1. The whole cluster goes, not just the forearm.
+//    2. Bone 43 is MOVED, never scaled. Zeroing the weapon attachment's scale
+//       makes the attachment path divide by zero and fling the weapon through
+//       the near plane -- exactly the failure the sleeve pass avoids by
+//       leaving 43 alone entirely.
+//    3. It has to be UNDONE when the player switches hands, and undone from a
+//       real engine pose. Driving a hand whose scale is still zero moves an
+//       invisible hand around.
+// ===========================================================================
+
+static void RestoreHand()
+{
+    if (!g_skeleton || !g_bones || g_hiddenHand < 0) return;
+
+    for (int i = 0; i < 24; ++i)
+    {
+        const SavedBone& s = g_handSaved[i];
+        if (!s.valid || s.index < 0 || s.index >= g_boneCount) continue;
+        SafeWrite(g_bones[s.index].position, s.position, sizeof(s.position));
+        SafeWrite(g_bones[s.index].scale, s.scale, sizeof(s.scale));
+    }
+
+    ClearHandSaved();
+    SetDirty(1);          // fresh engine pose for the hand coming back
+    Log(">>> HANDHIDE: inactive hand restored, engine evaluation requested.");
+}
+
+static bool HideBone(int idx, const float target[3])
+{
+    if (!g_bones || idx < 0 || idx >= g_boneCount) return false;
+
+    BoneTransform cur = {};
+    if (!SafeRead(&g_bones[idx], &cur, sizeof(cur))) return false;
+
+    // Same rule as the sleeve pass: only ever save a pose the ENGINE wrote.
+    // The second eye would otherwise save our own zeroes over the reference.
+    if (ScaleLooksNormal(cur.scale))
+    {
+        SavedBone* s = HandSlotFor(idx);
+        if (s)
+        {
+            memcpy(s->position, cur.position, sizeof(s->position));
+            memcpy(s->scale, cur.scale, sizeof(s->scale));
+            s->valid = true;
+        }
+    }
+
+    if (idx == kWeaponAttachBone)
+    {
+        // MOVE, do not scale. See the note above.
+        return SafeWrite(g_bones[idx].position, kFarBelow, sizeof(kFarBelow));
+    }
+
+    const float zero[3] = { 0.0f, 0.0f, 0.0f };
+    if (!SafeWrite(g_bones[idx].position, target, sizeof(float) * 3)) return false;
+    if (!SafeWrite(g_bones[idx].scale, zero, sizeof(zero))) return false;
+    return true;
+}
+
+// hand = HAND_LEFT / HAND_RIGHT: which hand to HIDE. -1 hides neither.
+static bool HideHand(int hand)
+{
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
+
+    const int first = (hand == HAND_LEFT) ? kLeftClusterFirst : kRightClusterFirst;
+    const int last = (hand == HAND_LEFT) ? kLeftClusterLast : kRightClusterLast;
+    const int* sleeve = (hand == HAND_LEFT) ? kLeftSleeve : kRightSleeve;
+    const int  wrist = (hand == HAND_LEFT) ? kLeftWrist : kRightWrist;
+
+    // Everything collapses onto the wrist, which is where the sleeve pass
+    // already anchors. Reading it BEFORE any write means the anchor is a real
+    // engine position rather than one of our own zeroes.
+    if (wrist < 0 || wrist >= g_boneCount) return false;
+    BoneTransform anchor = {};
+    if (!SafeRead(&g_bones[wrist], &anchor, sizeof(anchor))) return false;
+
+    bool any = false;
+    for (int b = first; b <= last; ++b) any = HideBone(b, anchor.position) || any;
+    for (int i = 0; i < 5; ++i)         any = HideBone(sleeve[i], anchor.position) || any;
+    return any;
+}
+
+bool ArmHide_UpdateInactiveHand(void* handsActor, int activeHand)
+{
+    if (!g_cfgHideInactiveHand) { ArmHide_ReleaseInactiveHand(); return false; }
+    if (!handsActor) return false;
+    if (!LocateSkeleton(handsActor)) return false;
+
+    if (activeHand != HAND_LEFT && activeHand != HAND_RIGHT)
+    {
+        RestoreHand();
+        return false;
+    }
+
+    const int inactive = 1 - activeHand;
+
+    // SWITCHED HANDS. Put the old one back from its reference pose first --
+    // otherwise it starts being driven again while its scale is still zero,
+    // and it moves around invisibly forever.
+    if (g_hiddenHand >= 0 && g_hiddenHand != inactive)
+    {
+        RestoreHand();
+        Log(">>> HANDHIDE: active hand changed -> now hiding %s",
+            inactive == HAND_LEFT ? "LEFT" : "RIGHT");
+    }
+
+    if (!HideHand(inactive)) return false;
+
+    g_hiddenHand = inactive;
+    SetDirty(0);          // stop the render pass rebuilding over us this frame
+
+    if (!g_loggedHandOk)
+    {
+        g_loggedHandOk = true;
+        Log(">>> HANDHIDE: inactive %s hand collapsed (bone %d moved, not scaled).",
+            inactive == HAND_LEFT ? "left" : "right", kWeaponAttachBone);
+    }
+    return true;
+}
+
+void ArmHide_ReleaseInactiveHand()
+{
+    // Only ever restore through a skeleton we have just re-verified. A pointer
+    // from the previous level looks valid and writes into reused memory.
+    if (g_hiddenHand < 0) return;
+    if (!g_skeleton || !g_bones) { ClearHandSaved(); return; }
+    RestoreHand();
+}
+
 void ArmHide_Reset()
 {
     g_actor = nullptr;
@@ -307,5 +501,6 @@ void ArmHide_Reset()
     g_bones = nullptr;
     g_boneCount = 0;
     ClearSaved();
+    ClearHandSaved();
     g_loggedFail = false;
 }

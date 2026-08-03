@@ -66,6 +66,12 @@
     <ClCompile Include="ArmHide.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Keybinds.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Swing.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="XRSession.h">
@@ -96,6 +102,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ArmHide.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Keybinds.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Swing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

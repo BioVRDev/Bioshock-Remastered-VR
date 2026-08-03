@@ -27,3 +27,5 @@ bool ArmHide_Update(void* handsActor, bool hide);
 // restore first: by the time a reset is reported the old actor may already be
 // destroyed and its address reused.
 void ArmHide_Reset();
+bool ArmHide_UpdateInactiveHand(void* handsActor, int activeHand);
+void ArmHide_ReleaseInactiveHand();

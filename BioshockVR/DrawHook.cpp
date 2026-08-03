@@ -673,6 +673,8 @@ static unsigned long long g_drawSum = 0, g_idxSum = 0, g_statFrames = 0;
 static bool     g_gameplayConfirmed = false;
 static int      g_gameplayRun = 0;
 
+extern int g_cfgHideCutsceneBars;
+extern int g_cfgCutsceneBarVerts;
 bool DrawHook_MenuUp() { return g_menuUp; }
 
 // ---- ANCHOR list ----------------------------------------------------------
@@ -1083,6 +1085,13 @@ static void PollKeys()
     kDiv = dDiv;
 }
 
+static DWORD g_cutsceneBarsUntil = 0;
+
+bool DrawHook_CutsceneBarsActive()
+{
+    return (LONG)(g_cutsceneBarsUntil - GetTickCount()) > 0;
+}
+
 // Shared front half of every hooked entry point. Returns true if the caller
 // should SKIP the real draw.
 static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
@@ -1137,6 +1146,26 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
             }
             else if (g_hudHost && g_curRT == g_hudHost)
             {
+                // CUTSCENE BARS. The 29 matters: health/EVE fills are also
+                // textureless GameSWF draws, at 5 vertices.
+                if (kind == KIND_DRAW &&
+                    count == (unsigned)g_cfgCutsceneBarVerts &&
+                    PSSrv0Res(ctx) == nullptr)
+                {
+                    g_cutsceneBarsUntil = GetTickCount() + 250;
+
+                    static DWORD lastBarLog = 0;
+                    const DWORD nowMs = GetTickCount();
+                    if (nowMs - lastBarLog >= 1000)
+                    {
+                        lastBarLog = nowMs;
+                        Log(">>> CUTSCENE BARS: textureless %u-vertex GameSWF draw%s",
+                            count, g_cfgHideCutsceneBars ? " -- SKIPPED" : "");
+                    }
+
+                    if (g_cfgHideCutsceneBars) return true;
+                }
+
                 if (kind >= 0 && kind <= 4) ++g_postByKind[kind];
 
                 // THE REDIRECT. Measured over 44,890 frames: every draw that

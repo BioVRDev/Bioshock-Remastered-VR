@@ -32,6 +32,7 @@
 
 #include "HandsProbe.h"
 #include "ArmHide.h"
+#include "Swing.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -1717,6 +1718,7 @@ void HandsProbe_Reset()
     // Drop the cached skeleton WITHOUT restoring: on a level change the old
     // actor may already be freed and its address handed to something else.
     ArmHide_Reset();
+    Swing_Reset();
 
     g_locOff = 0;
     g_pawn = nullptr;

@@ -538,6 +538,41 @@ static void HeadQuatToDeg(const float q[4], double& pitchDeg, double& yawDeg, do
 // logged this increment; NOT yet written to the camera.
 static double g_headPitch = 0.0, g_headYaw = 0.0, g_headRoll = 0.0;
 
+// ---- HIDDEN PITCH SERVO ---------------------------------------------------
+// The wrench does NOT use the aim ray. Its Havok collision phantom is aimed
+// from the engine's own internal view pitch -- so with right-stick Y dropped,
+// that pitch drifts and sticks (measured near -89 deg), and the wrench hits the
+// floor no matter where you are looking.
+//
+// We do NOT write the pitch memory directly. We publish the ERROR here and feed
+// proportional right-stick Y through the normal input path, so the engine's own
+// clamps and pitch behaviour all still apply.
+static volatile float g_pitchErrDeg = 0.0f;    // HMD pitch - engine pitch
+static volatile long  g_pitchErrOk = 0;
+
+static void PublishPitchError(int engineRot)
+{
+    // UE rotator: 65536 units == 360 deg, and it wraps. Normalise to +/-180
+    // before converting, or a stored 60000 reads as +329 instead of -31.
+    int p = engineRot & 0xFFFF;
+    if (p > 32767) p -= 65536;
+    const double engineDeg = (double)p / 182.0444;
+
+    double err = g_headPitch - engineDeg;
+    while (err > 180.0)  err -= 360.0;
+    while (err < -180.0) err += 360.0;
+
+    g_pitchErrDeg = (float)err;
+    g_pitchErrOk = 1;
+}
+
+bool CameraHook_GetPitchError(float* outDeg)
+{
+    if (!outDeg || !g_pitchErrOk) return false;
+    *outDeg = g_pitchErrDeg;
+    return true;
+}
+
 // Positional tracking (6DOF). Offsets in cm, head-frame (right, up, forward),
 // latched once per pair with the rotation. Origin = recenter point.
 static double g_posRight = 0.0, g_posUp = 0.0, g_posFwd = 0.0;
@@ -1301,6 +1336,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             const bool hide = g_cfgHideArmSleeves && g_cfg6DofHands &&
                 !theater && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
+
+            if (g_cfg6DofHands && !theater && !GameState_Paused())
+                ArmHide_UpdateInactiveHand(handsActor,
+                    HandsProbe_AbilityMode() ? 0 : 1);
+            else
+                ArmHide_ReleaseInactiveHand();
         }
         else ArmHide_Reset();
     }
@@ -1691,6 +1732,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         const int dP = RotDelta(a->pitch, g_aimLastWrote.pitch);
                         const int dY = RotDelta(a->yaw, g_aimLastWrote.yaw);
                         const int dR = RotDelta(a->roll, g_aimLastWrote.roll);
+
+                        // Published BEFORE we overwrite the rendered pitch, so
+                        // the error reflects what the ENGINE currently believes.
+                        PublishPitchError(a->pitch);
 
                         g_aimGameDPitch += fabs((double)dP);
                         g_gameDYaw = dY;        // S77, read by the turn gate below

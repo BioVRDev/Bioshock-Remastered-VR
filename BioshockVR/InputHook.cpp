@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
+#include "Swing.h"
 
 #include <MinHook.h>
 
@@ -32,11 +33,20 @@ extern bool  g_cfgController;        // EnableController        default 1
 extern int   g_cfgControllerMode;    // 0 = merge, 1 = replace  default 0
 extern bool  g_cfgControllerPitch;   // emit right-stick Y      default 0
 extern bool  g_cfgStickYToDpad;      // dead Y axis -> d-pad    default 0
+extern int   g_cfgPitchServo;
+extern float g_cfgPitchServoGain;
+extern float g_cfgPitchServoDead;
+extern float g_cfgPitchServoMax;
+extern int   g_cfgSwingLog;
+bool CameraHook_GetPitchError(float* outDeg);
+
 extern float g_cfgStickDeadzone;     // radial, 0..0.9          default 0.15
 extern bool  g_cfgControllerLog;     // heartbeat               default 1
 extern int   g_cfgDpadModifier;      // 0 off / 1 thumbrest / 2 R3 / 3 Lgrip  default 1
+extern int   g_cfgDpadFlip;          // 1 = left thumbrest + right stick
 extern int   g_cfgControllerLayout;  // 0 literal / 1 jump-on-A       default 0
 extern bool  g_cfgJumpOnR3;          // R3 -> jump instead of zoom    default 0
+extern int   g_cfgPauseChord;        // 1 = X+Y chord pauses
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
 bool GameState_Paused();             // GameState.cpp
@@ -137,6 +147,7 @@ struct PadState
     bool  a, b, x, y;
     bool  menu, thumbL, thumbR;
     bool  restR;             // right thumbrest capacitive touch
+    bool  restL;             // left thumbrest capacitive touch
     bool  active;            // false == session not focused, publish neutral
 };
 
@@ -207,6 +218,14 @@ bool Input_GetTurnX(float* out)
     return true;
 }
 
+// The weapon/plasmid radial owns both sticks while a grip is held.
+bool Input_WeaponWheelHeld()
+{
+    PadState s;
+    if (!ReadPad(&s) || !s.active) return false;
+    return (s.gripL > 0.5f) || (s.gripR > 0.5f);
+}
+
 // ---------------------------------------------------------------- OpenXR side
 
 static XrInstance g_inst = XR_NULL_HANDLE;
@@ -223,6 +242,7 @@ static XrAction g_aX = XR_NULL_HANDLE, g_aY = XR_NULL_HANDLE;
 static XrAction g_aMenu = XR_NULL_HANDLE;
 static XrAction g_aThumbL = XR_NULL_HANDLE, g_aThumbR = XR_NULL_HANDLE;
 static XrAction g_aRestR = XR_NULL_HANDLE;
+static XrAction g_aRestL = XR_NULL_HANDLE;
 
 // Created now, deliberately unused. Attaching is one-shot -- adding these later
 // costs a session restart, and motion controls will want every one of them.
@@ -298,6 +318,7 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
     MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_l", "Left Stick Click", &g_aThumbL);
     MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_r", "Right Stick Click", &g_aThumbR);
     MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "rest_r", "Right Thumbrest", &g_aRestR);
+    MakeAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "rest_l", "Left Thumbrest", &g_aRestL);
 
     MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim_l", "Left Aim", &g_aAimPoseL);
     MakeAction(XR_ACTION_TYPE_POSE_INPUT, "aim_r", "Right Aim", &g_aAimPoseR);
@@ -328,6 +349,7 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
             { g_aThumbL,    P("/user/hand/left/input/thumbstick/click") },
             { g_aThumbR,    P("/user/hand/right/input/thumbstick/click") },
             { g_aRestR,     P("/user/hand/right/input/thumbrest/touch") },
+            { g_aRestL,     P("/user/hand/left/input/thumbrest/touch") },
             { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
             { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
             { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
@@ -519,6 +541,7 @@ void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
     s.thumbL = GetBool(g_aThumbL);
     s.thumbR = GetBool(g_aThumbR);
     s.restR = GetBool(g_aRestR);
+    s.restL = GetBool(g_aRestL);
 
     PublishPad(s);
 
@@ -625,7 +648,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     bool mod = false;
     switch (g_cfgDpadModifier)
     {
-    case 1: mod = s.restR;   break;
+    case 1: mod = g_cfgDpadFlip ? s.restL : s.restR;   break;
+    case 4: mod = s.restL;   break;      // explicit left thumbrest
     case 2: mod = s.thumbR;  break;
     case 3: mod = (s.gripL > 0.5f); break;
     default: mod = false;    break;
@@ -641,9 +665,13 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         // Dominant axis only -- diagonals on a thumbstick are too easy to hit
         // by accident when the intent is a single direction.
         int dir = 0;   // 1 up, 2 down, 3 left, 4 right
-        const float ax = fabsf(s.moveX), ay = fabsf(s.moveY);
-        if (ay >= 0.5f && ay >= ax)      dir = (s.moveY > 0.0f) ? 1 : 2;
-        else if (ax >= 0.5f && ax > ay)  dir = (s.moveX > 0.0f) ? 4 : 3;
+        // FLIPPED: read the RIGHT stick and let the left keep walking you
+        // around. Unflipped keeps the original left-stick behaviour.
+        const float dx = g_cfgDpadFlip ? s.turnX : s.moveX;
+        const float dy = g_cfgDpadFlip ? s.turnY : s.moveY;
+        const float ax = fabsf(dx), ay = fabsf(dy);
+        if (ay >= 0.5f && ay >= ax)      dir = (dy > 0.0f) ? 1 : 2;
+        else if (ax >= 0.5f && ax > ay)  dir = (dx > 0.0f) ? 4 : 3;
 
         // S38: HELD, not pulsed. The first version emitted a 120ms pulse to
         // avoid weapon-switch spam -- but weapons are on the RADIAL in this
@@ -660,7 +688,13 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         default: break;
         }
 
-        // left stick contributes NO movement while the modifier is held
+        // In FLIPPED mode the left stick still walks -- only turning is eaten.
+        if (g_cfgDpadFlip)
+        {
+            out->Gamepad.sThumbLX = ToAxis(s.moveX);
+            out->Gamepad.sThumbLY = ToAxis(s.moveY);
+        }
+        // Unflipped: left stick contributes NO movement while held.
     }
     else
     {
@@ -668,7 +702,10 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         out->Gamepad.sThumbLY = ToAxis(s.moveY);
     }
 
-    out->Gamepad.sThumbRX = ToAxis(s.turnX);
+    // Flipped mode owns the right stick while the modifier is held, so the
+    // d-pad direction must not ALSO snap-turn you.
+    if (!(mod && g_cfgDpadFlip))
+        out->Gamepad.sThumbRX = ToAxis(s.turnX);
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a
@@ -676,7 +713,37 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // entries are unreachable.
     const bool radialOpen = (s.gripL > 0.5f) || (s.gripR > 0.5f);
     if (g_cfgControllerPitch || menuUp || radialOpen)
+    {
         out->Gamepad.sThumbRY = ToAxis(s.turnY);
+    }
+    else if (g_cfgPitchServo)
+    {
+        // Drive the engine's hidden pitch toward where you are actually
+        // looking. Melee aims from that pitch, so without this the wrench
+        // lands wherever the engine last happened to leave it.
+        float err = 0.0f;
+        if (CameraHook_GetPitchError(&err))
+        {
+            if (err > g_cfgPitchServoDead || err < -g_cfgPitchServoDead)
+            {
+                float v = err * g_cfgPitchServoGain;
+                if (v > g_cfgPitchServoMax) v = g_cfgPitchServoMax;
+                if (v < -g_cfgPitchServoMax) v = -g_cfgPitchServoMax;
+                out->Gamepad.sThumbRY = ToAxis(v);
+
+                if (g_cfgSwingLog)
+                {
+                    static ULONGLONG lastP = 0;
+                    const ULONGLONG nowP = GetTickCount64();
+                    if (nowP - lastP > 1000)
+                    {
+                        lastP = nowP;
+                        Log("  PITCHSERVO: err %+.1f deg -> RY %+.2f", err, v);
+                    }
+                }
+            }
+        }
+    }
     else if (g_cfgStickYToDpad && !mod)
     {
         if (s.turnY > 0.6f) out->Gamepad.wButtons |= XI_DPAD_UP;
@@ -685,6 +752,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
 
     out->Gamepad.bLeftTrigger = ToTrigger(s.trigL);
     out->Gamepad.bRightTrigger = ToTrigger(s.trigR);
+    if (Swing_RightTriggerActive()) out->Gamepad.bRightTrigger = 255;
 
     // Logical actions first, THEN the XInput bit the game expects for each.
     bool aUse, aHypo, aHack, aJump;
@@ -712,7 +780,28 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // Touch has ONE application menu button, and the game wants both START
     // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
     // modifier disambiguates: menu alone pauses, modifier+menu is context help.
+    // PAUSE. The menu button is not reliably ours: SteamVR takes the left one
+    // for its dashboard, the Meta runtime eats the right one, and Quest's
+    // "swap Oculus and Menu button" accessibility option sends BOTH to the
+    // system. X+Y together is reserved by nobody, on any runtime.
+    bool chordPause = false;
+    if (g_cfgPauseChord && s.x && s.y)
+    {
+        chordPause = true;
+        btn &= ~(WORD)(XI_A | XI_B | XI_X | XI_Y);   // don't hack+jump mid-pause
+
+        static bool wasChord = false;
+        if (!wasChord) { wasChord = true; Log("  PAUSE: X+Y chord -> START"); }
+    }
+
+    // The d-pad modifier disambiguates the chord exactly like it does the menu
+    // button: chord alone = START (pause), modifier + chord = BACK, which is
+    // ShowContextHelp -- the "WHAT IS THIS?" prompt. HOLDING modifier + chord
+    // reaches the MAP, which ShockPlayerController gates behind HintButtonHeld
+    // with HintHoldTime=0.5s. Held rather than pulsed, so the hold accumulates.
     if (s.menu)          btn |= (mod ? XI_BACK : XI_START);
+    if (chordPause)      btn |= (mod ? XI_BACK : XI_START);
+    if (s.thumbL)        btn |= XI_LTHUMB;
     if (s.thumbL)        btn |= XI_LTHUMB;
 
     // A control used as the modifier must not ALSO send its normal button, or
