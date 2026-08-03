@@ -290,11 +290,37 @@ static void CacheHmdGeometry()
 
         float l, r, t, b;
         g_vr.sys->GetProjectionRaw((EVREye)e, &l, &r, &t, &b);
-        // OpenVR raw projection uses y-down tangents: top is negative.
-        // Convert to up-positive: U = -t, D = -b. Guard against the opposite
-        // convention just in case.
-        float U = -t, D = -b;
-        if (U < D) { const float tmp = U; U = D; D = tmp; }
+
+        // OPENVR'S PARAMETER NAMES ARE BACKWARDS. Valve's own documentation
+        // says so: pfTop is the BOTTOM (-Y) clipping edge and pfBottom is the
+        // TOP (+Y) edge. A normal headset returns pfTop ~ -1, pfBottom ~ +1.
+        //
+        // So the conversion to OpenXR (up positive, down negative) is a direct
+        // assignment, NOT a negation:
+        //     U = b        D = t
+        //
+        // The old code did U = -t, D = -b. On a VERTICALLY SYMMETRIC headset
+        // that is arithmetically identical (b == -t), which is why this went
+        // unnoticed. On an ASYMMETRIC one it MIRRORS the vertical optical
+        // centre -- and a reflected principal point turns into vertical scale
+        // and keystone during the compositor's rotational reprojection. That
+        // is the "look down and it shrinks, look up and it stretches" bug.
+        //
+        // The old `if (U < D) swap` guard is deliberately GONE. It could not
+        // detect a mirrored centre -- both orderings look valid -- so all it
+        // did was make a wrong convention look plausible. Validate and shout
+        // instead.
+        const float U = b;
+        const float D = t;
+
+        SLOG("eye %d GetProjectionRaw: L%.4f R%.4f pfTop%.4f pfBottom%.4f",
+            e, l, r, t, b);
+
+        if (!(l < r && D < U))
+            SLOG("!!! eye %d INVALID projection: L%.4f R%.4f D%.4f U%.4f -- "
+                "this headset does not follow the documented OpenVR convention.",
+                e, l, r, D, U);
+
         g_st.rawL[e] = l; g_st.rawR[e] = r; g_st.rawU[e] = U; g_st.rawD[e] = D;
 
         g_st.eyeFov[e].angleLeft  = atanf(l);

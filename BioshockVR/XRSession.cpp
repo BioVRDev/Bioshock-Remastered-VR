@@ -976,9 +976,11 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         xh.pose.position = { lp[0] + world[0],
                                              lp[1] + world[1],
                                              lp[2] + world[2] };
-                        // Face the viewer. A world-space quad at identity would
-                        // be edge-on from most angles.
-                        xh.pose.orientation = { lq[0], lq[1], lq[2], lq[3] };
+                        // Face the CURRENT viewer, not the latched one. lq is
+                        // where the head was when the game image was rendered;
+                        // using it leaves the quad frozen at that angle while
+                        // you keep moving. views[0] is this frame's pose.
+                        xh.pose.orientation = views[0].pose.orientation;
                     }
                     else
                     {

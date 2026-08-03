@@ -173,6 +173,8 @@ int   g_cfgSwingCooldownMs = 180;
 int   g_cfgSwingPulseMs = 120;
 int   g_cfgSwingDelayMs = 0;
 int   g_cfgSwingLog = 0;
+float g_cfgSwingOutFrac = 0.60f;
+float g_cfgSwingTravel = 0.15f;
 float g_cfgGripThreshold = 0.80f;
 float g_cfgGripHysteresis = 0.15f;
 int   g_cfgHeadRelativeMove = 1;
@@ -610,6 +612,8 @@ static void LoadConfig()
     g_cfgSwingPulseMs = CfgIntRange("SwingPulseMs", 120, 20, 1000);
     g_cfgSwingDelayMs = CfgIntRange("SwingDelayMs", 0, 0, 1000);
     g_cfgSwingLog = CfgIntRange("SwingLog", 0, 0, 1);
+    g_cfgSwingOutFrac = CfgFloat("SwingOutwardFraction", 0.60f, 0.0f, 1.0f);
+    g_cfgSwingTravel = CfgFloat("SwingTravelMetres", 0.15f, 0.0f, 1.0f);
     g_cfgGripThreshold = CfgFloat("GripThreshold", 0.80f, 0.30f, 0.99f);
     g_cfgGripHysteresis = CfgFloat("GripHysteresis", 0.15f, 0.00f, 0.50f);
     g_cfgHeadRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
@@ -793,9 +797,10 @@ static void LoadConfig()
     CfgEcho("HookInstanced", "%d", (int)g_cfgHookInstanced);
     CfgEcho("HideInactiveHand", "%d", g_cfgHideInactiveHand);
     CfgEcho("HideCutsceneBars", "%d  verts %d", g_cfgHideCutsceneBars, g_cfgCutsceneBarVerts);
-    CfgEcho("Swing", "%d  thr %.2f  rearm %.2f  cd %d  pulse %d",
+    CfgEcho("Swing", "%d  thr %.2f  rearm %.2f  cd %d  pulse %d  out %.2f  travel %.2f",
         g_cfgSwingEnabled, g_cfgSwingThreshold, g_cfgSwingRearm,
-        g_cfgSwingCooldownMs, g_cfgSwingPulseMs);
+        g_cfgSwingCooldownMs, g_cfgSwingPulseMs,
+        g_cfgSwingOutFrac, g_cfgSwingTravel);
     CfgEcho("Grip", "on %.2f  off %.2f", g_cfgGripThreshold,
         g_cfgGripThreshold - g_cfgGripHysteresis);
     CfgEcho("HeadRelativeMove", "%d", g_cfgHeadRelativeMove);

@@ -39,9 +39,13 @@ extern int   g_cfgSwingCooldownMs;   // SwingCooldownMs
 extern int   g_cfgSwingPulseMs;      // SwingPulseMs
 extern int   g_cfgSwingDelayMs;      // SwingDelayMs
 extern int   g_cfgSwingLog;          // SwingLog
+extern float g_cfgSwingOutFrac;      // how much of the speed must be outward
+extern float g_cfgSwingTravel;       // metres of hand travel required
 
 static bool  g_armed = true;
 static bool  g_havePrev = false;
+static float g_armPos[3] = {};      // where the hand was when it re-armed
+static bool  g_haveArmPos = false;
 static float g_prevRel[3] = {};
 static ULONGLONG g_prevTime = 0;
 static ULONGLONG g_cooldownUntil = 0;
@@ -119,7 +123,39 @@ void Swing_Update()
     memcpy(g_prevRel, rel, sizeof(rel));
     g_prevTime = now;
 
-    if (speed <= g_cfgSwingRearm) g_armed = true;
+    if (speed <= g_cfgSwingRearm)
+    {
+        g_armed = true;
+        // Remember where the hand settled. Travel is measured from HERE, so a
+        // wrist flick cannot accumulate enough distance to count as a swing.
+        memcpy(g_armPos, rel, sizeof(g_armPos));
+        g_haveArmPos = true;
+    }
+
+    // ---- DIRECTION -------------------------------------------------------
+    // Scalar speed has no direction, so a fast wind-up BACKWARD looked
+    // identical to the forward strike. The game then started its attack early
+    // and evaluated collision after the hand had swung down -- which is why it
+    // hit the floor about half the time while the trigger was accurate.
+    //
+    // rel is hand-minus-head, so normalising it gives the outward direction
+    // from your body. A real strike has a large positive component along it.
+    float outward = 0.0f;
+    {
+        const float rl = sqrtf(rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]);
+        if (rl > 1e-4f)
+            outward = (dx * rel[0] + dy * rel[1] + dz * rel[2]) / (rl * dt);
+    }
+
+    // ---- TRAVEL ----------------------------------------------------------
+    float travel = 0.0f;
+    if (g_haveArmPos)
+    {
+        const float tx = rel[0] - g_armPos[0];
+        const float ty = rel[1] - g_armPos[1];
+        const float tz = rel[2] - g_armPos[2];
+        travel = sqrtf(tx * tx + ty * ty + tz * tz);
+    }
 
     // Peak speed once a second, so "it never fires" becomes a number.
     if (g_cfgSwingLog)
@@ -130,8 +166,9 @@ void Swing_Update()
         if (now - lastPeak > 1000)
         {
             lastPeak = now;
-            Log("  SWING: peak %.2f m/s (need %.2f)  armed=%d slot=%d",
-                peak, g_cfgSwingThreshold, (int)g_armed, HandsProbe_WeaponSlot());
+            Log("  SWING: peak %.2f m/s (need %.2f)  out %+.2f  travel %.2f m  armed=%d slot=%d",
+                peak, g_cfgSwingThreshold, outward, travel,
+                (int)g_armed, HandsProbe_WeaponSlot());
             peak = 0.0f;
         }
     }
@@ -149,7 +186,11 @@ void Swing_Update()
         GameState_Theater() ||
         Input_WeaponWheelHeld();
 
-    if (blocked || !g_armed || speed < g_cfgSwingThreshold || now < g_cooldownUntil)
+    const bool goodDir = (outward >= g_cfgSwingThreshold * g_cfgSwingOutFrac);
+    const bool goodTravel = (travel >= g_cfgSwingTravel);
+
+    if (blocked || !g_armed || speed < g_cfgSwingThreshold ||
+        !goodDir || !goodTravel || now < g_cooldownUntil)
     {
         if (g_cfgSwingLog && speed >= g_cfgSwingThreshold && blocked)
         {
