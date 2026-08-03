@@ -167,19 +167,20 @@ int   g_cfgHideInactiveHand = 1;   // HideInactiveHand
 int   g_cfgHideCutsceneBars = 1;   // HideCutsceneBars
 int   g_cfgCutsceneBarVerts = 29;  // CutsceneBarVertices
 int   g_cfgSwingEnabled = 1;
-float g_cfgSwingThreshold = 3.6f;
-float g_cfgSwingRearm = 1.0f;
-int   g_cfgSwingCooldownMs = 300;
+float g_cfgSwingThreshold = 2.0f;
+float g_cfgSwingRearm = 1.5f;
+int   g_cfgSwingCooldownMs = 180;
 int   g_cfgSwingPulseMs = 120;
 int   g_cfgSwingDelayMs = 0;
 int   g_cfgSwingLog = 0;
 float g_cfgGripThreshold = 0.80f;
 float g_cfgGripHysteresis = 0.15f;
 int   g_cfgHeadRelativeMove = 1;
-int   g_cfgPitchServo = 1;
+int   g_cfgPitchServo = 0;   // OFF: feeding RY back in fights the head-aim accumulator and freezes the view. See CameraHook.
 float g_cfgPitchServoGain = 0.030f;
 float g_cfgPitchServoDead = 2.0f;
 float g_cfgPitchServoMax = 0.80f;
+int   g_cfgXhFromShot = 1;   // CrosshairFromShot
 
 // ============================================================================
 //  LOGGING
@@ -603,9 +604,9 @@ static void LoadConfig()
     g_cfgHideCutsceneBars = CfgIntRange("HideCutsceneBars", 1, 0, 1);
     g_cfgCutsceneBarVerts = CfgIntRange("CutsceneBarVertices", 29, 1, 4096);
     g_cfgSwingEnabled = CfgIntRange("SwingEnabled", 1, 0, 1);
-    g_cfgSwingThreshold = CfgFloat("SwingThreshold", 3.6f, 0.5f, 20.0f);
-    g_cfgSwingRearm = CfgFloat("SwingRearm", 1.0f, 0.1f, 10.0f);
-    g_cfgSwingCooldownMs = CfgIntRange("SwingCooldownMs", 300, 0, 5000);
+    g_cfgSwingThreshold = CfgFloat("SwingThreshold", 2.0f, 0.5f, 20.0f);
+    g_cfgSwingRearm = CfgFloat("SwingRearm", 1.5f, 0.1f, 10.0f);
+    g_cfgSwingCooldownMs = CfgIntRange("SwingCooldownMs", 180, 0, 5000);
     g_cfgSwingPulseMs = CfgIntRange("SwingPulseMs", 120, 20, 1000);
     g_cfgSwingDelayMs = CfgIntRange("SwingDelayMs", 0, 0, 1000);
     g_cfgSwingLog = CfgIntRange("SwingLog", 0, 0, 1);
@@ -616,6 +617,7 @@ static void LoadConfig()
     g_cfgPitchServoGain = CfgFloat("PitchServoGain", 0.030f, 0.001f, 0.500f);
     g_cfgPitchServoDead = CfgFloat("PitchServoDeadzoneDeg", 2.0f, 0.0f, 30.0f);
     g_cfgPitchServoMax = CfgFloat("PitchServoMax", 0.80f, 0.05f, 1.00f);
+    g_cfgXhFromShot = CfgIntRange("CrosshairFromShot", 1, 0, 1);
     g_cfgDpadFlip = CfgIntRange("ControllerDpadFlip", 0, 0, 1);
     g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
     g_cfgControllerLog = CfgBool("ControllerLog", true);
@@ -751,8 +753,8 @@ static void LoadConfig()
         g_cfgHudPitchDeg, g_cfgHudYawDeg);
     CfgEcho("DisableReticle", "%d   engine ptr 0x%X  exec 0x%X",
         (int)g_cfgDisableReticle, g_cfgEngPtrRva, g_cfgEngExecRva);
-    CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m", (int)g_cfgCrosshair,
-        g_cfgXhSize * 1000.f, g_cfgXhDist);
+    CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m  fromShot=%d", (int)g_cfgCrosshair,
+        g_cfgXhSize * 1000.f, g_cfgXhDist, g_cfgXhFromShot);
 
     Log("[controller]");
     CfgEcho("EnableController", "%d  mode=%s", (int)g_cfgController,

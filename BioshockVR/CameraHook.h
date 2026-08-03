@@ -55,3 +55,7 @@ void CameraHook_LateHandsWrite();
 bool CameraHook_GetPitchError(float* outDeg);
 
 bool CameraHook_GetHeadYawOffset(float* outDeg);
+
+// Direction the shot ACTUALLY goes, in XR head-local axes. False until the
+// head-aim write has run at least once.
+bool CameraHook_GetShotDir(float out[3]);

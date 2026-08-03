@@ -705,6 +705,66 @@ static FRotator ComposeHeadLocal(const FRotator& base,
     return BasisToRotator(MulBasis(M, H));
 }
 
+// ---- APPLIED SHOT DIRECTION ----------------------------------------------
+// The crosshair used to rebuild the aim itself on the render thread from a
+// fresh controller pose. That is a SECOND calculation: it re-applied
+// CursorOffsetN but skipped the clamp and the smoothing, so the dot and the
+// shot could disagree even with identical settings.
+//
+// Now the game thread publishes the direction it ACTUALLY wrote into the aim
+// field, expressed relative to the view it ACTUALLY rendered. One calculation,
+// no second algebra to drift.
+//
+// MUST live below RotatorToBasis and struct Basis -- it uses both.
+//
+// Published in XR head-local axes (+x right, +y up, -z forward) so the render
+// thread can use it directly as a head-locked quad position.
+static volatile long g_shotSeq = 0;
+static float         g_shotDir[3] = { 0.f, 0.f, -1.f };
+static volatile long g_shotOk = 0;
+
+static void PublishShotDir(const FRotator& viewRot, const FRotator& aimRot)
+{
+    const Basis V = RotatorToBasis(viewRot);
+    const Basis A = RotatorToBasis(aimRot);
+    const Vec3  s = A.forward;                 // where the shot goes, world space
+
+    // Project onto the view's own axes -> direction relative to the view.
+    const double f = s.x * V.forward.x + s.y * V.forward.y + s.z * V.forward.z;
+    const double r = s.x * V.right.x + s.y * V.right.y + s.z * V.right.z;
+    const double u = s.x * V.up.x + s.y * V.up.y + s.z * V.up.z;
+
+    // UE (fwd,right,up) -> XR head-local (+x right, +y up, -z forward).
+    double x = r, y = u, z = -f;
+    const double n = sqrt(x * x + y * y + z * z);
+    if (n < 1e-6) return;
+    x /= n; y /= n; z /= n;
+
+    _InterlockedIncrement(&g_shotSeq);         // odd == writing
+    MemoryBarrier();
+    g_shotDir[0] = (float)x;
+    g_shotDir[1] = (float)y;
+    g_shotDir[2] = (float)z;
+    MemoryBarrier();
+    _InterlockedIncrement(&g_shotSeq);         // even == done
+    g_shotOk = 1;
+}
+
+bool CameraHook_GetShotDir(float out[3])
+{
+    if (!out || !g_shotOk) return false;
+    for (int t = 0; t < 8; ++t)
+    {
+        const long s0 = g_shotSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        out[0] = g_shotDir[0]; out[1] = g_shotDir[1]; out[2] = g_shotDir[2];
+        MemoryBarrier();
+        if (g_shotSeq == s0) return true;
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------- the detour
 
 struct CallSite
@@ -2046,6 +2106,11 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     // still reaches the view through the compose above.
                     want.roll = g_aimBase.roll;
                 }
+
+                // The crosshair reads THIS -- the aim we are about to write,
+                // against the view we just composed. Both final, both from the
+                // same frame.
+                PublishShotDir(finalRot, want);
 
                 // S74: do NOT write during a cutscene. Always-writing latches
                 // the detector ON forever.

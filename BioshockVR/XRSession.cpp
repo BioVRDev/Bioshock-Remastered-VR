@@ -39,7 +39,9 @@ extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controll
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
+bool CameraHook_GetShotDir(float out[3]);
 extern float g_cfgCursorRot[3];
+extern int   g_cfgXhFromShot;   // 1 = use the published applied aim
 
 static void Log(const char* fmt, ...)
 {
@@ -883,9 +885,35 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // Accepted cost: this ignores the clamp and the smoothing, so
                     // the dot can trail the shot by the smoothing time and diverge
                     // past AimClampDeg. Bounded and small at 0.5 / 80 deg.
+                    // 
+                    // PREFERRED: the direction the game thread actually wrote
+                    // into the aim field, relative to the view it rendered.
+                    // Same CursorOffsetN, same plasmid correction, same clamp,
+                    // same smoothing -- so the dot cannot disagree with the
+                    // shot. CrosshairFromShot=0 restores the old independent
+                    // reconstruction below.
+                    bool usedShot = false;
+                    if (g_cfgXhFromShot && g_cfgAimSource == 1)
+                    {
+                        float sd[3];
+                        if (CameraHook_GetShotDir(sd))
+                        {
+                            dl[0] = sd[0]; dl[1] = sd[1]; dl[2] = sd[2];
+                            lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
+                            usedShot = true;
+
+                            static bool loggedShot = false;
+                            if (!loggedShot)
+                            {
+                                loggedShot = true;
+                                Log(">>> XR: CROSSHAIR = applied shot direction (one calculation)");
+                            }
+                        }
+                    }
+
                     HandPose hp = {};
                     const int xhHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
-                    const bool haveAim = (g_cfgAimSource == 1) &&
+                    const bool haveAim = !usedShot && (g_cfgAimSource == 1) &&
                         Input_GetHandPose(xhHand, &hp) && hp.aimValid;
                     if (haveAim)
                     {
@@ -915,7 +943,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         if (n > 1e-4f) { dl[0] /= n; dl[1] /= n; dl[2] /= n; }
                         lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
                     }
-                    else if (g_cfgAimSource != 1)
+                    else if (!usedShot && g_cfgAimSource != 1)
                     {
                         dl[0] = 0.f; dl[1] = 0.f; dl[2] = -1.f;      // motion aim off
                     }
@@ -925,9 +953,43 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // but shots still leave FROM the pawn's eye -- so the dot sat
                     // that far above every impact at every range. Drop the quad by
                     // the same amount and they coincide.
-                    xh.pose.position = { xd * dl[0],
-                                         xd * dl[1] - g_cfgHeightOffset * 0.01f,
-                                         xd * dl[2] };
+                    // WORLD-LOCKED, not head-locked. The direction above comes
+                    // from the head pose the image was RENDERED with; a
+                    // g_viewSpace quad is placed against the compositor's
+                    // NEWER predicted head. Two different heads = the dot
+                    // slides whenever you turn.
+                    //
+                    // Converting the point into the same latched pose the
+                    // projection layer uses removes the mismatch entirely: the
+                    // dot then sticks to the wall like a real point in the
+                    // world, which is also what makes it agree with the bullet
+                    // hole at any range.
+                    if (useLatched)
+                    {
+                        const float local[3] = { xd * dl[0],
+                                                 xd * dl[1] - g_cfgHeightOffset * 0.01f,
+                                                 xd * dl[2] };
+                        float world[3];
+                        XhQuatRotate(lq, local, world);
+
+                        xh.space = g_space;
+                        xh.pose.position = { lp[0] + world[0],
+                                             lp[1] + world[1],
+                                             lp[2] + world[2] };
+                        // Face the viewer. A world-space quad at identity would
+                        // be edge-on from most angles.
+                        xh.pose.orientation = { lq[0], lq[1], lq[2], lq[3] };
+                    }
+                    else
+                    {
+                        // No latched pose (camera not head-driven yet) -- fall
+                        // back to the old head-locked placement.
+                        xh.space = g_viewSpace;
+                        xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
+                        xh.pose.position = { xd * dl[0],
+                                             xd * dl[1] - g_cfgHeightOffset * 0.01f,
+                                             xd * dl[2] };
+                    }
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
                     layerCount = 2;
                 }
