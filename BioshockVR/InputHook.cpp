@@ -14,6 +14,23 @@
 // prints the raw call counts. If POLL shows getState=0 forever, the problem is
 // upstream of this file and the Bioshock.ini UseJoystick/UseController keys are
 // back on the table.
+// 
+// ============================================================================
+//  EVERY xr* FUNCTION CALLED HERE MUST BE EXPORTED BY THE SHIM.
+//
+//  BioshockVR.dll statically imports openxr_loader.dll. On the SteamVR path
+//  that file IS the shim, so a call to any function the shim does not export
+//  makes WINDOWS refuse to load BioshockVR.dll entirely -- and the loader
+//  reports it as "BioshockVR.dll not found beside dxgi.dll", which sends you
+//  looking for a missing file that is sitting right there.
+//
+//  MEASURED: xrGetCurrentInteractionProfile cost an evening exactly this way.
+//
+//  The shim's export list is the ProcEntry table at the bottom of
+//  shim_main.cpp. Check there before adding a call. If you need something
+//  outside that list, resolve it at RUNTIME via xrGetInstanceProcAddr -- a
+//  null return is harmless, a missing static import is fatal.
+// ============================================================================
 
 #include "InputHook.h"
 #include "CameraHook.h"
@@ -547,7 +564,30 @@ void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
     s.x = GetBool(g_aX);
     s.y = GetBool(g_aY);
     s.menu = GetBool(g_aMenu);
-    s.thumbL = GetBool(g_aThumbL);
+    // L3 DIAGNOSTIC. MEASURED: pressed repeatedly, appeared in zero PAD lines.
+    // GetBool collapses three different failures into one `false` -- API error,
+    // action inactive (no binding for this interaction profile), and simply not
+    // pressed all look identical. Separate them.
+    {
+        XrActionStateGetInfo gi = { XR_TYPE_ACTION_STATE_GET_INFO };
+        gi.action = g_aThumbL;
+        XrActionStateBoolean st = { XR_TYPE_ACTION_STATE_BOOLEAN };
+        const XrResult r = (g_aThumbL == XR_NULL_HANDLE)
+            ? XR_ERROR_HANDLE_INVALID
+            : xrGetActionStateBoolean(g_sess, &gi, &st);
+
+        static XrResult lastR = (XrResult)0x7FFFFFFF;
+        static XrBool32 lastA = 2, lastS = 2;
+        if (r != lastR || st.isActive != lastA || st.currentState != lastS)
+        {
+            lastR = r; lastA = st.isActive; lastS = st.currentState;
+            Log(">>> ACTION thumb_l: result=%d active=%d state=%d changed=%d",
+                (int)r, (int)st.isActive, (int)st.currentState,
+                (int)st.changedSinceLastSync);
+        }
+        s.thumbL = XR_SUCCEEDED(r) && st.isActive && st.currentState != XR_FALSE;
+    }
+
     s.thumbR = GetBool(g_aThumbR);
     s.restR = GetBool(g_aRestR);
     s.restL = GetBool(g_aRestL);
@@ -817,28 +857,20 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     if (aUse)            btn |= XI_A;             // XENON_A = Use
     if (aHypo)           btn |= XI_B;             // XENON_B = Med hypo
     if (aHack)           btn |= XI_X;             // XENON_X = Hack / Reload
-    if (aJump && !g_cfgPauseChord) btn |= XI_Y;   // see the note below
-    if (g_cfgPauseChord && s.thumbR) btn |= XI_Y; // R3 jumps instead
+
+    // Y is suppressed ONLY while X is actually held -- not permanently. Killing
+    // it outright also killed the hacking mini-game, which uses Y to speed up
+    // the pipe. The cost is that pressing Y a frame before X can produce one
+    // frame of jump on the way into a pause, which is a small hop and nothing
+    // worse. R3 stays available as a second jump either way.
+    if (aJump && !(g_cfgPauseChord && s.x)) btn |= XI_Y;
+    if (g_cfgPauseChord && s.thumbR)        btn |= XI_Y;
 
     // R3 -> JUMP. The game binds R3 to Zoom, which is unusable in VR anyway --
     // ADS drives ZoomedForegroundFOVAngle and breaks the ForegroundFov
     // calibration. ADDITIVE: the layout's normal jump button still jumps, so
     // this cannot take anything away.
     if (g_cfgJumpOnR3 && s.thumbR) btn |= XI_Y;
-
-    // With the pause chord on, Y CANNOT also be jump: you never press X and Y
-    // in the same frame, so the early one fires jump before the chord exists.
-    // R3 becomes the only jump. Announced once so this is never a mystery.
-    if (g_cfgPauseChord && !g_cfgJumpOnR3)
-    {
-        static bool once = false;
-        if (!once)
-        {
-            once = true;
-            Log("!!! ControllerPauseChord=1 needs Y free, so JUMP IS ON R3 ONLY.");
-            Log("!!! Set ControllerPauseChord=0 to put jump back on a face button.");
-        }
-    }
 
     // Touch has ONE application menu button, and the game wants both START
     // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
@@ -863,6 +895,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // X+Y alone = START (pause).
     if (s.menu)     btn |= (mod ? XI_BACK : XI_START);
     if (chordPause) btn |= (mod ? XI_BACK : XI_START);
+    if (s.thumbL)   btn |= XI_LTHUMB;
+    if (s.thumbL)   btn |= XI_LTHUMB;
 
     // A control used as the modifier must not ALSO send its normal button, or
     // every d-pad press would come with a stray R3 / LB. Same for one rebound

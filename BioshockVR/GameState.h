@@ -54,3 +54,4 @@ bool GameState_ScriptedSequence();
 void GameState_Reset();
 bool GameState_Cutscene();
 bool GameState_InGame();
+void* GameState_Pawn();

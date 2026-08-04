@@ -449,7 +449,9 @@ static bool HideHand(int hand)
 
 bool ArmHide_UpdateInactiveHand(void* handsActor, int activeHand)
 {
-    if (!g_cfgHideInactiveHand) { ArmHide_ReleaseInactiveHand(); return false; }
+    // The per-slot decision is made by the caller now, so this must not also
+    // gate on the global -- a slot override of 1 with the global at 0 would
+    // otherwise be ignored.
     if (!handsActor) return false;
     if (!LocateSkeleton(handsActor)) return false;
 

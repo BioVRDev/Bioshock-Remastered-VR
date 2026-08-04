@@ -610,6 +610,8 @@ static void ObservePause(const void* controller)
     if (paused != (prev != 0)) Log(">>> PAUSE: %s", paused ? "PAUSED" : "unpaused");
 }
 
+void* GameState_Pawn() { return g_pawn; }
+
 bool GameState_Paused() { return g_paused != 0; }
 
 // TRUE only while a gameplay Level is locked (a player pawn exists). On the main
@@ -822,24 +824,17 @@ void GameState_PitchSample(double degThisSecond)
 
     const long prev = g_cutscene;
 
-    // MEASURED 2026-07-26: ordinary combat injects 12.2, 17.7 and 40.4 deg/s,
-    // which is INSIDE the old "cutscene" band -- so the threshold cannot
-    // separate them and a rocket hit latched this ON, freezing view yaw while
-    // movement kept working. What still separates them is DURATION: every
-    // combat spike lasted ONE second; both measured cutscenes ran 10-11
-    // consecutive seconds. Four samples costs 2s of arming delay on a 10s
-    // cutscene and rejects every spike seen in that log.
+    // TELEMETRY ONLY. MEASURED: this latched ON during ordinary combat at
+    // 39.1 deg/s for 4 consecutive seconds, freezing g_aimBase so the game kept
+    // turning the player while the view did not follow -- then released two
+    // seconds later with a snap. Injected pitch cannot separate combat from a
+    // scripted camera, and the duration rule was not enough.
+    //
+    // g_cutscene is now only set by the ViewTarget path (currently dormant), so
+    // in practice cutscene handling is off. That is the pre-1.0.2 behaviour.
     if (hi >= 4 && !prev)
-    {
-        _InterlockedExchange(&g_cutscene, 1);
-        Log(">>> CUTSCENE: ON  (injected pitch %.1f deg/s, %d consecutive)",
+        Log("  PITCH: %.1f deg/s, %d consecutive (telemetry only, not latching)",
             degThisSecond, hi);
-    }
-    else if (lo >= 2 && prev)
-    {
-        _InterlockedExchange(&g_cutscene, 0);
-        Log(">>> CUTSCENE: off  (injected pitch %.1f deg/s)", degThisSecond);
-    }
 }
 
 // ============================================================================

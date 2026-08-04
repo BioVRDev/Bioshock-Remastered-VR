@@ -66,7 +66,11 @@ extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 extern int   g_cfgSnapTurn;
 extern float g_cfgSnapTurnDeg;
+extern int g_cfgHideHandSlot[9];
+extern int g_cfgHideInactiveHand;
+void* GameState_Pawn();
 
+int HandsProbe_WeaponSlot();
 bool GameState_Cutscene();   // GameState.cpp
 bool GameState_Theater();    // GameState.cpp
 extern bool g_cfgCutsceneTheater;   // dllmain.cpp
@@ -1375,6 +1379,38 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     GameState_Observe(pThis);
     HandsProbe_Observe(pThis, (const float*)CameraLocation, (const int*)CameraRotation);
 
+    // VIEWACTOR PROBE. The engine hands us the actor the view belongs to on
+    // EVERY call, and we have been ignoring it while inferring cutscenes from
+    // injected pitch -- which measurably false-fires in combat.
+    //
+    // NOT the same as the dead +0x450 / +0x620 / +0x914 scan: those were cached
+    // controller fields that always equalled the pawn. This is the live
+    // out-parameter of the call we are already inside.
+    {
+        void* const pawn = GameState_Pawn();
+        void* const actor = (ViewActor && IsMemoryValid(ViewActor, sizeof(void*)))
+            ? *ViewActor : nullptr;
+
+        void* actorVt = nullptr, * pawnVt = nullptr;
+        if (actor && IsMemoryValid(actor, sizeof(void*))) actorVt = *(void**)actor;
+        if (pawn && IsMemoryValid(pawn, sizeof(void*)))  pawnVt = *(void**)pawn;
+
+        const bool gameplayView = (actor && pawn) &&
+            (actor == pawn || (actorVt && actorVt == pawnVt));
+
+        static void* lastActor = (void*)~(uintptr_t)0;
+        static int   lastVerdict = -1;
+        if (actor != lastActor || (int)gameplayView != lastVerdict)
+        {
+            lastActor = actor;
+            lastVerdict = gameplayView ? 1 : 0;
+            Log(">>> VIEWACTOR: actor=0x%08X pawn=0x%08X actorVT=0x%08X pawnVT=0x%08X gameplay=%d",
+                (unsigned)(uintptr_t)actor, (unsigned)(uintptr_t)pawn,
+                (unsigned)(uintptr_t)actorVt, (unsigned)(uintptr_t)pawnVt,
+                gameplayView ? 1 : 0);
+        }
+    }
+
     // Evaluated ONCE per CalcView and reused below, so the two halves of this
     // function cannot disagree about which mode we are in mid-frame.
     const bool theater = TheaterMode();
@@ -1412,7 +1448,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 !theater && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
 
-            if (g_cfg6DofHands && !theater && !GameState_Paused())
+            // Per-weapon: the shotgun and Tommy gun read better two-handed, so
+            // the second hand can be kept for individual slots.
+            const int wslot = HandsProbe_WeaponSlot();
+            const bool hideHand = (wslot >= 0 && wslot <= 8)
+                ? (g_cfgHideHandSlot[wslot] != 0) : (g_cfgHideInactiveHand != 0);
+
+            if (hideHand && g_cfg6DofHands && !theater && !GameState_Paused())
                 ArmHide_UpdateInactiveHand(handsActor,
                     HandsProbe_AbilityMode() ? 0 : 1);
             else
@@ -1813,6 +1855,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         PublishPitchError(a->pitch);
 
                         g_aimGameDPitch += fabs((double)dP);
+
                         g_gameDYaw = dY;        // S77, read by the turn gate below
 
                         // CUTSCENE HEAD-OVERRIDE: during a scripted camera the
@@ -1885,137 +1928,150 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     }
                 }
 
-                // S75: RENDER-SIDE CUTSCENE TURN. MEASURED from the decompile:
-                // ShockPlayerController::Use pushes input context NullInput, so
-                // during the balcony the game discards the stick and no delta
-                // ever reaches Rotation. We read the stick ourselves and rotate
-                // only the VIEW -- Controller.Rotation is never touched, so the
-                // game's idea of where you point stays correct and scripted
-                // triggers still fire.
+                // DISABLED. S75/S78/S79 measurably made things worse: the
+                // "script outranks our offset" unwind fired three times in one
+                // session at 14.9, -44.0 and 56.5 degrees, dragging the view
+                // around during scripted events. Combined with the pitch-based
+                // cutscene latch it produced the camera-pull complaints.
+                //
+                // Reverting to the pre-1.0.2 policy: the game owns the camera
+                // during scripted events and the mod does not fight it. Manual
+                // turning during cutscenes will be rebuilt separately, against
+                // an authoritative signal rather than a stick heuristic.
+                if (false)
                 {
-                    static LARGE_INTEGER s_freq = {}, s_last = {};
-                    static double s_cutYaw = 0.0;          // rotator units
-                    const double kTurnDegPerSec = 90.0;    // raise/lower to taste
 
-                    if (!s_freq.QuadPart) QueryPerformanceFrequency(&s_freq);
-                    LARGE_INTEGER now; QueryPerformanceCounter(&now);
-                    const double dt = s_last.QuadPart
-                        ? (double)(now.QuadPart - s_last.QuadPart) / (double)s_freq.QuadPart
-                        : 0.0;
-                    s_last = now;
-
-                    static double s_pushSec = 0.0, s_deadSec = 0.0;
-                    static double s_liveSec = 0.0, s_idleSec = 0.0;
-                    static bool   s_ignored = false;
-
-                    // S79: the offset must never survive anything. MEASURED: it
-                    // reached -159.2 deg and rode straight through a save load,
-                    // leaving the view a half turn from the character -- hence
-                    // the inverted stick and the backwards head parallax.
-                    if (CameraHook_Starved() || DrawHook_MenuUp() || GameState_Paused())
+                    // S75: RENDER-SIDE CUTSCENE TURN. MEASURED from the decompile:
+                    // ShockPlayerController::Use pushes input context NullInput, so
+                    // during the balcony the game discards the stick and no delta
+                    // ever reaches Rotation. We read the stick ourselves and rotate
+                    // only the VIEW -- Controller.Rotation is never touched, so the
+                    // game's idea of where you point stays correct and scripted
+                    // triggers still fire.
                     {
-                        s_cutYaw = 0.0;
-                        s_ignored = false;
-                        s_pushSec = s_deadSec = s_liveSec = s_idleSec = 0.0;
-                    }
+                        static LARGE_INTEGER s_freq = {}, s_last = {};
+                        static double s_cutYaw = 0.0;          // rotator units
+                        const double kTurnDegPerSec = 90.0;    // raise/lower to taste
 
-                    float tx = 0.0f;
-                    const bool haveStick = Input_GetTurnX(&tx);
-                    const bool pushing = haveStick && fabsf(tx) > 0.30f;
-                    // 4 units == 0.02 deg. Deliberately SENSITIVE: ANY real
-                    // response must count. At 30 a gentle stick push during
-                    // normal play read as "ignored" -- five false arms before
-                    // the first cutscene even started.
-                    const bool gameMoved = (g_gameDYaw > 4 || g_gameDYaw < -4);
-                    const bool goodDt = (dt > 0.0 && dt < 0.25);
+                        if (!s_freq.QuadPart) QueryPerformanceFrequency(&s_freq);
+                        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                        const double dt = s_last.QuadPart
+                            ? (double)(now.QuadPart - s_last.QuadPart) / (double)s_freq.QuadPart
+                            : 0.0;
+                        s_last = now;
 
-                    if (goodDt)
-                    {
-                        if (pushing) { s_pushSec += dt; s_idleSec = 0.0; }
-                        else { s_pushSec = 0.0; s_idleSec += dt; }
+                        static double s_pushSec = 0.0, s_deadSec = 0.0;
+                        static double s_liveSec = 0.0, s_idleSec = 0.0;
+                        static bool   s_ignored = false;
 
-                        if (pushing && !gameMoved) s_deadSec += dt; else s_deadSec = 0.0;
-                        if (pushing && gameMoved) s_liveSec += dt; else s_liveSec = 0.0;
-                    }
-
-                    const bool blocked = DrawHook_MenuUp() || GameState_Paused();
-
-                    if (!s_ignored)
-                    {
-                        if (!blocked && s_pushSec > 0.30 && s_deadSec > 0.30)
-                            s_ignored = true;               // ARM
-                    }
-                    else
-                    {
-                        // RELEASE only for a real reason. Letting go of the
-                        // stick is NOT one -- that is what chattered 40 times.
-                        if (blocked || s_liveSec > 0.25 || s_idleSec > 5.0)
+                        // S79: the offset must never survive anything. MEASURED: it
+                        // reached -159.2 deg and rode straight through a save load,
+                        // leaving the view a half turn from the character -- hence
+                        // the inverted stick and the backwards head parallax.
+                        if (CameraHook_Starved() || DrawHook_MenuUp() || GameState_Paused())
+                        {
+                            s_cutYaw = 0.0;
                             s_ignored = false;
-                    }
-
-                    if (s_ignored && pushing && goodDt)
-                        s_cutYaw += (double)tx * kTurnDegPerSec * 182.0444 * dt;
-                    else if (goodDt && ((gameMoved && !pushing) ||
-                        g_gameDYaw > 150 || g_gameDYaw < -150))
-                    {
-                        // S78: the SCRIPT OUTRANKS our offset. StartForcePlayerMove
-                        // (ShockPlayerController::Use -- the syringe) slews your yaw
-                        // at ForceMoveRotationDeltaPerSecond=65536, a full turn per
-                        // second, to plant you in the scripted pose. Our offset rode
-                        // on top of it, so the shot framed ~45 deg off and afterwards
-                        // "forward" walked you across the room. Whenever the game
-                        // turns you and you are NOT on the stick, hand the framing
-                        // back -- rate limited, so it eases instead of snapping.
-                        static bool s_unwinding = false;
-                        if (!s_unwinding && (s_cutYaw > 900.0 || s_cutYaw < -900.0))
-                        {
-                            s_unwinding = true;
-                            Log(">>> STICK: script is turning you -- unwinding %.1f deg",
-                                s_cutYaw / 182.0444);
+                            s_pushSec = s_deadSec = s_liveSec = s_idleSec = 0.0;
                         }
 
-                        const double step = 120.0 * 182.0444 * dt;   // deg/s
-                        if (s_cutYaw > step) s_cutYaw -= step;
-                        else if (s_cutYaw < -step) s_cutYaw += step;
-                        else { s_cutYaw = 0.0; s_unwinding = false; }
-                    }
-
-                    static bool s_wasIgnored = false;
-                    if (s_ignored != s_wasIgnored)
-                    {
-                        s_wasIgnored = s_ignored;
-                        Log(">>> STICK: game is %s input (render-side turn %s)",
-                            s_ignored ? "IGNORING" : "accepting",
-                            s_ignored ? "ON" : "off");
-                    }
-
-                    finalRot.yaw += (int)s_cutYaw;
-
-                    // ---- SNAP TURN ---------------------------------------------
-                    // Rotates the HEADING, not the stick. Feeding a burst of
-                    // right-stick X asks the GAME to turn you at its own rate,
-                    // which is smooth turning in a short burst -- the sliding this
-                    // feature exists to eliminate. Adding to g_aimBase.yaw puts the
-                    // view somewhere else on the very next frame with nothing in
-                    // between, which is what makes snap turning work for people who
-                    // get sick from rotation.
-                    if (g_cfgSnapTurn)
-                    {
-                        static bool  snapArmed = true;
                         float tx = 0.0f;
-                        const bool haveTx = Input_GetTurnX(&tx);
+                        const bool haveStick = Input_GetTurnX(&tx);
+                        const bool pushing = haveStick && fabsf(tx) > 0.30f;
+                        // 4 units == 0.02 deg. Deliberately SENSITIVE: ANY real
+                        // response must count. At 30 a gentle stick push during
+                        // normal play read as "ignored" -- five false arms before
+                        // the first cutscene even started.
+                        const bool gameMoved = (g_gameDYaw > 4 || g_gameDYaw < -4);
+                        const bool goodDt = (dt > 0.0 && dt < 0.25);
 
-                        if (!haveTx || fabsf(tx) < 0.35f) snapArmed = true;
-                        else if (snapArmed && fabsf(tx) > 0.75f)
+                        if (goodDt)
                         {
-                            snapArmed = false;
-                            const int step = (int)(g_cfgSnapTurnDeg * 182.0444f);
-                            g_aimBase.yaw += (tx > 0.0f) ? step : -step;
-                            Log(">>> SNAP TURN: %+.0f deg", (tx > 0.0f)
-                                ? g_cfgSnapTurnDeg : -g_cfgSnapTurnDeg);
-                        }
-                    }
+                            if (pushing) { s_pushSec += dt; s_idleSec = 0.0; }
+                            else { s_pushSec = 0.0; s_idleSec += dt; }
 
+                            if (pushing && !gameMoved) s_deadSec += dt; else s_deadSec = 0.0;
+                            if (pushing && gameMoved) s_liveSec += dt; else s_liveSec = 0.0;
+                        }
+
+                        const bool blocked = DrawHook_MenuUp() || GameState_Paused();
+
+                        if (!s_ignored)
+                        {
+                            if (!blocked && s_pushSec > 0.30 && s_deadSec > 0.30)
+                                s_ignored = true;               // ARM
+                        }
+                        else
+                        {
+                            // RELEASE only for a real reason. Letting go of the
+                            // stick is NOT one -- that is what chattered 40 times.
+                            if (blocked || s_liveSec > 0.25 || s_idleSec > 5.0)
+                                s_ignored = false;
+                        }
+
+                        if (s_ignored && pushing && goodDt)
+                            s_cutYaw += (double)tx * kTurnDegPerSec * 182.0444 * dt;
+                        else if (goodDt && ((gameMoved && !pushing) ||
+                            g_gameDYaw > 150 || g_gameDYaw < -150))
+                        {
+                            // S78: the SCRIPT OUTRANKS our offset. StartForcePlayerMove
+                            // (ShockPlayerController::Use -- the syringe) slews your yaw
+                            // at ForceMoveRotationDeltaPerSecond=65536, a full turn per
+                            // second, to plant you in the scripted pose. Our offset rode
+                            // on top of it, so the shot framed ~45 deg off and afterwards
+                            // "forward" walked you across the room. Whenever the game
+                            // turns you and you are NOT on the stick, hand the framing
+                            // back -- rate limited, so it eases instead of snapping.
+                            static bool s_unwinding = false;
+                            if (!s_unwinding && (s_cutYaw > 900.0 || s_cutYaw < -900.0))
+                            {
+                                s_unwinding = true;
+                                Log(">>> STICK: script is turning you -- unwinding %.1f deg",
+                                    s_cutYaw / 182.0444);
+                            }
+
+                            const double step = 120.0 * 182.0444 * dt;   // deg/s
+                            if (s_cutYaw > step) s_cutYaw -= step;
+                            else if (s_cutYaw < -step) s_cutYaw += step;
+                            else { s_cutYaw = 0.0; s_unwinding = false; }
+                        }
+
+                        static bool s_wasIgnored = false;
+                        if (s_ignored != s_wasIgnored)
+                        {
+                            s_wasIgnored = s_ignored;
+                            Log(">>> STICK: game is %s input (render-side turn %s)",
+                                s_ignored ? "IGNORING" : "accepting",
+                                s_ignored ? "ON" : "off");
+                        }
+
+                        finalRot.yaw += (int)s_cutYaw;
+                    }
+                }
+                // ---- end of the disabled S75/S78/S79 block -------------------
+
+                // ---- SNAP TURN ---------------------------------------------
+                // OUTSIDE the disabled block. Rotates the HEADING, not the
+                // stick: feeding a burst of right-stick X asks the GAME to turn
+                // you at its own rate, which is smooth turning in a short burst
+                // -- the sliding this feature exists to eliminate. Adding to
+                // g_aimBase.yaw puts the view somewhere else on the very next
+                // frame with nothing in between.
+                if (g_cfgSnapTurn)
+                {
+                    static bool  snapArmed = true;
+                    float stx = 0.0f;
+                    const bool haveTx = Input_GetTurnX(&stx);
+
+                    if (!haveTx || fabsf(stx) < 0.35f) snapArmed = true;
+                    else if (snapArmed && fabsf(stx) > 0.75f)
+                    {
+                        snapArmed = false;
+                        const int step = (int)(g_cfgSnapTurnDeg * 182.0444f);
+                        g_aimBase.yaw += (stx > 0.0f) ? step : -step;
+                        Log(">>> SNAP TURN: %+.0f deg", (stx > 0.0f)
+                            ? g_cfgSnapTurnDeg : -g_cfgSnapTurnDeg);
+                    }
                 }
 
                 // FREEZE the view while an in-game menu is up. Pause, map,

@@ -483,7 +483,21 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 (starved || paused || anchorUi ||
                     (drawMenu && !GameState_InGame()));
 
-            if (theater || ordinaryMenu)
+            // LATCH THE DECISION AT EYE 0 AND HOLD IT THROUGH EYE 1.
+            //
+            // Present fires TWICE per stereo pair, and this block re-evaluated
+            // on both. XR_SubmitPair stashes eye 0 and only submits on eye 1,
+            // so a mid-pair flip left xrBeginFrame with no matching xrEndFrame
+            // and then ran a whole second frame through the mono path. The
+            // stranded eye-0 image plus a mono quad the compositor did not
+            // expect is the flat "second copy of the world" square.
+            //
+            // starved is a 250 ms timer and drawMenu is per-frame; both can
+            // change between two Presents 4 ms apart.
+            static bool pairMono = false;
+            if (eye == 0) pairMono = (theater || ordinaryMenu);
+
+            if (pairMono)
             {
                 if (!menuMode)
                 {
@@ -503,6 +517,8 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 if (menuMode) { menuMode = false; Log(">>> MENU SCREEN off (camera ticking)"); }
                 XR_SubmitPair(bb, eye);
             }
+            // pairMono is only recomputed at eye 0, so both halves of every
+            // pair always take the same path.
 
             QueryPerformanceCounter(&x1);
             g_msXr += (double)(x1.QuadPart - x0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;

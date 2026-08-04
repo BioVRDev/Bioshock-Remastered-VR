@@ -164,6 +164,7 @@ float g_cfgArrowY = 0.0f;         // fraction of viewport height, - == up
 int   g_cfgArrowPtrOff = 0;                    // pawn+N -> the arrow actor. 0 == off
 float g_cfgArrowWorld[3] = { 0.f, 0.f, 60.f }; // fwd,right,up from the camera, cm
 int   g_cfgHideInactiveHand = 1;   // HideInactiveHand
+int   g_cfgHideHandSlot[9] = {};   // HideInactiveHandN, per weapon slot
 int   g_cfgHideCutsceneBars = 1;   // HideCutsceneBars
 int   g_cfgCutsceneBarVerts = 29;  // CutsceneBarVertices
 int   g_cfgSwingEnabled = 1;
@@ -574,6 +575,11 @@ static void LoadConfig()
         // held. Guns hide the arms; the wrench and plasmids keep them.
         _snprintf_s(key, sizeof(key), _TRUNCATE, "HideArms%d", s);
         g_cfgHideArmsSlot[s] = CfgIntRange(key, 0, 0, 1);
+
+        // Per-weapon inactive-hand override. Defaults to the global setting, so
+        // a slot with no key in the ini behaves exactly as it does today.
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "HideInactiveHand%d", s);
+        g_cfgHideHandSlot[s] = CfgIntRange(key, g_cfgHideInactiveHand, 0, 1);
     }
     g_cfgHandsNudgeZ = CfgFloat("HandsNudgeZ", g_cfgHandsNudgeZ, -500.f, 500.f);
     g_cfgHandsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfgHandsNudgeYaw, -180.f, 180.f);
@@ -758,6 +764,7 @@ static void LoadConfig()
             g_cfgRotSlot[s][0], g_cfgRotSlot[s][1], g_cfgRotSlot[s][2],
             g_cfgCursorSlot[s][0], g_cfgCursorSlot[s][1], g_cfgCursorSlot[s][2],
             g_cfgIdleModeSlot[s], g_cfgHideArmsSlot[s]);
+
     CfgEcho("AimSmoothing", "%.2f", g_cfgAimSmooth);
     CfgEcho("HudQuad", "%d  %.1f deg wide at %.2f m  pitch %.1f  yaw %.1f",
         (int)g_cfgHudRedirect, g_cfgHudWidthDeg, g_cfgHudDist,
