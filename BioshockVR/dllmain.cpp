@@ -178,6 +178,9 @@ float g_cfgSwingTravel = 0.15f;
 float g_cfgGripThreshold = 0.80f;
 float g_cfgGripHysteresis = 0.15f;
 int   g_cfgHeadRelativeMove = 1;
+int   g_cfgSnapTurn = 0;
+float g_cfgSnapTurnDeg = 45.0f;
+int   g_cfgForceFocus = 1;   // ForceWindowFocus
 int   g_cfgPitchServo = 0;   // OFF: feeding RY back in fights the head-aim accumulator and freezes the view. See CameraHook.
 float g_cfgPitchServoGain = 0.030f;
 float g_cfgPitchServoDead = 2.0f;
@@ -617,6 +620,9 @@ static void LoadConfig()
     g_cfgGripThreshold = CfgFloat("GripThreshold", 0.80f, 0.30f, 0.99f);
     g_cfgGripHysteresis = CfgFloat("GripHysteresis", 0.15f, 0.00f, 0.50f);
     g_cfgHeadRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
+    g_cfgSnapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
+    g_cfgSnapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
+    g_cfgForceFocus = CfgIntRange("ForceWindowFocus", 1, 0, 1);
     g_cfgPitchServo = CfgIntRange("PitchServo", 1, 0, 1);
     g_cfgPitchServoGain = CfgFloat("PitchServoGain", 0.030f, 0.001f, 0.500f);
     g_cfgPitchServoDead = CfgFloat("PitchServoDeadzoneDeg", 2.0f, 0.0f, 30.0f);
@@ -625,6 +631,7 @@ static void LoadConfig()
     g_cfgDpadFlip = CfgIntRange("ControllerDpadFlip", 0, 0, 1);
     g_cfgStickYToDpad = CfgBool("ControllerStickYToDpad", false);
     g_cfgControllerLog = CfgBool("ControllerLog", true);
+    g_cfgPauseChord = CfgIntRange("ControllerPauseChord", 1, 0, 1);
     g_cfgJumpOnR3 = CfgBool("JumpOnR3", false);
 
     // R3 cannot both jump and be the D-pad modifier. Quest 1 and Quest 2
@@ -781,6 +788,7 @@ static void LoadConfig()
         g_cfgJumpOnR3 ? "(R3 jumps, zoom unbound)" : "(R3 is zoom, stock)");
     CfgEcho("PauseChord", "%d  %s", (int)g_cfgPauseChord,
         g_cfgPauseChord ? "(hold X+Y to pause)" : "(off, menu button only)");
+    CfgEcho("ForceWindowFocus", "%d", g_cfgForceFocus);
 
     Log("[menus]");
     CfgEcho("EnableMenuScreen", "%d", (int)g_cfgMenuScreen);

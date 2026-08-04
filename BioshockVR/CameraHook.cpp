@@ -64,6 +64,8 @@ extern float g_cfgCursorRot[3];   // CursorOffset: pitch, yaw, roll (deg)
 extern int   g_cfgArrowPtrOff;    // pawn+N -> the quest arrow actor. 0 == off
 extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
+extern int   g_cfgSnapTurn;
+extern float g_cfgSnapTurnDeg;
 
 bool GameState_Cutscene();   // GameState.cpp
 bool GameState_Theater();    // GameState.cpp
@@ -1988,6 +1990,32 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     }
 
                     finalRot.yaw += (int)s_cutYaw;
+
+                    // ---- SNAP TURN ---------------------------------------------
+                    // Rotates the HEADING, not the stick. Feeding a burst of
+                    // right-stick X asks the GAME to turn you at its own rate,
+                    // which is smooth turning in a short burst -- the sliding this
+                    // feature exists to eliminate. Adding to g_aimBase.yaw puts the
+                    // view somewhere else on the very next frame with nothing in
+                    // between, which is what makes snap turning work for people who
+                    // get sick from rotation.
+                    if (g_cfgSnapTurn)
+                    {
+                        static bool  snapArmed = true;
+                        float tx = 0.0f;
+                        const bool haveTx = Input_GetTurnX(&tx);
+
+                        if (!haveTx || fabsf(tx) < 0.35f) snapArmed = true;
+                        else if (snapArmed && fabsf(tx) > 0.75f)
+                        {
+                            snapArmed = false;
+                            const int step = (int)(g_cfgSnapTurnDeg * 182.0444f);
+                            g_aimBase.yaw += (tx > 0.0f) ? step : -step;
+                            Log(">>> SNAP TURN: %+.0f deg", (tx > 0.0f)
+                                ? g_cfgSnapTurnDeg : -g_cfgSnapTurnDeg);
+                        }
+                    }
+
                 }
 
                 // FREEZE the view while an in-game menu is up. Pause, map,

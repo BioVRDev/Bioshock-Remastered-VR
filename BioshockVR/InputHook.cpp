@@ -39,7 +39,8 @@ extern float g_cfgPitchServoGain;
 extern float g_cfgPitchServoDead;
 extern float g_cfgPitchServoMax;
 extern int   g_cfgSwingLog;
-extern int g_cfgHeadRelativeMove;
+extern int   g_cfgHeadRelativeMove;
+extern int   g_cfgSnapTurn;
 extern float g_cfgGripThreshold;
 extern float g_cfgGripHysteresis;
 
@@ -56,6 +57,8 @@ extern int   g_cfgPauseChord;        // 1 = X+Y chord pauses
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
 bool GameState_Paused();             // GameState.cpp
+bool GameState_Theater();            // GameState.cpp
+extern bool g_cfgHeadTracking;       // dllmain.cpp
 
 static void Log(const char* fmt, ...)
 {
@@ -718,7 +721,20 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     else
     {
         float mx = s.moveX, my = s.moveY;
-        if (g_cfgHeadRelativeMove)
+
+        // GATING. Head-relative rotation is for LOCOMOTION only. The radial
+        // wheels and menus read this same stick as a screen-relative direction
+        // -- rotating it there means stick-up stops selecting the top entry
+        // whenever your head is turned. Theater and non-gameplay contexts get
+        // the raw stick too.
+        const bool headRelOk =
+            g_cfgHeadRelativeMove &&
+            g_cfgHeadTracking &&
+            !menuUp &&
+            !gripLOn && !gripROn &&
+            !GameState_Theater();
+
+        if (headRelOk)
         {
             float hy = 0.0f;
             if (CameraHook_GetHeadYawOffset(&hy))
@@ -737,7 +753,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // Flipped mode owns the right stick while the modifier is held, so the
     // d-pad direction must not ALSO snap-turn you.
     if (!(mod && g_cfgDpadFlip))
-        out->Gamepad.sThumbRX = ToAxis(s.turnX);
+        out->Gamepad.sThumbRX = (g_cfgSnapTurn ? 0 : ToAxis(s.turnX));
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a
@@ -798,16 +814,31 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     }
 
     WORD btn = out->Gamepad.wButtons;
-    if (aUse)            btn |= XI_A;      // XENON_A = Use
-    if (aHypo)           btn |= XI_B;      // XENON_B = Med hypo
-    if (aHack)           btn |= XI_X;      // XENON_X = Hack / Reload
-    if (aJump)           btn |= XI_Y;      // XENON_Y = Jump
+    if (aUse)            btn |= XI_A;             // XENON_A = Use
+    if (aHypo)           btn |= XI_B;             // XENON_B = Med hypo
+    if (aHack)           btn |= XI_X;             // XENON_X = Hack / Reload
+    if (aJump && !g_cfgPauseChord) btn |= XI_Y;   // see the note below
+    if (g_cfgPauseChord && s.thumbR) btn |= XI_Y; // R3 jumps instead
 
     // R3 -> JUMP. The game binds R3 to Zoom, which is unusable in VR anyway --
     // ADS drives ZoomedForegroundFOVAngle and breaks the ForegroundFov
     // calibration. ADDITIVE: the layout's normal jump button still jumps, so
     // this cannot take anything away.
     if (g_cfgJumpOnR3 && s.thumbR) btn |= XI_Y;
+
+    // With the pause chord on, Y CANNOT also be jump: you never press X and Y
+    // in the same frame, so the early one fires jump before the chord exists.
+    // R3 becomes the only jump. Announced once so this is never a mystery.
+    if (g_cfgPauseChord && !g_cfgJumpOnR3)
+    {
+        static bool once = false;
+        if (!once)
+        {
+            once = true;
+            Log("!!! ControllerPauseChord=1 needs Y free, so JUMP IS ON R3 ONLY.");
+            Log("!!! Set ControllerPauseChord=0 to put jump back on a face button.");
+        }
+    }
 
     // Touch has ONE application menu button, and the game wants both START
     // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
@@ -826,14 +857,12 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         if (!wasChord) { wasChord = true; Log("  PAUSE: X+Y chord -> START"); }
     }
 
-    // The d-pad modifier disambiguates the chord exactly like it does the menu
-    // button: chord alone = START (pause), modifier + chord = BACK, which is
-    // ShowContextHelp -- the "WHAT IS THIS?" prompt. HOLDING modifier + chord
-    // reaches the MAP, which ShockPlayerController gates behind HintButtonHeld
-    // with HintHoldTime=0.5s. Held rather than pulsed, so the hold accumulates.
-    if (s.menu)          btn |= (mod ? XI_BACK : XI_START);
-    if (chordPause)      btn |= (mod ? XI_BACK : XI_START);
-    if (s.thumbL)        btn |= XI_LTHUMB;
+    // MODIFIER + X+Y = BACK (ShowContextHelp / "WHAT IS THIS?"). Held, because
+    // ShockPlayerController gates the MAP behind HintButtonHeld at
+    // HintHoldTime=0.5s -- so a tap gives the prompt and holding reaches the map.
+    // X+Y alone = START (pause).
+    if (s.menu)     btn |= (mod ? XI_BACK : XI_START);
+    if (chordPause) btn |= (mod ? XI_BACK : XI_START);
 
     // A control used as the modifier must not ALSO send its normal button, or
     // every d-pad press would come with a stray R3 / LB. Same for one rebound

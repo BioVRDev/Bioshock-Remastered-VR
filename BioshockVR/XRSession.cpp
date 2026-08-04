@@ -41,6 +41,7 @@ bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
 bool CameraHook_GetShotDir(float out[3]);
 extern float g_cfgCursorRot[3];
+extern int g_cfgForceFocus;   // ForceWindowFocus
 extern int   g_cfgXhFromShot;   // 1 = use the published applied aim
 
 static void Log(const char* fmt, ...)
@@ -154,6 +155,7 @@ static XrFovf ScaleFov(const XrFovf& f, float sh, float sv)
 }
 
 ID3D11Texture2D* DrawHook_HudTexture();   // DrawHook.cpp
+ID3D11Texture2D* DrawHook_HudTextureForSubmit(ID3D11DeviceContext* ctx);
 bool             DrawHook_HudCaptured();  // DrawHook.cpp
 
 // Returns false until the capture surface exists and a matching swapchain has
@@ -1011,7 +1013,12 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                 if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_hudSc, &hai, &hi)) &&
                     XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSc, &hwi)))
                 {
-                    g_ctx->CopyResource(g_hudImages[hi].texture, DrawHook_HudTexture());
+                    // The PROCESSED copy, not the raw capture -- GameSWF leaves
+                    // no usable alpha and the compositor cuts the meters down to
+                    // whatever it finds.
+                    ID3D11Texture2D* hudSrc = DrawHook_HudTextureForSubmit(g_ctx);
+                    g_ctx->CopyResource(g_hudImages[hi].texture,
+                        hudSrc ? hudSrc : DrawHook_HudTexture());
                     XrSwapchainImageReleaseInfo hri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
                     xrReleaseSwapchainImage(g_hudSc, &hri);
 
@@ -1098,10 +1105,63 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
     ++g_tb.submits;
 }
 
+// Launched from SteamVR, the game window opens WITHOUT foreground focus, so it
+// sits there rendering nothing into the headset until the user alt-tabs to it.
+// Most people read that as "the mod is broken" and never get past it.
+//
+// Runs once, from the first submitted frame -- by then the window certainly
+// exists, which is not true anywhere in InitThread.
+static void ForceForeground()
+{
+    if (!g_cfgForceFocus) return;
+
+    // Retried, not one-shot. MEASURED: the game launches BEFORE SteamVR
+    // finishes starting, so a single grab at the first frame lands while the
+    // compositor is still coming up and focus moves away again afterwards.
+    // Re-assert once a second for the first ten seconds, then stop.
+    static int tries = 0;
+    static ULONGLONG nextTry = 0;
+    if (tries >= 10) return;
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < nextTry) return;
+    nextTry = now + 1000;
+    ++tries;
+
+    if (GetForegroundWindow() &&
+        GetWindowThreadProcessId(GetForegroundWindow(), nullptr) ==
+        GetCurrentThreadId())
+        return;                          // already ours
+
+    HWND hw = nullptr;
+    const DWORD pid = GetCurrentProcessId();
+    for (HWND h = GetTopWindow(nullptr); h; h = GetNextWindow(h, GW_HWNDNEXT))
+    {
+        DWORD wpid = 0;
+        GetWindowThreadProcessId(h, &wpid);
+        if (wpid == pid && IsWindowVisible(h)) { hw = h; break; }
+    }
+    if (!hw) { Log(">>> focus: no visible window found for this process"); return; }
+
+    // Windows REFUSES SetForegroundWindow unless the calling thread already
+    // owns the foreground. Attaching to the current foreground thread's input
+    // queue is the standard way around that, and it must be detached again.
+    const DWORD fg = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    const DWORD me = GetCurrentThreadId();
+    if (fg && fg != me) AttachThreadInput(fg, me, TRUE);
+    ShowWindow(hw, SW_RESTORE);
+    SetForegroundWindow(hw);
+    SetFocus(hw);
+    if (fg && fg != me) AttachThreadInput(fg, me, FALSE);
+
+    Log(">>> focus: pulled the game window to the foreground");
+}
+
 // eye 0 stashes. eye 1 submits the pair. One XR cycle per two Presents.
 void XR_SubmitPair(ID3D11Texture2D* image, int eye)
 {
     if (!g_init) return;
+    ForceForeground();
     g_menuAnchorSet = false;   // next menu re-anchors to wherever you're facing
     PumpEvents();
     if (!g_running || !image) return;

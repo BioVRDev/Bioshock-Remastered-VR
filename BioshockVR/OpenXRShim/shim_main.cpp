@@ -283,6 +283,13 @@ static XrTime NowXrTime()
 static void CacheHmdGeometry()
 {
     g_vr.sys->GetRecommendedRenderTargetSize(&g_st.rtW, &g_st.rtH);
+
+    // The runtime's recommendation is only a STARTING point here. The eye
+    // targets are sized from the game's actual swapchain in xrCreateSwapchain
+    // below, because this shim's job is to composite an already-rendered frame
+    // -- downscaling it first and letting the compositor scale it back up is a
+    // pure resampling loss. MEASURED: 2750x2850 into 1780x1908 targets showed
+    // as 66% in Virtual Desktop; matching the source showed 102%.
     for (int e = 0; e < 2; ++e)
     {
         HmdMatrix34_t ehC = g_vr.sys->GetEyeToHeadTransform((EVREye)e);
@@ -630,6 +637,19 @@ SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrCreateSwapchain(
 
     *out = (XrSwapchain)sc;
     SLOG("xrCreateSwapchain %ux%u fmt %d -> ok", info->width, info->height, (int)info->format);
+
+    // Size the eye targets to the LARGEST swapchain the app asks for -- that is
+    // its eye buffer. Small ones (the 64x64 crosshair, the HUD) are ignored.
+    // Render_Init runs later, at the first xrEndFrame, so this always lands
+    // before the targets are created.
+    if (info->width >= 512 && info->height >= 512 &&
+        (info->width > g_st.rtW || info->height > g_st.rtH))
+    {
+        g_st.rtW = info->width;
+        g_st.rtH = info->height;
+        SLOG("eye targets will be %ux%u (matched to the app's swapchain)",
+            g_st.rtW, g_st.rtH);
+    }
     return XR_SUCCESS;
 }
 

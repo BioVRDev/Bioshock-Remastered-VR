@@ -60,3 +60,10 @@ bool DrawHook_MenuUp();
 // freeze the camera the way a wrong MenuIndexCounts entry did.
 bool DrawHook_AnchorUp();
 bool DrawHook_CutsceneBarsActive();
+
+// Forward declaration rather than #include <d3d11.h>: this header is included
+// in files that do not otherwise pull in D3D, and a pointer to an incomplete
+// type is all a declaration needs.
+struct ID3D11DeviceContext;
+
+ID3D11Texture2D* DrawHook_HudTextureForSubmit(ID3D11DeviceContext* ctx);

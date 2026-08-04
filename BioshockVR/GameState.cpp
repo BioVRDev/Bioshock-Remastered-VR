@@ -97,7 +97,11 @@ static const ContextEntry kContexts[] = {
 
     { "PauseUIActive",                     CTX_MENU },
     { "InventoryUIActive",                 CTX_MENU },
-    { "ContainerUIActive",                 CTX_MENU },
+
+    // NOT CTX_MENU. This context is entered on PROXIMITY to a lootable
+    // container, not just when the panel opens -- and CTX_MENU closes the HUD
+    // capture gate, which dumps the whole interface back onto the eye image.
+    { "ContainerUIActive",                 CTX_GAMEPLAY },
     { "PlasmidEquipUIActive",              CTX_MENU },
     { "VendingMachineUIActive",            CTX_MENU },
     { "CraftingUIActive",                  CTX_MENU },
@@ -946,11 +950,22 @@ void GameState_Observe(void* playerController)
         {
             static char lastCtx[96] = {};
             char val[96] = {};
-            if (ReadFStringAt(target, g_offset, val, sizeof(val)) &&
-                strcmp(val, lastCtx) != 0)
+            if (ReadFStringAt(target, g_offset, val, sizeof(val)))
             {
-                strncpy_s(lastCtx, val, _TRUNCATE);
-                Log(">>> CONTEXT: \"%s\"", val);
+                // PUBLISH IT. This was reading the context, logging it, and
+                // throwing it away -- g_class stayed CTX_UNKNOWN forever, so
+                // GameState_MenuUp / RadialOpen / ScriptedSequence could never
+                // return true and GameState_Theater always fell through to the
+                // pitch heuristic. The whole context detector was inert.
+                const ContextClass c = ClassifyContext(val);
+                _InterlockedExchange(&g_class, (long)c);
+                PublishName(val);
+
+                if (strcmp(val, lastCtx) != 0)
+                {
+                    strncpy_s(lastCtx, val, _TRUNCATE);
+                    Log(">>> CONTEXT: \"%s\"  class=%d", val, (int)c);
+                }
             }
         }
     }

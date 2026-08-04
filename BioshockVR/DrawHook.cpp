@@ -274,6 +274,250 @@ static unsigned long long g_hudDrawsTotal = 0;
 ID3D11Texture2D* DrawHook_HudTexture() { return g_hudTex; }
 bool DrawHook_HudCaptured() { return g_hudDrawsLastFrame > 0; }
 
+// ---- ALPHA REPAIR ----------------------------------------------------------
+// MEASURED: submitting the raw capture with the compositor's alpha flags OFF
+// showed the health and EVE meters PERFECT. So the colour and the geometry are
+// already correct in g_hudTex -- GameSWF simply does not leave usable alpha
+// behind, and the compositor was cutting the meters down to whatever alpha it
+// found.
+//
+// One fullscreen pass copies RGB untouched and rebuilds alpha from brightness.
+// Consumers get the processed copy; the raw capture is never submitted.
+static ID3D11Texture2D* g_hudTex2 = nullptr;
+static ID3D11RenderTargetView* g_hudRTV2 = nullptr;
+static ID3D11ShaderResourceView* g_hudSRV2 = nullptr;
+static ID3D11VertexShader* g_alphaVS = nullptr;
+static ID3D11PixelShader* g_alphaPS = nullptr;
+static ID3D11SamplerState* g_alphaSamp = nullptr;
+static ID3D11BlendState* g_alphaBlend = nullptr;
+static ID3D11DepthStencilState* g_alphaDss = nullptr;
+static ID3D11RasterizerState* g_alphaRast = nullptr;
+static bool g_alphaInit = false;
+static bool g_hudProcessedThisFrame = false;
+
+// No vertex buffer and no input layout: the vertex shader builds a fullscreen
+// triangle from SV_VertexID alone, so there is nothing to bind or restore.
+static const char* kAlphaHlsl =
+"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+"VSOut vsmain(uint id : SV_VertexID) {\n"
+"  VSOut o;\n"
+"  o.uv  = float2((id << 1) & 2, id & 2);\n"
+"  o.pos = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+"  return o;\n"
+"}\n"
+"Texture2D    tex0 : register(t0);\n"
+"SamplerState smp0 : register(s0);\n"
+"float4 psmain(VSOut i) : SV_Target {\n"
+"  float4 c = tex0.Sample(smp0, i.uv);\n"
+"  // RGB untouched. Alpha = whichever is larger, what GameSWF left or how\n"
+"  // bright the pixel is. Black stays transparent, anything drawn is opaque.\n"
+"  float lum = max(c.r, max(c.g, c.b));\n"
+"  return float4(c.rgb, max(c.a, lum));\n"
+"}\n";
+
+typedef HRESULT(WINAPI* PFN_D3DCompileA)(LPCVOID, SIZE_T, LPCSTR, const void*,
+    void*, LPCSTR, LPCSTR, UINT, UINT, void**, void**);
+
+struct AlphaBlob : public IUnknown
+{
+    virtual LPVOID STDMETHODCALLTYPE GetBufferPointer() = 0;
+    virtual SIZE_T STDMETHODCALLTYPE GetBufferSize() = 0;
+};
+
+static bool EnsureAlphaPipeline(ID3D11Device* dev)
+{
+    if (g_alphaInit) return true;
+
+    HMODULE dc = LoadLibraryA("d3dcompiler_47.dll");
+    if (!dc) dc = LoadLibraryA("d3dcompiler_43.dll");
+    if (!dc) { Log("!!! hud alpha: no d3dcompiler dll"); return false; }
+    PFN_D3DCompileA compile = (PFN_D3DCompileA)GetProcAddress(dc, "D3DCompile");
+    if (!compile) { Log("!!! hud alpha: no D3DCompile export"); return false; }
+
+    AlphaBlob* vsb = nullptr; AlphaBlob* psb = nullptr; AlphaBlob* err = nullptr;
+    const SIZE_T len = strlen(kAlphaHlsl);
+
+    if (FAILED(compile(kAlphaHlsl, len, nullptr, nullptr, nullptr,
+        "vsmain", "vs_4_0", 0, 0, (void**)&vsb, (void**)&err)))
+    {
+        Log("!!! hud alpha: VS compile failed %s",
+            err ? (const char*)err->GetBufferPointer() : "");
+        if (err) err->Release();
+        return false;
+    }
+    if (err) { err->Release(); err = nullptr; }
+
+    if (FAILED(compile(kAlphaHlsl, len, nullptr, nullptr, nullptr,
+        "psmain", "ps_4_0", 0, 0, (void**)&psb, (void**)&err)))
+    {
+        Log("!!! hud alpha: PS compile failed %s",
+            err ? (const char*)err->GetBufferPointer() : "");
+        if (err) err->Release();
+        vsb->Release();
+        return false;
+    }
+    if (err) err->Release();
+
+    bool ok =
+        SUCCEEDED(dev->CreateVertexShader(vsb->GetBufferPointer(),
+            vsb->GetBufferSize(), nullptr, &g_alphaVS)) &&
+        SUCCEEDED(dev->CreatePixelShader(psb->GetBufferPointer(),
+            psb->GetBufferSize(), nullptr, &g_alphaPS));
+    vsb->Release(); psb->Release();
+    if (!ok) { Log("!!! hud alpha: shader creation failed"); return false; }
+
+    D3D11_SAMPLER_DESC sd = {};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;   // 1:1 copy, no filtering
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    dev->CreateSamplerState(&sd, &g_alphaSamp);
+
+    D3D11_BLEND_DESC bd = {};
+    bd.RenderTarget[0].BlendEnable = FALSE;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    dev->CreateBlendState(&bd, &g_alphaBlend);
+
+    D3D11_DEPTH_STENCIL_DESC dd = {};
+    dd.DepthEnable = FALSE;
+    dd.StencilEnable = FALSE;
+    dev->CreateDepthStencilState(&dd, &g_alphaDss);
+
+    D3D11_RASTERIZER_DESC rd = {};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.DepthClipEnable = TRUE;
+    dev->CreateRasterizerState(&rd, &g_alphaRast);
+
+    g_alphaInit = true;
+    Log(">>> hud alpha: repair pipeline ready");
+    return true;
+}
+
+static bool EnsureHudTex2(ID3D11Device* dev, unsigned w, unsigned h, int fmt)
+{
+    if (g_hudTex2)
+    {
+        D3D11_TEXTURE2D_DESC d = {};
+        g_hudTex2->GetDesc(&d);
+        if (d.Width == w && d.Height == h && (int)d.Format == fmt) return true;
+        if (g_hudSRV2) { g_hudSRV2->Release(); g_hudSRV2 = nullptr; }
+        if (g_hudRTV2) { g_hudRTV2->Release(); g_hudRTV2 = nullptr; }
+        g_hudTex2->Release(); g_hudTex2 = nullptr;
+    }
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = (DXGI_FORMAT)fmt;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    if (FAILED(dev->CreateTexture2D(&td, nullptr, &g_hudTex2)) || !g_hudTex2 ||
+        FAILED(dev->CreateRenderTargetView(g_hudTex2, nullptr, &g_hudRTV2)) ||
+        FAILED(dev->CreateShaderResourceView(g_hudTex2, nullptr, &g_hudSRV2)))
+    {
+        Log("!!! hud alpha: processed texture creation failed (%ux%u)", w, h);
+        if (g_hudSRV2) { g_hudSRV2->Release(); g_hudSRV2 = nullptr; }
+        if (g_hudRTV2) { g_hudRTV2->Release(); g_hudRTV2 = nullptr; }
+        if (g_hudTex2) { g_hudTex2->Release(); g_hudTex2 = nullptr; }
+        return false;
+    }
+    Log(">>> hud alpha: processed texture %ux%u", w, h);
+    return true;
+}
+
+// Lazy on purpose: this must run AFTER every GameSWF draw of the frame but
+// BEFORE the OpenXR copy. Calling it from the submit path guarantees both.
+ID3D11Texture2D* DrawHook_HudTextureForSubmit(ID3D11DeviceContext* ctx)
+{
+    if (!g_hudTex || !ctx) return nullptr;
+    if (g_hudProcessedThisFrame) return g_hudTex2;
+
+    ID3D11Device* dev = nullptr;
+    ctx->GetDevice(&dev);
+    if (!dev) return g_hudTex;
+
+    const bool ready = EnsureAlphaPipeline(dev) &&
+        EnsureHudTex2(dev, g_hudW, g_hudH, g_hudFmt);
+    dev->Release();
+    if (!ready) return g_hudTex;          // fall back to the raw capture
+
+    // Full state save. This runs on the GAME's immediate context, in the middle
+    // of its frame -- anything left changed here corrupts the next thing it draws.
+    ID3D11RenderTargetView* oRtv = nullptr; ID3D11DepthStencilView* oDsv = nullptr;
+    ID3D11VertexShader* oVs = nullptr; ID3D11PixelShader* oPs = nullptr;
+    ID3D11GeometryShader* oGs = nullptr;
+    ID3D11InputLayout* oIl = nullptr;
+    ID3D11BlendState* oBs = nullptr; FLOAT oBf[4]; UINT oMask = 0;
+    ID3D11DepthStencilState* oDss = nullptr; UINT oRef = 0;
+    ID3D11RasterizerState* oRast = nullptr;
+    ID3D11ShaderResourceView* oSrv = nullptr;
+    ID3D11SamplerState* oSamp = nullptr;
+    D3D11_PRIMITIVE_TOPOLOGY oTopo;
+    D3D11_VIEWPORT oVp; UINT oNvp = 1;
+
+    ctx->OMGetRenderTargets(1, &oRtv, &oDsv);
+    ctx->VSGetShader(&oVs, nullptr, nullptr);
+    ctx->PSGetShader(&oPs, nullptr, nullptr);
+    ctx->GSGetShader(&oGs, nullptr, nullptr);
+    ctx->IAGetInputLayout(&oIl);
+    ctx->IAGetPrimitiveTopology(&oTopo);
+    ctx->OMGetBlendState(&oBs, oBf, &oMask);
+    ctx->OMGetDepthStencilState(&oDss, &oRef);
+    ctx->RSGetState(&oRast);
+    ctx->PSGetShaderResources(0, 1, &oSrv);
+    ctx->PSGetSamplers(0, 1, &oSamp);
+    ctx->RSGetViewports(&oNvp, &oVp);
+
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    ID3D11ShaderResourceView* preUnbind = nullptr;
+    ctx->PSSetShaderResources(0, 1, &preUnbind);
+
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)g_hudW; vp.Height = (float)g_hudH; vp.MaxDepth = 1.f;
+    ctx->OMSetRenderTargets(1, &g_hudRTV2, nullptr);
+    ctx->RSSetViewports(1, &vp);
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(g_alphaVS, nullptr, 0);
+    ctx->PSSetShader(g_alphaPS, nullptr, 0);
+    ctx->GSSetShader(nullptr, nullptr, 0);
+    ctx->OMSetBlendState(g_alphaBlend, nullptr, 0xFFFFFFFF);
+    ctx->OMSetDepthStencilState(g_alphaDss, 0);
+    ctx->RSSetState(g_alphaRast);
+    ctx->PSSetShaderResources(0, 1, &g_hudSRV);
+    ctx->PSSetSamplers(0, 1, &g_alphaSamp);
+    ctx->Draw(3, 0);
+
+    ID3D11ShaderResourceView* unbind = nullptr;
+    ctx->PSSetShaderResources(0, 1, &unbind);
+    ctx->OMSetRenderTargets(1, &oRtv, oDsv);
+    if (oNvp) ctx->RSSetViewports(1, &oVp);
+    ctx->VSSetShader(oVs, nullptr, 0);
+    ctx->PSSetShader(oPs, nullptr, 0);
+    ctx->GSSetShader(oGs, nullptr, 0);
+    ctx->IASetInputLayout(oIl);
+    ctx->IASetPrimitiveTopology(oTopo);
+    ctx->OMSetBlendState(oBs, oBf, oMask);
+    ctx->OMSetDepthStencilState(oDss, oRef);
+    ctx->RSSetState(oRast);
+    ctx->PSSetShaderResources(0, 1, &oSrv);
+    ctx->PSSetSamplers(0, 1, &oSamp);
+
+    if (oRtv) oRtv->Release(); if (oDsv) oDsv->Release();
+    if (oVs) oVs->Release();   if (oPs) oPs->Release();
+    if (oGs) oGs->Release();   if (oIl) oIl->Release();
+    if (oBs) oBs->Release();   if (oDss) oDss->Release();
+    if (oRast) oRast->Release();
+    if (oSrv) oSrv->Release(); if (oSamp) oSamp->Release();
+
+    g_hudProcessedThisFrame = true;
+
+    static bool once = false;
+    if (!once) { once = true; Log(">>> hud alpha: repair pass running"); }
+    return g_hudTex2;
+}
+
 static void ReleaseHudResources()
 {
     if (g_hudDSV) { g_hudDSV->Release();      g_hudDSV = nullptr; }
@@ -1484,12 +1728,28 @@ void DrawHook_EndFrame()
 
     // Full-screen UI stays in the eye image so the existing menu/theater quad
     // can show it. Decided here, for the NEXT frame.
-    g_hudGateOpen = !(GameState_MenuUp() || GameState_Paused());
+    // HYSTERESIS. At the exact distance where a container prompt appears and
+    // disappears, Pauser toggles frame to frame -- so capture stopped and
+    // started, and BOTH the captured quad and the raw eye-image HUD were
+    // visible at once. Require a sustained state before switching either way.
+    {
+        const bool wantOpen = !(GameState_MenuUp() || GameState_Paused());
+        static int gateRun = 0;
+        if (wantOpen == g_hudGateOpen) gateRun = 0;
+        else if (++gateRun >= 12)
+        {
+            g_hudGateOpen = wantOpen;
+            gateRun = 0;
+            Log(">>> HUD GATE %s (paused=%d)", wantOpen ? "OPEN" : "CLOSED",
+                (int)GameState_Paused());
+        }
+    }
 
     if (!g_hudGateOpen) ++g_gateClosedFrames;
 
     g_hudDrawsThisFrame = 0;
     g_hudClearedThisFrame = false;
+    g_hudProcessedThisFrame = false;
     g_voteN = 0;
     g_hudHost = nullptr;
     g_indexedThisFrame = 0;

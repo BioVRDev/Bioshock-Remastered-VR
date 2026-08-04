@@ -104,7 +104,8 @@ static const char* kBindingsKnuckles = R"JSON({
         { "path": "/user/hand/left/input/b", "mode": "button",
           "inputs": { "click": { "output": "/actions/gamepad/in/btn_y" } } },
         { "path": "/user/hand/left/input/trackpad", "mode": "trackpad",
-          "inputs": { "click": { "output": "/actions/gamepad/in/menu" } } },
+          "inputs": { "click": { "output": "/actions/gamepad/in/menu" },
+                      "touch": { "output": "/actions/gamepad/in/rest_l" } } },
         { "path": "/user/hand/right/input/trackpad", "mode": "trackpad",
           "inputs": { "touch": { "output": "/actions/gamepad/in/rest_r" } } }
       ],
@@ -190,7 +191,11 @@ static const char* kBindingsTouch = R"JSON({
         { "path": "/user/hand/left/input/y", "mode": "button",
           "inputs": { "click": { "output": "/actions/gamepad/in/btn_y" } } },
         { "path": "/user/hand/left/input/application_menu", "mode": "button",
-          "inputs": { "click": { "output": "/actions/gamepad/in/menu" } } }
+          "inputs": { "click": { "output": "/actions/gamepad/in/menu" } } },
+        { "path": "/user/hand/right/input/thumbrest", "mode": "button",
+          "inputs": { "touch": { "output": "/actions/gamepad/in/rest_r" } } },
+        { "path": "/user/hand/left/input/thumbrest", "mode": "button",
+          "inputs": { "touch": { "output": "/actions/gamepad/in/rest_l" } } }
       ],
       "poses": [
         { "output": "/actions/gamepad/in/aim_l",   "path": "/user/hand/left/pose/tip" },
@@ -207,6 +212,56 @@ static const char* kBindingsTouch = R"JSON({
   "controller_type": "oculus_touch",
   "description": "BioshockVR shim bindings for Touch controllers",
   "name": "BioshockVR (shim) Touch bindings"
+}
+)JSON";
+
+// Windows Mixed Reality / Reverb G2. No face buttons at all, so A/B/X/Y come
+// off trackpad quadrants. UNTESTED -- written from the standard WMR input
+// paths, not from a device. Treat as provisional.
+static const char* kBindingsWmr = R"JSON({
+  "bindings": {
+    "/actions/gamepad": {
+      "sources": [
+        { "path": "/user/hand/left/input/joystick", "mode": "joystick",
+          "inputs": { "position": { "output": "/actions/gamepad/in/move" },
+                      "click":    { "output": "/actions/gamepad/in/thumb_l" } } },
+        { "path": "/user/hand/right/input/joystick", "mode": "joystick",
+          "inputs": { "position": { "output": "/actions/gamepad/in/turn" },
+                      "click":    { "output": "/actions/gamepad/in/thumb_r" } } },
+        { "path": "/user/hand/left/input/trigger", "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gamepad/in/trigger_l" } } },
+        { "path": "/user/hand/right/input/trigger", "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gamepad/in/trigger_r" } } },
+        { "path": "/user/hand/left/input/grip", "mode": "button",
+          "inputs": { "click": { "output": "/actions/gamepad/in/grip_l" } } },
+        { "path": "/user/hand/right/input/grip", "mode": "button",
+          "inputs": { "click": { "output": "/actions/gamepad/in/grip_r" } } },
+        { "path": "/user/hand/right/input/trackpad", "mode": "dpad",
+          "inputs": { "east":  { "output": "/actions/gamepad/in/btn_a" },
+                      "south": { "output": "/actions/gamepad/in/btn_b" },
+                      "touch": { "output": "/actions/gamepad/in/rest_r" } } },
+        { "path": "/user/hand/left/input/trackpad", "mode": "dpad",
+          "inputs": { "west":  { "output": "/actions/gamepad/in/btn_x" },
+                      "north": { "output": "/actions/gamepad/in/btn_y" },
+                      "touch": { "output": "/actions/gamepad/in/rest_l" } } },
+        { "path": "/user/hand/left/input/application_menu", "mode": "button",
+          "inputs": { "click": { "output": "/actions/gamepad/in/menu" } } }
+      ],
+      "poses": [
+        { "output": "/actions/gamepad/in/aim_l",   "path": "/user/hand/left/pose/tip" },
+        { "output": "/actions/gamepad/in/aim_r",   "path": "/user/hand/right/pose/tip" },
+        { "output": "/actions/gamepad/in/gpose_l", "path": "/user/hand/left/pose/handgrip" },
+        { "output": "/actions/gamepad/in/gpose_r", "path": "/user/hand/right/pose/handgrip" }
+      ],
+      "haptics": [
+        { "output": "/actions/gamepad/out/haptic_l", "path": "/user/hand/left/output/haptic" },
+        { "output": "/actions/gamepad/out/haptic_r", "path": "/user/hand/right/output/haptic" }
+      ]
+    }
+  },
+  "controller_type": "holographic_controller",
+  "description": "BioshockVR shim bindings for Windows Mixed Reality controllers",
+  "name": "BioshockVR (shim) WMR bindings"
 }
 )JSON";
 
@@ -250,7 +305,8 @@ bool InputShim_Attach(ActionSetRec* set, ActionRec** actions, int actionCount)
     fprintf(f, "{\n  \"default_bindings\": [\n"
         "    { \"controller_type\": \"knuckles\", \"binding_url\": \"bindings_knuckles.json\" },\n"
         "    { \"controller_type\": \"vive_controller\", \"binding_url\": \"bindings_vive_controller.json\" },\n"
-        "    { \"controller_type\": \"oculus_touch\", \"binding_url\": \"bindings_oculus_touch.json\" }\n"
+        "    { \"controller_type\": \"oculus_touch\", \"binding_url\": \"bindings_oculus_touch.json\" },\n"
+        "    { \"controller_type\": \"holographic_controller\", \"binding_url\": \"bindings_holographic_controller.json\" }\n"
         "  ],\n  \"actions\": [\n");
     for (int i = 0; i < actionCount; ++i)
     {
@@ -278,6 +334,8 @@ bool InputShim_Attach(ActionSetRec* set, ActionRec** actions, int actionCount)
     WriteTextFile(p, kBindingsVive);
     _snprintf(p, MAX_PATH, "%s\\bindings_oculus_touch.json", dir);
     WriteTextFile(p, kBindingsTouch);
+    _snprintf(p, MAX_PATH, "%s\\bindings_holographic_controller.json", dir);
+    WriteTextFile(p, kBindingsWmr);
 
     _snprintf(p, MAX_PATH, "%s\\actions.json", dir);
     EVRInputError ie = g_vr.input->SetActionManifestPath((char*)p);
