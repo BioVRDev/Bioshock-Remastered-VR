@@ -123,6 +123,9 @@ float g_cfgXhSize = 0.012f;      // dot diameter, metres, at CrosshairDistance
 float g_cfgXhDist = 2.0f;
 bool  g_cfgHudAlphaFix = true;
 int   g_cfgHudDsvMode = 1;   // 0 none, 1 private D24S8, 2 the game's
+int   g_cfgHudLeakLog = 0;   // log draws the world-leak guard blocks
+int   g_cfgExorcismProbe = 0;
+int   g_cfgExorcismOff = 0;   // pawn offset of CurrentExorcismTarget
 
 // controller -----------------------------------------------------------------
 bool  g_cfgController = true;
@@ -181,6 +184,9 @@ float g_cfgGripHysteresis = 0.15f;
 int   g_cfgHeadRelativeMove = 1;
 int   g_cfgSnapTurn = 0;
 float g_cfgSnapTurnDeg = 45.0f;
+int   g_cfgModYaw = 0;          // mod owns yaw: stick turns g_aimBase directly
+float g_cfgModYawSpeed = 90.0f; // deg/sec at full deflection
+int   g_cfgFreezeGameRot = 0;   // discard the game's own rotation deltas
 int   g_cfgForceFocus = 1;   // ForceWindowFocus
 int   g_cfgPitchServo = 0;   // OFF: feeding RY back in fights the head-aim accumulator and freezes the view. See CameraHook.
 float g_cfgPitchServoGain = 0.030f;
@@ -516,6 +522,9 @@ static void LoadConfig()
     g_cfgDeltaClamp = CfgInt("DeltaClamp", 0);
     g_cfgHudAlphaFix = CfgBool("HudAlphaFix", true);
     g_cfgHudDsvMode = CfgIntRange("HudDsvMode", g_cfgHudDsvMode, 0, 2);
+    g_cfgHudLeakLog = CfgIntRange("HudLeakLog", g_cfgHudLeakLog, 0, 1);
+    g_cfgExorcismProbe = CfgIntRange("ExorcismProbe", 0, 0, 1);
+    g_cfgExorcismOff = CfgIntRange("ExorcismOffset", 0, 0, 0x2000);
 
     // weapon & arm rendering
     g_cfgFgFovOffset = CfgHex("ForegroundFovOffset", g_cfgFgFovOffset);
@@ -628,6 +637,9 @@ static void LoadConfig()
     g_cfgHeadRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
     g_cfgSnapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
     g_cfgSnapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
+    g_cfgModYaw = CfgIntRange("ModYaw", 0, 0, 1);
+    g_cfgModYawSpeed = CfgFloat("ModYawSpeed", 90.0f, 15.0f, 360.0f);
+    g_cfgFreezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
     g_cfgForceFocus = CfgIntRange("ForceWindowFocus", 1, 0, 1);
     g_cfgPitchServo = CfgIntRange("PitchServo", 1, 0, 1);
     g_cfgPitchServoGain = CfgFloat("PitchServoGain", 0.030f, 0.001f, 0.500f);
@@ -773,6 +785,8 @@ static void LoadConfig()
         (int)g_cfgDisableReticle, g_cfgEngPtrRva, g_cfgEngExecRva);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m  fromShot=%d", (int)g_cfgCrosshair,
         g_cfgXhSize * 1000.f, g_cfgXhDist, g_cfgXhFromShot);
+    CfgEcho("ModYaw", "%d  %.0f deg/s   FreezeGameRotation %d",
+        g_cfgModYaw, g_cfgModYawSpeed, g_cfgFreezeGameRot);
 
     Log("[controller]");
     CfgEcho("EnableController", "%d  mode=%s", (int)g_cfgController,
@@ -805,6 +819,8 @@ static void LoadConfig()
     CfgEcho("MenuIndexCounts", "'%s'", g_cfgMenuList);
     CfgEcho("AnchorIndexCounts", "'%s'", g_cfgAnchorList);
     CfgEcho("HudDsvMode", "%d  (0 none, 1 private, 2 game's)", g_cfgHudDsvMode);
+    CfgEcho("HudLeakLog", "%d", g_cfgHudLeakLog);
+    CfgEcho("ExorcismProbe", "%d  offset 0x%X", g_cfgExorcismProbe, g_cfgExorcismOff);
 
     Log("[debug/probe]");
     CfgEcho("EnableDrawHook", "%d", (int)g_cfgDrawHook);

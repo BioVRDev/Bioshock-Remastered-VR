@@ -74,6 +74,7 @@ extern float g_cfgArrowX;
 extern float g_cfgArrowY;
 extern bool g_cfgHudAlphaFix;
 extern int g_cfgHudDsvMode;
+extern int g_cfgHudLeakLog;
 
 static void Log(const char* fmt, ...)
 {
@@ -984,6 +985,7 @@ extern int g_cfgHideArmsSlot[9];   // dllmain.cpp
 int HandsProbe_WeaponSlot();       // HandsProbe.cpp
 bool GameState_MenuUp();           // GameState.cpp
 bool GameState_Paused();           // GameState.cpp
+bool GameState_Theater();          // GameState.cpp
 
 static bool ArmsAutoHidden()
 {
@@ -1388,8 +1390,14 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                     Log("    >> BOUNDARY: %u%c samples scene %p -> host %p",
                         count, KindSuffix(kind), (void*)scene, (void*)g_curRT);
             }
-            else if (g_hudHost && g_curRT == g_hudHost)
+            else if (g_hudHost && g_curRT == g_hudHost && !samplesScene)
             {
+                // WORLD LEAK GUARD (see the else-if below). A real interface
+                // draw never samples the scene target; a second full-screen
+                // scene pass -- tonemap, colour grade, a second composite --
+                // does. Inverting the boundary test keeps those out of the
+                // capture without needing an index-count allowlist.
+                //
                 // CUTSCENE BARS. The 29 matters: health/EVE fills are also
                 // textureless GameSWF draws, at 5 vertices.
                 if (kind == KIND_DRAW &&
@@ -1452,6 +1460,19 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                 // the rest moved to the quad -- split UI, not missing UI. Count
                 // it separately so the log names the lane instead of guessing.
                 if (kind != KIND_DRAW) ++g_leakTotal;
+            }
+            else if (g_hudHost && g_curRT == g_hudHost)
+            {
+                // Blocked by the guard above: right target, but it samples the
+                // scene, so it is world, not interface. Falls through untouched.
+                static DWORD lastLeak = 0;
+                const DWORD nowLk = GetTickCount();
+                if (g_cfgHudLeakLog && nowLk - lastLeak >= 1000)
+                {
+                    lastLeak = nowLk;
+                    Log(">>> HUD LEAK BLOCKED: %u%c samples the scene target "
+                        "-- not an interface draw", count, KindSuffix(kind));
+                }
             }
 
             if (g_boundaryReport)
@@ -1733,15 +1754,18 @@ void DrawHook_EndFrame()
     // started, and BOTH the captured quad and the raw eye-image HUD were
     // visible at once. Require a sustained state before switching either way.
     {
-        const bool wantOpen = !(GameState_MenuUp() || GameState_Paused());
+        const bool wantOpen = !(GameState_MenuUp() || GameState_Paused() ||
+            GameState_Theater());
         static int gateRun = 0;
         if (wantOpen == g_hudGateOpen) gateRun = 0;
         else if (++gateRun >= 12)
         {
             g_hudGateOpen = wantOpen;
             gateRun = 0;
-            Log(">>> HUD GATE %s (paused=%d)", wantOpen ? "OPEN" : "CLOSED",
-                (int)GameState_Paused());
+            Log(">>> HUD GATE %s (menu=%d paused=%d theater=%d)",
+                wantOpen ? "OPEN" : "CLOSED",
+                (int)GameState_MenuUp(), (int)GameState_Paused(),
+                (int)GameState_Theater());
         }
     }
 

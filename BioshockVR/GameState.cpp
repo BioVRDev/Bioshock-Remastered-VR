@@ -47,6 +47,8 @@ extern float g_cfgWorldFovVal;
 extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use src/GameFovDegrees
 extern int   g_cfgFgFovSrc;       // ForegroundFovSrcOffset, 0 == off
 extern float g_cfgFovDeg;         // GameFovDegrees
+extern int   g_cfgExorcismProbe;
+extern int   g_cfgExorcismOff;
 
 static void Log(const char* fmt, ...)
 {
@@ -314,6 +316,10 @@ static int    g_recheck = 0;
 // once STAGE A resolves it, and we re-scan against that instead.
 static void* g_pawn = nullptr;
 
+static const size_t kExScan = 0x1800;
+static void* g_exPrev[kExScan / 4] = {};
+static bool   g_exHave = false;
+
 void GameState_SetPawn(void* pawn)
 {
     if (!pawn || pawn == g_pawn) return;
@@ -325,6 +331,7 @@ void GameState_SetPawn(void* pawn)
     g_scanDone = false;
     g_observeCalls = 0;
     g_nCand = 0;
+    g_exHave = false;              // new pawn -> old snapshot is meaningless
 }
 
 // S38: 0x1000 was NOT enough. The 13:58 scan found PlayerController's localized
@@ -900,6 +907,49 @@ static void Reticle_Tick()
     }
 }
 
+// ============================================================================
+// EXORCISM PROBE.  ShockPlayer.BeginExorcisingGatherer sets
+// CurrentExorcismTarget = theGatherer and pushes NullInput; the whole rescue,
+// INCLUDING the transformation, runs with that pointer non-null, and
+// OnGathererInteractionCompleted clears it. So the slot that goes
+// null -> object -> null across one rescue IS the flag we want.
+//
+// One VirtualQuery for the whole block, twice a second. Deliberately
+// unattended -- no keypress, because this only exists during a rescue.
+// ============================================================================
+
+static void ExorcismProbe(const void* pawn)
+{
+    if (!g_cfgExorcismProbe || !pawn) return;
+
+    static DWORD last = 0;
+    const DWORD t = GetTickCount();
+    if (last && (t - last) < 500) return;
+    last = t;
+
+    if (!Readable(pawn, kExScan)) return;      // ONE query for the block
+
+    for (size_t off = 0; off + 4 <= kExScan; off += 4)
+    {
+        void* now = *(void* const*)((const uint8_t*)pawn + off);
+        void* was = g_exPrev[off / 4];
+        g_exPrev[off / 4] = now;
+
+        if (!g_exHave || now == was) continue;
+
+        const bool nowObj = GsLooksLikeObject(now);
+        const bool wasObj = GsLooksLikeObject(was);
+
+        if (!wasObj && nowObj)
+            Log(">>> EXORCISM: pawn+0x%03X  null -> 0x%08X   <-- CANDIDATE",
+                (unsigned)off, (unsigned)(uintptr_t)now);
+        else if (wasObj && !nowObj)
+            Log(">>> EXORCISM: pawn+0x%03X  0x%08X -> null",
+                (unsigned)off, (unsigned)(uintptr_t)was);
+    }
+    g_exHave = true;
+}
+
 void GameState_Observe(void* playerController)
 {
     if (!playerController) return;
@@ -967,6 +1017,7 @@ void GameState_Observe(void* playerController)
 
     ObservePause(playerController);
     ObserveCutscene(playerController);
+    ExorcismProbe(g_pawn);
     CutsceneFovHold((const uint8_t*)playerController);
 }
 

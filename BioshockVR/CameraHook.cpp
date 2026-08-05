@@ -66,6 +66,9 @@ extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 extern int   g_cfgSnapTurn;
 extern float g_cfgSnapTurnDeg;
+extern int   g_cfgModYaw;
+extern float g_cfgModYawSpeed;
+extern int   g_cfgFreezeGameRot;
 extern int g_cfgHideHandSlot[9];
 extern int g_cfgHideInactiveHand;
 void* GameState_Pawn();
@@ -1863,11 +1866,36 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         // wants; accumulating that swings the whole world around
                         // your locked head. Freeze the heading so ONLY the head
                         // rotates the view. Position still follows the script.
-                        if (!aimNowCut)
+                        // 
+                        // FreezeGameRotation: the game may not rotate the view
+                        // at all. Screenshake, recoil kick, vita-chamber snaps
+                        // and scripted slews ALL arrive through these three
+                        // lines and nowhere else, so dropping them removes the
+                        // whole class at once.
+                        //
+                        // Only safe with ModYaw on, because the player's own
+                        // stick turn also arrives as dY -- freeze without it and
+                        // you cannot turn. Roll is dropped regardless: nothing
+                        // the game does to roll is ever wanted in a headset.
+                        const bool freeze = (g_cfgFreezeGameRot && g_cfgModYaw);
+
+                        if (!aimNowCut && !freeze)
                         {
                             g_aimBase.pitch += dP;
                             g_aimBase.yaw += dY;
                             g_aimBase.roll += dR;
+                        }
+                        else if (freeze)
+                        {
+                            static DWORD s_lastLog = 0;
+                            const DWORD t = GetTickCount();
+                            if ((dP || dR) && t - s_lastLog >= 2000)
+                            {
+                                s_lastLog = t;
+                                Log("  FREEZE: dropped game rotation "
+                                    "p=%+.1f r=%+.1f deg",
+                                    (double)dP / 182.0444, (double)dR / 182.0444);
+                            }
                         }
                     }
                 }
@@ -2057,6 +2085,42 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // -- the sliding this feature exists to eliminate. Adding to
                 // g_aimBase.yaw puts the view somewhere else on the very next
                 // frame with nothing in between.
+                // 
+                // ---- MOD-SIDE SMOOTH YAW -----------------------------------
+                // Same principle as snap turn, continuous: rotate the HEADING
+                // ourselves instead of asking the game to. The point is not the
+                // feel -- it is AUTHORITY. Once yaw arrives here, turning works
+                // in states where the game ignores the pad entirely (NullInput
+                // during a scripted sequence), and the game's own rotation
+                // deltas become discardable without costing us the ability to
+                // turn. That is what makes FreezeGameRotation possible.
+                if (g_cfgModYaw)
+                {
+                    static DWORD s_last = 0;
+                    const DWORD now = GetTickCount();
+                    float dt = s_last ? (float)(now - s_last) * 0.001f : 0.0f;
+                    s_last = now;
+
+                    // A hitch or an alt-tab must not become one enormous spin.
+                    if (dt > 0.10f) dt = 0.0f;
+
+                    float tx = 0.0f;
+                    if (dt > 0.0f && Input_GetTurnX(&tx))
+                    {
+                        // Deadzone is already applied upstream; square the
+                        // response so small corrections are fine and full
+                        // deflection is quick.
+                        const float mag = fabsf(tx);
+                        if (mag > 0.001f)
+                        {
+                            const float curve = (tx < 0.0f) ? -(mag * mag)
+                                : (mag * mag);
+                            g_aimBase.yaw +=
+                                (int32_t)(curve * g_cfgModYawSpeed * dt * 182.0444f);
+                        }
+                    }
+                }
+
                 if (g_cfgSnapTurn)
                 {
                     static bool  snapArmed = true;

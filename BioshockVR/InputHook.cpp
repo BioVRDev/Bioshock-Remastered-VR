@@ -58,6 +58,7 @@ extern float g_cfgPitchServoMax;
 extern int   g_cfgSwingLog;
 extern int   g_cfgHeadRelativeMove;
 extern int   g_cfgSnapTurn;
+extern int   g_cfgModYaw;
 extern float g_cfgGripThreshold;
 extern float g_cfgGripHysteresis;
 
@@ -793,7 +794,10 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // Flipped mode owns the right stick while the modifier is held, so the
     // d-pad direction must not ALSO snap-turn you.
     if (!(mod && g_cfgDpadFlip))
-        out->Gamepad.sThumbRX = (g_cfgSnapTurn ? 0 : ToAxis(s.turnX));
+        // Snap turn and mod-yaw both rotate g_aimBase directly. Sending the
+        // axis as well would turn you twice, at two different rates.
+        out->Gamepad.sThumbRX =
+        ((g_cfgSnapTurn || g_cfgModYaw) ? 0 : ToAxis(s.turnX));
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a
