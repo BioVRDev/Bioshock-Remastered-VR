@@ -595,7 +595,7 @@ static void LoadConfig()
     g_cfgHandsNudgePitch = CfgFloat("HandsNudgePitch", g_cfgHandsNudgePitch, -180.f, 180.f);
 
     // aiming / crosshair
-    g_cfgAimSource = CfgInt("AimSource", 0);
+    g_cfgAimSource = CfgIntRange("AimSource", 0, 0, 1);
     g_cfgAimClampDeg = CfgFloat("AimClampDeg", g_cfgAimClampDeg, 1.f, 80.f);
     g_cfgPlasmidAimPitch = CfgFloat("PlasmidAimPitch", g_cfgPlasmidAimPitch, -90.f, 90.f);
     g_cfgAimSmooth = CfgFloat("AimSmoothing", g_cfgAimSmooth, 0.f, 0.95f);

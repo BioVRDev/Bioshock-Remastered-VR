@@ -1899,6 +1899,48 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         }
                     }
                 }
+
+                // ---- MOD-SIDE SMOOTH YAW -----------------------------------
+                // MUST live here, not further down by snap turn. The view, the
+                // aim field and DriveHands are all built from g_aimBase BELOW
+                // this point; advancing the base after they read it leaves the
+                // gun one frame of yaw ahead of the view, which reads as the
+                // weapon flickering and swelling while you turn. That is the
+                // exact failure the comment at the top of this block describes.
+                //
+                // Rotating the HEADING ourselves rather than asking the game to
+                // is what gives us authority: turning then works in states where
+                // the game ignores the pad entirely, and the game's own rotation
+                // deltas above become discardable without costing us turning.
+                if (g_cfgModYaw)
+                {
+                    static LARGE_INTEGER s_freq = {};
+                    static LARGE_INTEGER s_prev = {};
+                    if (!s_freq.QuadPart) QueryPerformanceFrequency(&s_freq);
+
+                    LARGE_INTEGER nowQ;
+                    QueryPerformanceCounter(&nowQ);
+                    float dt = s_prev.QuadPart
+                        ? (float)((double)(nowQ.QuadPart - s_prev.QuadPart) /
+                            (double)s_freq.QuadPart)
+                        : 0.0f;
+                    s_prev = nowQ;
+
+                    if (dt > 0.10f) dt = 0.0f;      // hitch, load or alt-tab
+
+                    float tx = 0.0f;
+                    if (dt > 0.0f && Input_GetTurnX(&tx))
+                    {
+                        const float mag = fabsf(tx);
+                        if (mag > 0.001f)
+                        {
+                            const float curve = (tx < 0.0f) ? -(mag * mag)
+                                : (mag * mag);
+                            g_aimBase.yaw +=
+                                (int32_t)(curve * g_cfgModYawSpeed * dt * 182.0444f);
+                        }
+                    }
+                }
             }
 
             FRotator finalRot = cleanRot;
@@ -2086,41 +2128,6 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // g_aimBase.yaw puts the view somewhere else on the very next
                 // frame with nothing in between.
                 // 
-                // ---- MOD-SIDE SMOOTH YAW -----------------------------------
-                // Same principle as snap turn, continuous: rotate the HEADING
-                // ourselves instead of asking the game to. The point is not the
-                // feel -- it is AUTHORITY. Once yaw arrives here, turning works
-                // in states where the game ignores the pad entirely (NullInput
-                // during a scripted sequence), and the game's own rotation
-                // deltas become discardable without costing us the ability to
-                // turn. That is what makes FreezeGameRotation possible.
-                if (g_cfgModYaw)
-                {
-                    static DWORD s_last = 0;
-                    const DWORD now = GetTickCount();
-                    float dt = s_last ? (float)(now - s_last) * 0.001f : 0.0f;
-                    s_last = now;
-
-                    // A hitch or an alt-tab must not become one enormous spin.
-                    if (dt > 0.10f) dt = 0.0f;
-
-                    float tx = 0.0f;
-                    if (dt > 0.0f && Input_GetTurnX(&tx))
-                    {
-                        // Deadzone is already applied upstream; square the
-                        // response so small corrections are fine and full
-                        // deflection is quick.
-                        const float mag = fabsf(tx);
-                        if (mag > 0.001f)
-                        {
-                            const float curve = (tx < 0.0f) ? -(mag * mag)
-                                : (mag * mag);
-                            g_aimBase.yaw +=
-                                (int32_t)(curve * g_cfgModYawSpeed * dt * 182.0444f);
-                        }
-                    }
-                }
-
                 if (g_cfgSnapTurn)
                 {
                     static bool  snapArmed = true;
@@ -2260,8 +2267,6 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // same frame.
                 PublishShotDir(finalRot, want);
 
-                // S74: do NOT write during a cutscene. Always-writing latches
-                // the detector ON forever.
                 if (!aimNowCut)
                 {
                     *aimField = want;
@@ -2322,8 +2327,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         g_ieSum = 0.0; g_ieMax = 0.0; g_ieN = 0;
         Log("  DELTA: FrameDelta min %.5f  max %.5f   clamp=%d",
             (g_fdMinBits == 0xFFFFFFFFu) ? 0.0f : *(const float*)&g_fdMinBits,
-            * (const float*)&g_fdMaxBits, (int)g_cfgDeltaClamp);
-            g_fdMinBits = 0xFFFFFFFFu; g_fdMaxBits = 0;
+            *(const float*)&g_fdMaxBits, (int)g_cfgDeltaClamp);
+        g_fdMinBits = 0xFFFFFFFFu; g_fdMaxBits = 0;
         Log("  POS : right%7.1f%s  up%7.1f%s  fwd%7.1f%s  cm   %s",
             g_posRight, (fabs(g_posRight) >= kPosSide - 0.05) ? "*" : " ",
             g_posUp, (g_posUp >= kPosUpMax - 0.05 ||
