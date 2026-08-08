@@ -1879,11 +1879,20 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         // the game does to roll is ever wanted in a headset.
                         const bool freeze = (g_cfgFreezeGameRot && g_cfgModYaw);
 
-                        if (!aimNowCut && !freeze)
+                        // The freeze drops PITCH and ROLL only. Screenshake,
+                        // recoil kick and camera-anim breathing all live on
+                        // those two axes and none of it is ever wanted in a
+                        // headset. YAW must keep flowing: scripted cameras aim
+                        // in yaw, and dropping it pins the opening cutscene to
+                        // your head instead of letting it fly through the world.
+                        if (!aimNowCut)
                         {
-                            g_aimBase.pitch += dP;
+                            if (!freeze)
+                            {
+                                g_aimBase.pitch += dP;
+                                g_aimBase.roll += dR;
+                            }
                             g_aimBase.yaw += dY;
-                            g_aimBase.roll += dR;
                         }
                         else if (freeze)
                         {
