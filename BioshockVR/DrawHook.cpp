@@ -1412,17 +1412,17 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
 
                 if (kind >= 0 && kind <= 4) ++g_postByKind[kind];
 
-                // THE REDIRECT. Measured over 44,890 frames: every draw that
-                // lands here is a plain Draw, so that is the only lane taken.
+                // MEASURED, two windows in one session:
+                //   normal play -> CAPTURED: 5d  tex=no    (health / EVE bars)
+                //   the square  -> CAPTURED: 6d  tex=yes   (textured quad)
                 //
-                // Rebound EVERY draw, not once at the boundary: the game may
-                // rebind its own target mid-batch, and a single missed rebind
-                // silently drops part of the interface back onto the eye image.
-                //
-                // Through g_origOMSetRT deliberately -- going through our own
-                // hook would overwrite g_curRT and the next draw would no longer
-                // match the host.
+                // The interface is untextured GameSWF geometry; the square is a
+                // textured full-screen quad landing in the same slot. One bound
+                // shader resource separates them, so the square never enters the
+                // capture -- in ANY scene, with no timers and no cutscene
+                // detection. Structural, not a timing bandaid.
                 if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
+                    PSSrv0Res(ctx) == nullptr &&
                     kind == KIND_DRAW && g_hudRTV && g_hudDSV)
                 {
                     // Which depth-stencil the captured draws see. MEASURED: the

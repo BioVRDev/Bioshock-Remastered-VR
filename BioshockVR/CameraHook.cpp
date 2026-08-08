@@ -65,7 +65,10 @@ extern int   g_cfgArrowPtrOff;    // pawn+N -> the quest arrow actor. 0 == off
 extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
 extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
 extern int   g_cfgSnapTurn;
+extern int   g_cfgModYaw;
 extern float g_cfgSnapTurnDeg;
+extern int   g_cfgFreezeGameRot;
+extern float g_cfgModYawSpeed;
 extern int g_cfgHideHandSlot[9];
 extern int g_cfgHideInactiveHand;
 void* GameState_Pawn();
@@ -1863,12 +1866,66 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         // wants; accumulating that swings the whole world around
                         // your locked head. Freeze the heading so ONLY the head
                         // rotates the view. Position still follows the script.
-                        if (!aimNowCut)
+                        // 
+                        // FreezeGameRotation: the game may not rotate the view
+                        // at all. Screenshake, recoil kick, camera-anim and
+                        // scripted slews ALL arrive through these three lines
+                        // and nowhere else, so dropping them removes the whole
+                        // class at once. YAW MUST BE INCLUDED -- mode 2 already
+                        // discards base pitch, so yaw is the axis you actually
+                        // feel, and leaving it in is why a yaw-only version
+                        // looked like it did nothing.
+                        //
+                        // Requires ModYaw: the player's own stick turn also
+                        // arrives as dY, so freezing without mod-side yaw would
+                        // mean you could not turn at all.
+                        const bool freeze = (g_cfgFreezeGameRot && g_cfgModYaw);
+
+                        if (!aimNowCut && !freeze)
                         {
                             g_aimBase.pitch += dP;
                             g_aimBase.yaw += dY;
                             g_aimBase.roll += dR;
                         }
+                    }
+                }
+            }
+
+            // ---- MOD-SIDE SMOOTH YAW ---------------------------------------
+            // MUST run BEFORE finalRot is composed. The view, the aim field and
+            // DriveHands are all built from g_aimBase below; advancing it after
+            // they read it leaves the gun one frame of yaw ahead of the view,
+            // which reads as the weapon flickering while you turn.
+            //
+            // Rotating the heading ourselves is what gives turning authority:
+            // it works even in states where the game ignores the pad entirely,
+            // which is how you get stick look during a scripted sequence.
+            if (g_cfgModYaw)
+            {
+                static LARGE_INTEGER s_freq = {};
+                static LARGE_INTEGER s_prev = {};
+                if (!s_freq.QuadPart) QueryPerformanceFrequency(&s_freq);
+
+                LARGE_INTEGER nowQ;
+                QueryPerformanceCounter(&nowQ);
+                float dt = s_prev.QuadPart
+                    ? (float)((double)(nowQ.QuadPart - s_prev.QuadPart) /
+                        (double)s_freq.QuadPart)
+                    : 0.0f;
+                s_prev = nowQ;
+
+                if (dt > 0.10f) dt = 0.0f;      // hitch, load or alt-tab
+
+                float tx = 0.0f;
+                if (dt > 0.0f && Input_GetTurnX(&tx))
+                {
+                    const float mag = fabsf(tx);
+                    if (mag > 0.001f)
+                    {
+                        const float curve = (tx < 0.0f) ? -(mag * mag)
+                            : (mag * mag);
+                        g_aimBase.yaw +=
+                            (int32_t)(curve * g_cfgModYawSpeed * dt * 182.0444f);
                     }
                 }
             }
