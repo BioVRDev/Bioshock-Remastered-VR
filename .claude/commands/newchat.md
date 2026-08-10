@@ -41,6 +41,13 @@ per *headset test cycle*, because that is the real cost here.
   the first thing to rot.
 - Any comment made false by this session's work → fix it now (`docs/STYLE.md`).
 
+**README drift check.** `README.md` is the only user-facing document, so it goes
+stale silently — nobody working on the mod reads it. Flag it for `/readme` if any
+of these changed this session: the packaged file list, `Setup.bat`'s behaviour,
+runtime or headset support, the tuning keys, or a feature moving between
+"working" and "open" in `STATE.md`. Do not run `/readme` every session; do say
+when it is due.
+
 ## 3. Check the repo is clean
 
 - `git status` — nothing uncommitted that should be committed.

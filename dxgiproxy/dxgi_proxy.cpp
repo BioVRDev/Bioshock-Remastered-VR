@@ -48,14 +48,36 @@ static void Say(const wchar_t* msg)
     OutputDebugStringW(L"\n");
 }
 
-// Writes a breadcrumb next to the proxy. If the mod ever fails to appear, this
+// Writes a breadcrumb into <game>\logs\. If the mod ever fails to appear, this
 // file existing tells you the proxy WAS loaded and the problem is downstream --
 // which is the single most useful thing to know when nothing happens at all.
+//
+// It goes in logs\ so every log this project produces lives in one folder and a
+// support bundle is one directory. But that is a convenience, and this file's
+// whole value is that it appears when NOTHING else does -- so if the folder
+// cannot be created we fall back to sitting beside the proxy rather than
+// writing nothing at all. A breadcrumb that can fail is not a breadcrumb.
+//
+// Appends rather than truncates, unlike the mod's own log: across runs this is
+// a history of whether the proxy ever loaded, which is exactly the question it
+// exists to answer.
 static void Breadcrumb(const wchar_t* dir, const wchar_t* text)
 {
     wchar_t path[MAX_PATH] = {};
     wcscpy_s(path, dir);
-    wcscat_s(path, L"BioshockVR_loader.log");
+    wcscat_s(path, L"logs");
+
+    // CreateDirectory failing because it already exists is the normal case.
+    if (CreateDirectoryW(path, nullptr) ||
+        GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        wcscat_s(path, L"\\BioshockVR_loader.log");
+    }
+    else
+    {
+        wcscpy_s(path, dir);
+        wcscat_s(path, L"BioshockVR_loader.log");
+    }
 
     HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
         OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

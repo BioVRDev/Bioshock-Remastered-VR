@@ -38,8 +38,14 @@ is empty outside a solution build — the result is
 - `/MT` runtime, so there is no VC++ redistributable dependency. Keep it.
 - The shim must never be linked into `BioshockVR.dll`.
 
-Deploy with `deploy.bat` (gitignored; copy from `deploy.bat.example`). The DLL
-goes **directly beside `BioshockHD.exe`** — there is no `BioPlugins` folder.
+There is no deploy script. Claude copies the built DLL into the game folder
+directly (see Test loop below) — it is writable without elevation. The DLL goes
+**directly beside `BioshockHD.exe`**; there is no `BioPlugins` folder.
+
+A third project, `dxgiproxy/dxgiproxy.vcxproj` → `Release/dxgi.dll`, is the
+loader that pulls the mod in. It rarely changes. `Release|Win32` is the only
+config with `ModuleDefinitionFile` set, so the other three build a DLL that
+exports nothing the game looks for.
 
 ## Test loop
 

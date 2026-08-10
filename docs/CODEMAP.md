@@ -166,8 +166,13 @@ layers are re-composited as textured quads at 50 m using the real HMD frustum.
 Generates its own SteamVR action manifest and per-controller bindings.
 → **`docs/modules/shim.md`** — mandatory before adding any OpenXR call.
 
-### `dxgiproxy/` (175) — loader shim
-Minimal `dxgi.dll` proxy.
+### `dxgiproxy/` (156) — the loader
+Minimal `dxgi.dll` proxy: the game imports `CreateDXGIFactory1` from `DXGI.dll`,
+Windows checks the exe's own folder first, so this wins and pulls in
+`BioshockVR.dll` before handing the call to the real system DXGI. Loading happens
+on the first export call, not in `DllMain`, because `LoadLibrary` under the
+loader lock deadlocks. Writes `logs\BioshockVR_loader.log` as a breadcrumb.
+→ **`docs/modules/packaging.md`**
 
 ---
 

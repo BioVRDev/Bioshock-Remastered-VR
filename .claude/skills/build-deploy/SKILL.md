@@ -45,7 +45,13 @@ C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final\
 ```
 
 The DLL goes **directly beside `BioshockHD.exe`** — there is no `BioPlugins`
-folder, despite what the old `deploy.bat` did.
+folder, despite what the old `deploy.bat` did (it has been removed).
+
+The loader, `dxgiproxy/` → `Release/dxgi.dll`, is a THIRD project. It rarely
+needs rebuilding, and replacing it is riskier than the mod DLL: get it wrong and
+the game loads nothing at all. Back up the existing one first, and verify with
+`dumpbin /EXPORTS` that the five game-facing names (`CreateDXGIFactory`, ...)
+are present -- `ModuleDefinitionFile` is set only on `Release|Win32`.
 
 1. Check the game is closed (`tasklist | grep -i bioshock`). A running game locks
    the DLL and the copy fails.

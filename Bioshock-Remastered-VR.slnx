@@ -1,8 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="BioshockVR/BioshockVR.vcxproj" Id="cbcd17fc-f75a-48bc-b30f-b38b965b25ed" />
-  <Project Path="OpenXRShim/OpenXRShim.vcxproj" Id="bcafee0b-6276-4772-9626-51f86f385173" />
-</Solution>

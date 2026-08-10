@@ -20,18 +20,22 @@ Cutscene Black Bar Removal: https://www.nexusmods.com/bioshock/mods/81?tab=descr
 ## Install
 
 1. Download the latest release.
-2. Extract all four files next to `BioshockHD.exe`:
+2. Extract everything next to `BioshockHD.exe`:
 
 ```
 ...\BioShock Remastered\Build\Final\
     BioshockHD.exe
-    dxgi.dll
-    BioshockVR.dll
-    BioshockVR.ini
-    FirstTimeSetup.bat
+    dxgi.dll                     loads the mod
+    BioshockVR.dll               the mod
+    BioshockVR.ini               settings
+    openxr_loader.dll            OpenXR runtime -- Setup picks which
+    openxr_loader_steam.dll      the SteamVR one, until Setup picks
+    Setup.bat
+    Uninstall.bat
 ```
 
-3. **Run `FirstTimeSetup.bat` once, with the game closed.**
+3. **Run `Setup.bat` once, with the game closed.** It asks which headset you
+   have and which runtime to use, then installs the matching loader.
 4. Put your headset on and launch the game normally.
 
 No injector, no plugin folder, no launcher.
@@ -40,7 +44,7 @@ No injector, no plugin folder, no launcher.
 
 The game reads its config at startup and rewrites it on exit with whatever it
 actually ran at, which is why a fresh install starts fullscreen at your desktop
-resolution and can never correct itself. `FirstTimeSetup.bat` sets the values
+resolution and can never correct itself. `Setup.bat` sets the values
 before the game ever starts, which breaks that loop for good:
 
 - render resolution and FOV the mod needs
@@ -59,7 +63,13 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 ## Requirements
 
 - BioShock Remastered on PC (developed and tested against the Steam build)
-- Any OpenXR headset and runtime — Quest via Link or Air Link, SteamVR, WMR
+- Any OpenXR headset. Quest and Pico work through the standard loader (Link,
+  Air Link, or Virtual Desktop). **Lighthouse headsets — Index, Vive, Bigscreen
+  Beyond, Varjo — work through a bundled SteamVR shim**, because SteamVR's own
+  OpenXR runtime does not support 32-bit games and BioShock Remastered is
+  32-bit. `Setup.bat` picks the right one for you; start SteamVR before the game
+  if you choose that path.
+- WMR / Reverb controller bindings are provisional and untested on hardware
 - Windows 10 or 11
 
 ---
@@ -173,7 +183,7 @@ inherits the authored idle animation. Hiding the arms doesn't stop it.
 ## Performance
 
 `ResolutionX` and `ResolutionY` in `BioshockVR.ini` are the main dial — lower
-them and re-run `FirstTimeSetup.bat`. FOV below 100 looks nearly identical in the
+them and re-run `Setup.bat`. FOV below 100 looks nearly identical in the
 headset but runs noticeably better, because the game stops rendering side content
 that never reaches the display.
 
@@ -190,7 +200,7 @@ Quick self-checks:
 | Symptom | Cause |
 |---|---|
 | Nothing happens at all | Is `BioshockVR_loader.log` next to the exe? If not, `dxgi.dll` isn't loading — check all files are in the same folder |
-| Wrong resolution, or fullscreen | Run `FirstTimeSetup.bat` with the game closed |
+| Wrong resolution, or fullscreen | Run `Setup.bat` with the game closed |
 | `could not find Bioshock.ini` | Launch the game once so it creates one, quit, run setup again |
 | World too big or too small | `EyeSeparation` is half your IPD in cm |
 | You feel too short or too tall | `CameraHeightOffset`, in cm |
@@ -205,7 +215,7 @@ Quick self-checks:
 - Dependencies: OpenXR SDK, [MinHook](https://github.com/TsudaKageyu/minhook)
 
 Build both, then copy `BioshockVR.dll`, `dxgi.dll`, `BioshockVR.ini` and
-`FirstTimeSetup.bat` next to `BioshockHD.exe`.
+`Setup.bat` next to `BioshockHD.exe`.
 
 If you get `unresolved external symbol` from `dxgi.def`, the proxy project is set
 to x64. If `dumpbin /dependents dxgi.dll` lists `DXGI.dll`, you've linked

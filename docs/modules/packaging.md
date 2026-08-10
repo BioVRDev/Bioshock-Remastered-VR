@@ -20,8 +20,9 @@
 ```
 
 > **There is no `BioPlugins` subfolder in a current install.** The mod DLL sits
-> directly beside the executable. `deploy.bat` copied into `BioPlugins\` and
-> silently failed; `deploy.bat.example` has the corrected path.
+> directly beside the executable. The old `deploy.bat` copied into
+> `BioPlugins\` and silently failed; there is no deploy script now, because
+> Claude copies the built DLL into the game folder itself.
 
 Steam AppID `409710`. The intended loader is SnowTempest's
 `BSHD-PluginLoader 1.0.2` `dxgi.dll`, not the ReShade-oriented `version.dll`.
@@ -121,21 +122,33 @@ exactly like a working setting.
 
 ## Logs
 
-| File | Location |
+**Everything lives in `Build\Final\logs\`.** As of 2026-08-09 that is true of
+the loader breadcrumb too — `dxgi_proxy.cpp`'s `Breadcrumb()` used to write
+beside the proxy, and now creates and uses `logs\`, falling back to the old
+location only if the folder cannot be created (a breadcrumb that can fail is not
+a breadcrumb).
+
+| File | Written by |
 |---|---|
-| `BioshockVR.log` | beside the DLL |
-| `openxr_shim.log` | **`logs\`**, not beside the DLL — moved; verify `CollectLogs.bat` |
-| `setup.log` | `logs\` |
+| `logs\BioshockVR.log` | the mod; truncated at startup, so it is always one run |
+| `logs\BioshockVR_loader.log` | `dxgi.dll` proxy; **appended**, so it is a history of whether the loader ever ran |
+| `logs\openxr_shim.log` | the SteamVR shim |
+| `logs\setup.log` | `Setup.bat` |
 | `Bioshock.log` | game profile folder — **only opened at shutdown**, so it can never contain anything from a live session |
 
 Support bundle: `CollectLogs.bat` should gather mod, shim, installer, INI and
 runtime logs into one folder, and detect VirtualStore redirection.
 
-## Known documentation drift
+## Keeping README.md honest
 
-- `README.md` tells users to run `FirstTimeSetup.bat`; the shipped file is
-  `Setup.bat`.
-- `README.md` lists four install files; the real package is larger.
+`README.md` is the only user-facing document, so it goes stale silently — nobody
+working on the mod reads it. `/readme` audits it against `dist/`, this file and
+`.planning/STATE.md`; `/newchat` flags when it is due.
+
+Corrected 2026-08-09: it named `FirstTimeSetup.bat` (the shipped file is
+`Setup.bat`), claimed a four-file package, and never mentioned that SteamVR
+support comes from the bundled shim and requires the setup script's runtime
+choice — which is a headline feature.
 
 ## Build identity
 
