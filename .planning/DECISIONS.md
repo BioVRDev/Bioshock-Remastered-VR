@@ -75,8 +75,7 @@ Scheduled in `ROADMAP.md` as a change, not folded into the refactor.
 
 ## 2026-08-09 — `ControllerLayout` default corrected to `1`
 
-The global is defined as `1` (`dllmain.cpp:130`) and read with a default of `0`
-(line 613). The shipped INI sets it explicitly, so only users whose INI lacks the
+The global was defined as `1` while its ini read defaulted to `0`. The shipped INI sets it explicitly, so only users whose INI lacks the
 key were affected.
 
 Corrected to match the global while consolidating config. **This is the only
@@ -151,3 +150,31 @@ One genuine seam does exist and was left alone for now — `EnumReadableRegions`
 `FindCalcView` (~230 lines) touch only `g_modBase`/`g_modSize`, so "find the
 function" is separable from "hook it and drive it". Worth doing as part of the
 deferred layered architecture rather than on its own.
+
+---
+
+## 2026-08-09 — no auto-formatter, and no line numbers in docs
+
+**No `.clang-format`.** One was written, tuned against the tree, and measured:
+even at maximum permissiveness it wanted to change **37% of all lines**. Every
+disagreement was one where the hand-formatting is better — it collapses
+column-aligned `extern` blocks, splits paired idioms like
+`va_list a; va_start(a, fmt);`, and aligns wrapped arguments to the opening
+parenthesis, pushing code past column 40 in a file that otherwise holds 80.
+
+A formatter that fights the code on every line is not a guard rail. `.editorconfig`
+covers indentation, encoding, line endings and trailing whitespace; layout stays
+human. The style is documented in `docs/STYLE.md` instead. **Do not bulk-format**
+— it would also break `git blame` on code whose history is often the only record
+of why it is shaped that way.
+
+**Docs cite anchors, not line numbers.** `CLAUDE.md` has always said "never line
+numbers — this file moves constantly", and the docs then used 48 of them. This
+session proved the point: the square fix moved from `DrawHook.cpp:1425` to
+`:1404` when the extern blocks were deleted, and every module doc's section index
+was stale within one commit.
+
+All of them are now greppable anchors — banner text (`the classifier`,
+`ALPHA REPAIR`) or code (`PSSrv0Res(ctx) == nullptr`). File sizes stay as
+numbers because they are informative rather than navigational, and `/codemap`
+refreshes them.

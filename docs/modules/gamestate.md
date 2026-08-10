@@ -1,6 +1,6 @@
 # Game state and cutscene detection
 
-`GameState.cpp` (1178) and `EngineExec.cpp` (279).
+`Game/GameState.cpp` (1166) and `Game/EngineExec.cpp` (273).
 
 **This is the project's longest-standing unsolved problem.** Everything
 downstream of a cutscene signal is already built and waiting for an input.

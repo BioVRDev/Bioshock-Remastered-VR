@@ -1,6 +1,6 @@
 # Hands, weapons, and arms
 
-`HandsProbe.cpp` (1732), `ArmHide.cpp` (507).
+`Hands/HandsProbe.cpp` (1707), `Hands/ArmHide.cpp` (504).
 
 ## Finding the Hands actor
 
@@ -109,8 +109,11 @@ identify the active hand bone cluster, preserve a reference pose, and apply a
 rigid cluster transform around a reference anchor after skeleton evaluation.
 Larger and riskier than the current slot system.
 
-## Suggested split
+## A split was considered and rejected
 
-- `HandsProbe.cpp` — discovery stages A/B/C
-- `WeaponSlots.cpp` — hand-mode probe (`:1165`), equipped-weapon ID (`:1279`),
-  per-weapon grip (`:1368`), idle animation (`:1409`)
+See `.planning/DECISIONS.md`. `g_hands`, `g_pawn` and `g_gun` are used across the
+whole file by both the discovery stages and the per-weapon code.
+
+Sections, by banner text: `state` · `live tuning` · `stage A` · `stage B` ·
+`stage C` · `HAND MODE PROBE` · `ACTIVE HAND MODE` · `WHICH WEAPON IS EQUIPPED` ·
+`PER-WEAPON GRIP OFFSET` · `IDLE HANDS ANIMATION` · `QUEST ARROW HUNT`.

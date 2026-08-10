@@ -1,6 +1,6 @@
 # HUD capture and draw classification
 
-`DrawHook.cpp` (2174). **Read this before changing anything in the capture path.**
+`Hud/DrawHook.cpp` (2153). **Read this before changing anything in the capture path.**
 More time has been lost here than anywhere else in the project.
 
 ## What it does
@@ -43,7 +43,7 @@ Seventeen consecutive samples of ordinary play showed only `5d tex=no`. The
 interface is **untextured GameSWF geometry**; the square was a **textured
 full-screen quad** landing in the same one-draw-per-frame capture slot.
 
-The fix is one term, `DrawHook.cpp:1425`:
+The fix is one term, in the redirect condition (grep `PSSrv0Res`):
 
 ```cpp
 if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
@@ -113,10 +113,13 @@ across those two functions reads zero. This cost two builds.
   the isolate walker. The dump is the useful one; the walker cannot catch a rare
   short-lived effect (one candidate per press).
 
-## Suggested split
+## Sections, and why there is no split
 
-- `DrawHook.cpp` — hooks and classifier (`:156`)
-- `HudCapture.cpp` — capture surfaces (`:246`), alpha repair (`:277`),
-  correction (`:581`), **the texture-exclusion guard (`:1425`)**
-- `DrawFingerprint.cpp` — table (`:786`), suppression (`:802`), isolate stepper
-  (`:812`), VS constant dump (`:1168`)
+Sections, by banner text -- grep for these rather than a line number:
+`the classifier` · `capture surfaces` · `ALPHA REPAIR` · `alpha correction` ·
+`texture discrimination` · `the fingerprint table` · `suppression` ·
+`isolate stepper` · `menu detection` · `ANCHOR list` ·
+`vertex-shader constant dump`.
+
+**A split was considered and rejected** -- see `.planning/DECISIONS.md`. The
+state is shared across the whole file.

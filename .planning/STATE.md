@@ -45,7 +45,7 @@ ViewActor divergence as a shortcut. All four are falsified with evidence in
 **The duplicate-world square — FIXED.** A textured full-screen quad was landing
 in the HUD capture's one-draw-per-frame slot, and the alpha repair forced it
 opaque. The interface is untextured GameSWF geometry; the square was textured.
-One term at `DrawHook.cpp:1425`:
+One term in the redirect condition (grep `PSSrv0Res`):
 
 ```cpp
 PSSrv0Res(ctx) == nullptr
@@ -120,6 +120,10 @@ are inert. Keep them; do not delete.
 - **`HeadAimMode=2` starves scripted pitch gates.** The plasmid injection scene
   waits for the view to pitch down at the syringe and hangs forever. `=1` clears
   it. Reproducible.
+- **`dxgiproxy` had never built.** It compiled both `dxgi_proxy.cpp` and a
+  leftover Visual Studio wizard `dllmain.cpp`, each defining `DllMain` (LNK2005).
+  Template deleted 2026-08-09; all three projects now build. Worth remembering
+  that the dead-code audit only covered `BioshockVR/`.
 - **Diagnostic key collisions.** `VK_PRIOR` has three readers, `VK_DELETE` two.
   Wiring `Keybinds.cpp` (complete, zero callers) fixes both plus the 103-VK
   per-frame sweep in `PollFovKeys`.
@@ -172,6 +176,13 @@ No behaviour changes except the `ControllerLayout` default, logged in
 `DECISIONS.md`.
 
 ### Refactor prep is complete
+
+Housekeeping since: all logs now land in `Build\Final\logs\` (the loader
+breadcrumb was the last one outside it); `Bioshock-Remastered-VR.slnx` and
+`deploy.bat.example` removed; `docs/STYLE.md` written; `README.md` corrected;
+`/newchat`, `/readme` and `/codemap` in place. Docs no longer cite line numbers
+— they rot, and this session proved it when the square fix moved from 1425 to
+1404. They cite greppable anchors instead.
 
 Both projects rebuild clean, `Release|Win32`, with only the two pre-existing
 `C4244` warnings in `CameraHook.cpp` (confirmed pre-existing by a clean rebuild

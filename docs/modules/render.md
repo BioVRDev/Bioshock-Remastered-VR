@@ -1,6 +1,6 @@
 # Rendering, frame flow, and OpenXR submission
 
-`Hooks.cpp` (825) and `XRSession.cpp` (1443).
+`Render/Hooks.cpp` (820) and `Render/XRSession.cpp` (1426).
 
 ## Frame flow
 
@@ -93,7 +93,7 @@ published shot ray plus an optional scene trace.
 ## Known cruft
 
 `PollFovKeys()` sweeps virtual keys `0x21`–`0x87` (103 codes) **every XR frame**,
-from both the stereo (`:636`) and mono (`:1195`) call sites. It is edge-throttled
+from both the stereo and mono call sites. It is edge-throttled
 for logging but the sweep itself is unconditional. It also owns `VK_DELETE` for
 cycling the HUD-quad edit parameter, which now collides with the `GETTEST` probe
 in `GameState.cpp`. Wiring `Keybinds.cpp` is the fix for both.

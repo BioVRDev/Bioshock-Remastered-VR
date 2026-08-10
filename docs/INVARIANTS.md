@@ -100,7 +100,7 @@ handoff disagree, this file wins.
 - **What actually worked:** the interface is untextured GameSWF geometry
   (`CAPTURED: 5d tex=no`); the square was a textured full-screen quad
   (`CAPTURED: 6d tex=yes`). One bound shader resource separates them.
-  `PSSrv0Res(ctx) == nullptr` in the redirect condition, `DrawHook.cpp:1425`.
+  `PSSrv0Res(ctx) == nullptr` in the redirect condition of `Hud/DrawHook.cpp`.
 
 ### Cutscene detection (still open — these are the graves)
 - **ViewActor divergence.** Does not leave the pawn on this build; `+0x450`,

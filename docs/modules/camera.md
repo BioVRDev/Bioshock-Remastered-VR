@@ -1,6 +1,6 @@
 # Camera, aim, and turning
 
-`CameraHook.cpp` (2615) — the largest file and the engine seam the whole mod
+`Camera/CameraHook.cpp` (2583) — the largest file and the engine seam the whole mod
 rests on.
 
 ## Finding the function
@@ -26,20 +26,22 @@ to locomotion. Full table in `docs/ENGINE-MAP.md`.
 
 ## What it owns
 
-- **The eye-tag FIFO** (`:142`, API at `:2340`). Tags each view with the eye it
+- **The eye-tag FIFO** (banner `the eye FIFO`, API at `the FIFO API`). Tags each view with the eye it
   applied and pushes; `Present` pops in order. Because the tag travels with the
   frame, pipeline depth is irrelevant and a one-frame slip cannot accumulate.
   `CameraHook_EyeQueueStats` reports depth — `min == max` means lockstep.
-- **The latched-pose channel** (`:179`). Publishes the pose the camera was
+- **The latched-pose channel** (banner `latched pose`). Publishes the pose the camera was
   *actually rendered from* — the quat latched at eye-0 time plus the applied,
   clamped head-centre position. The projection layer must carry this, not the
   freshest pose at submit time. Removing it reintroduces flicker.
-- **Motion aim** (`:476`), head aim (`:821`), applied-shot direction (`:717`),
-  snap turn, `ModYaw` (`:1903`), the pitch servo (`:550`, must stay off).
-- **Delta clamp** (`:947`) — one world advance per eye pair, so both eyes show
-  one instant.
-- **6-DOF hand writes** (`:882`) and the late rotation write (`:911`), re-applied
-  from the render thread after the game tick has had its say.
+- **Motion aim**, head aim, applied-shot direction, snap turn, `ModYaw`, and
+  the pitch servo (must stay off). Banners: `motion aim state`,
+  `HIDDEN PITCH SERVO`, `APPLIED SHOT DIRECTION`, `HEAD-AIM`.
+- **Delta clamp** (banner `ONE WORLD ADVANCE PER EYE PAIR`) — one world advance
+  per eye pair, so both eyes show one instant.
+- **6-DOF hand writes** and the late rotation write (banners `6-DOF HANDS`,
+  `LATE ROTATION WRITE`), re-applied from the render thread after the game tick
+  has had its say.
 
 ## Frame ordering — the rule that keeps being rediscovered
 
@@ -105,10 +107,14 @@ for the view to pitch down at the syringe and hangs forever under mode 2.
 Right-stick Y is dropped by default (`ControllerPitch=0`) because under mode 2 any
 injected pitch is erased ~8 ms later and reads as a fight.
 
-## Suggested split
+## A split was considered and rejected
 
-- `CameraHook.cpp` — detour and install
-- `CameraScan.cpp` — module scan and the six stages (`:256–441`), delta scan (`:2439`)
-- `EyeQueue.cpp` — FIFO (`:142`), latched pose (`:179`), FIFO API (`:2340`)
-- `AimControl.cpp` — motion aim (`:476`), pitch servo (`:550`), shot direction
-  (`:717`), head aim (`:821`), ModYaw (`:1903`)
+See `.planning/DECISIONS.md` for the measurement. `g_aimBase`, `g_lpQuat` and
+`g_eyeQ` are each touched across the whole file because one function --
+`hkCalcView` -- drives all of it, so cutting by section would turn ~30 file-level
+statics into shared cross-file globals and split seqlock writes that must stay
+together.
+
+The one genuine seam is `EnumReadableRegions` + `FindCalcView` (~230 lines),
+which touch only `g_modBase`/`g_modSize`. Worth extracting as part of the
+deferred layered architecture, not on its own.

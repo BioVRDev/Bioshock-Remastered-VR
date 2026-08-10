@@ -1,6 +1,6 @@
 # Input
 
-`InputHook.cpp` (1362), `Swing.cpp` (232), `Keybinds.cpp` (219, **unwired**).
+`Input/InputHook.cpp` (1338), `Input/Swing.cpp` (222), `Core/Keybinds.cpp` (219, **unwired**).
 
 ## Two independent halves
 
@@ -124,8 +124,8 @@ is why keys collide:
 
 | Key | Readers |
 |---|---|
-| `VK_PRIOR` | `GameState.cpp:1143` (float snapshot), `HandsProbe.cpp:1232` (hands-mode snapshot), `HandsProbe.cpp:306` (numpad-9 mode alias) |
-| `VK_DELETE` | `XRSession.cpp:222` (HUD-quad edit param), `GameState.cpp:1155` (GETTEST probe) |
+| `VK_PRIOR` | `Game/GameState.cpp` (float snapshot, in `PollProbeKeys`), `Hands/HandsProbe.cpp` (hands-mode snapshot **and** the numpad-9 mode alias) |
+| `VK_DELETE` | `Render/XRSession.cpp` (`PollFovKeys`, HUD-quad edit param), `Game/GameState.cpp` (the `GETTEST` probe) |
 
 One press fires all of them. Wiring `Keybinds` gives the key map a single owner
 and fixes the collisions and the per-frame VK sweep at the same time — which is

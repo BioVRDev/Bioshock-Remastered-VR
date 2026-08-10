@@ -72,44 +72,48 @@ actually took effect. Replaced 138 loose globals and 161 duplicated `extern`
 declarations across the consumers.
 → **`docs/modules/config.md`** when adding a setting or chasing a default mismatch.
 
-### `Render/Hooks.cpp` (825) — D3D11 acquisition and frame orchestration
+### `Render/Hooks.cpp` (820) — D3D11 acquisition and frame orchestration
 Creates a throwaway device+swapchain to read the shared vtable, MinHooks
 `Present` (slot 8), and routes each frame between the stereo and mono paths.
 Owns the deferred install of the draw hooks.
 → **`docs/modules/render.md`**
 
-### `Render/XRSession.cpp` (1443) — OpenXR session, swapchains, submission
+### `Render/XRSession.cpp` (1426) — OpenXR session, swapchains, submission
 Session lifecycle, view location, projection layer, crosshair quad, HUD quad,
 menu/mono path, and the per-call timing breakdown that solved the frame-pacing
 work. Publishes head pose to the game thread via seqlock.
 → **`docs/modules/render.md`**
 
-### `Camera/CameraHook.cpp` (2615) — the camera seam ⚠️ largest file
+### `Camera/CameraHook.cpp` (2583) — the camera seam ⚠️ largest file
 Finds `APlayerController::eventPlayerCalcView` by an FName/string chain (never a
 hardcoded RVA), hooks it, and writes the camera the engine actually renders.
 Also owns the eye FIFO, the latched-pose channel, motion aim, head aim, snap
 turn, `ModYaw`, the applied-shot publisher, delta clamp, and 6-DOF hand writes.
-Internally sectioned: scan `:256–441` · aim `:476–836` · hands `:882–946` ·
-delta `:947` · FIFO API `:2340` · install `:2530`.
+Internally sectioned by banner comments -- grep for them rather than trusting
+a line number: `module scan`, `the six stages`, `basis math`, `motion aim state`,
+`HIDDEN PITCH SERVO`, `APPLIED SHOT DIRECTION`, `the detour`, `HEAD-AIM`,
+`PAIR LOCK`, `6-DOF HANDS`, `ONE WORLD ADVANCE PER EYE PAIR`, `the FIFO API`,
+`delta scan`, `install`.
 → **`docs/modules/camera.md`** for anything touching view, aim, or turning.
 
-### `Hud/DrawHook.cpp` (2174) — draw classification and HUD capture ⚠️ second largest
+### `Hud/DrawHook.cpp` (2153) — draw classification and HUD capture ⚠️ second largest
 Hooks `DrawIndexed`/`Draw`/instanced variants and `OMSetRenderTargets`.
 Classifies draws, redirects the interface run to a private render target with
 its own D24S8, repairs HUD alpha, suppresses the reticle and cutscene bars.
-**Contains the fix for the duplicate-world square at `:1425`** — the capture
+**Contains the fix for the duplicate-world square** (grep
+`PSSrv0Res(ctx) == nullptr`) — the capture
 skips any draw with a bound shader resource, because the interface is untextured
 and the square was textured.
 → **`docs/modules/hud.md`** — mandatory before changing anything in the capture path.
 
-### `Input/InputHook.cpp` (1362) — OpenXR actions → synthetic XInput
+### `Input/InputHook.cpp` (1338) — OpenXR actions → synthetic XInput
 Producer on the render thread (one action set, synced per XR frame, published
 through a seqlock); consumer is the `XInputGetState` detour. Owns hand poses,
 the d-pad modifier, pause/help chords, head-relative movement, grip
 threshold/hysteresis.
 → **`docs/modules/input.md`**
 
-### `Game/GameState.cpp` (1178) — the game's own UI/context state
+### `Game/GameState.cpp` (1166) — the game's own UI/context state
 `Level.Pauser` for pause, plus a one-shot scan of the pawn for the
 `LastPlayerInputContext` FString and a `kContexts` classification table.
 **The scan has never locked** — zero `>>> CONTEXT` lines in any session — so
@@ -117,28 +121,28 @@ threshold/hysteresis.
 inert. Everything downstream of cutscene detection is built and waiting.
 → **`docs/modules/gamestate.md`** — read before any cutscene-detection idea.
 
-### `Hands/HandsProbe.cpp` (1732) — pawn/hands/weapon discovery
+### `Hands/HandsProbe.cpp` (1707) — pawn/hands/weapon discovery
 Three-stage positional identification: pawn by proximity to the camera, Hands by
 matching camera position *and* view rotator simultaneously. Per-weapon grip and
 cursor offsets, live numpad tuning that saves back to the INI, weapon-slot and
 plasmid-mode detection.
 → **`docs/modules/hands.md`**
 
-### `Hands/ArmHide.cpp` (507) — sleeve and inactive-hand suppression
+### `Hands/ArmHide.cpp` (504) — sleeve and inactive-hand suppression
 Collapses ten sleeve bones to zero scale at the skeleton, leaving the 34
 hand/finger bones and the weapon attachment alone. Fail-closed: two vtables
 verified, skeleton ownership checked, bone count must be exactly 47.
 **Bone 43 must never be touched** — telekinesis release uses it and crashes.
 → **`docs/modules/hands.md`**
 
-### `Input/Swing.cpp` (232) — physical wrench gesture
+### `Input/Swing.cpp` (222) — physical wrench gesture
 Head-relative hand velocity → synthetic right-trigger pulse, composed with the
 physical trigger. Borrows the stock melee system whole; does not simulate
 collision. Gated on `HandsProbe_WeaponSlot() == 0`, so it is dead if the hands
 probe is disabled.
 → **`docs/modules/hands.md`**
 
-### `Game/EngineExec.cpp` (279) — the Unreal `Exec` seam
+### `Game/EngineExec.cpp` (273) — the Unreal `Exec` seam
 Runs console commands through `UGameEngine::Exec`. `set` writes the class
 default, so it survives respawn, level change and save reload — which is why the
 reticle kill uses it. **Now also reads**: per-slot output-device thunks, with
@@ -147,7 +151,7 @@ Its proven limit is that `get` reads the **class default object**, not live
 instance state. Three absolute addresses, INI-overridable, vtable-verified.
 → **`docs/modules/gamestate.md`**
 
-### `Game/GameIni.cpp` (218) — game config synchronisation
+### `Game/GameIni.cpp` (213) — game config synchronisation
 Pushes FOV and viewport size into the game's `Bioshock.ini` so the mod's reported
 FOV and the rendered image can never drift. Writes five keys, touches nothing else.
 → **`docs/modules/packaging.md`**
@@ -166,7 +170,7 @@ layers are re-composited as textured quads at 50 m using the real HMD frustum.
 Generates its own SteamVR action manifest and per-controller bindings.
 → **`docs/modules/shim.md`** — mandatory before adding any OpenXR call.
 
-### `dxgiproxy/` (156) — the loader
+### `dxgiproxy/` (220) — the loader
 Minimal `dxgi.dll` proxy: the game imports `CreateDXGIFactory1` from `DXGI.dll`,
 Windows checks the exe's own folder first, so this wins and pulls in
 `BioshockVR.dll` before handing the call to the real system DXGI. Loading happens

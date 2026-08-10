@@ -1,6 +1,6 @@
 # Packaging, installation, and logs
 
-`GameIni.cpp` (218), `dist/*.bat`, `dxgiproxy/`.
+`Game/GameIni.cpp` (213), `dist/*.bat`, `dxgiproxy/`.
 
 ## Install layout
 
