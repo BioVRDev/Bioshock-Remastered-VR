@@ -59,19 +59,35 @@ when it is due.
 ## 4. Print the prompt
 
 Output a short block for the user to paste into a fresh chat. It should be
-**three lines or fewer** — if it needs to be longer, `STATE.md` is not doing its
-job and should be fixed instead of compensated for.
+**three lines or fewer** — if it needs to be longer, the session card and
+`STATE.md` are not doing their job and should be fixed instead of compensated for.
 
-Format:
+**If the next step is a session card** (the normal case while a milestone is in
+flight — check `.planning/ROADMAP.md` § *Current arc*), name it and nothing else.
+The card carries the specification, the read list and the falsifiable outcome, so
+the prompt does not have to. `CLAUDE.md` auto-loads and carries the rest:
+
+```
+Read .planning/sessions/M<n>.md § M<n>-S<n> and run that session in plan mode.
+```
+
+**If there is no open card** — a milestone just closed, or the work is outside the
+current arc:
 
 ```
 Read .planning/STATE.md and pick up where we left off.
 Current focus: <one line naming the next step>
 ```
 
-Add a second line only if there is something genuinely unusual the state file
-cannot carry — a machine change, a half-applied edit in Visual Studio, a test
-that needs re-running before anything else.
+Add one more line only for something genuinely unusual the files cannot carry — a
+machine change, an uncommitted edit, a test that needs re-running before anything
+else.
+
+**Before printing it, check the card set is honest.** If the session that just
+finished changed what the next card should do, update that card now. A stale card is
+worse than no card, because the next session will follow it. If a milestone closed,
+tick it in `ROADMAP.md` § *Current arc* and promote the next stub to a full card in
+`.planning/sessions/`.
 
 Then tell the user, in one sentence each:
 - what landed this session,

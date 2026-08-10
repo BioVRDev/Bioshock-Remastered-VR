@@ -92,9 +92,27 @@ declarations from a known anchor is now the cheaper route.
 
 ## Useful entry points
 
+> **The `Scripting` package is the scripted-sequence system** — `Action*`,
+> `Trigger*`, `Watcher*`, `Script`, `Variable*`, `Message*`. It is what the level
+> designers actually built cutscenes and scripted moments *with*, so it is the
+> authority on how any scripted moment is constructed. Start there, not in
+> `ShockGame`, for anything cutscene-shaped. It is where `docs/ARCHITECTURE.md`
+> findings 1 and 2 came from.
+
+### The native property accessors
+
+`Core/Classes/Object.uc` declares `GetPropertyText`, **`GetPropertyTextByName`**,
+`SetPropertyText` and `SetPropertyTextByName` as natives, and retail script calls
+them **on live instances** (`Scripting/Classes/Script.uc`,
+`Scripting/Classes/ActionGetProperty.uc`). This is why the "no reflection system"
+premise is wrong, and it is Tier 1 of `docs/ARCHITECTURE.md`. The console `get`
+returning class defaults is a property of the *console command*, not of the engine.
+
 | Question | Start at |
 |---|---|
-| Scripted sequences, forced camera | `Scripting/Classes/`, `ShockGame/Classes/Action*.uc` |
+| Scripted sequences, forced camera | **`Scripting/Classes/`**, `ShockGame/Classes/Action*.uc` |
+| Cutscene enter/exit | `Scripting/Classes/ActionCinematicEnter.uc` / `ActionCinematicExit.uc` |
+| Reading a live property at all | `Core/Classes/Object.uc` (the natives above) |
 | Input contexts (`NullInput` etc.) | `ShockPlayer.uc`, `ShockPlayerController.uc` |
 | Weapons, plasmids, hands | `ShockGame/Classes/Hands.uc`, `Weapon*.uc`, `Ability*.uc` |
 | Little Sisters / gatherers | `ShockAI/Classes/`, `ShockPlayer.uc:2415` |

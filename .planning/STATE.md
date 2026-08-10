@@ -14,25 +14,35 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**Read live property values out of the running game**, so "am I in a scripted
-event or cutscene" can be answered with certainty rather than inferred.
+**Run `.planning/sessions/M1.md` § M1-S1.** The arc is planned in `ROADMAP.md`
+§ *Current arc*; read the card, not this section.
 
-Everything downstream is already built and waiting on that one signal: the HUD
-gate, the cutscene anchor, rotation comfort. It also unlocks the QOL work the
-project actually wants — arms visible only during cutscenes, right-stick look
-during scripted sequences, no forced camera rotation.
+### The premise changed — 2026-08-09
 
-Attack in this order, stopping at the first that works
-(`docs/modules/gamestate.md`, `docs/proposals/ue2-reflection-bridge.md`):
+The blocker was framed as *this UE2.5 fork has no reflection system, so live
+property reads require building one*. **That is false**, and the decompiled corpus
+proves it (`docs/ARCHITECTURE.md` § *the findings*):
 
-1. **String-scan the executable** for `PUSHINPUTCONTEXT`, `GETALL`, `EDITACTOR`.
-   Free, no build. Any hit is far cheaper than what follows.
-2. **`CurrentExorcismTarget`** — declared at `ShockPlayer.uc:348`, brackets the
-   whole Little Sister rescue. Now that the decompiled corpus exists, its offset
-   can be *computed* from declaration order rather than hunted
-   (`docs/UNREALSCRIPT.md`), then confirmed against a live read.
-3. **The UE2 reflection bridge** — the general answer. Stage 1 is one keypress
-   and one log line that decides whether stages 2–4 are worth starting.
+1. **`PlayerController.myHUD.bHideHUD` is an exact cinematic-mode flag** — set by
+   `ActionCinematicEnter`, cleared by `ActionCinematicExit`, and written from
+   nowhere else in 1,765 classes. `CameraHook` already holds the PlayerController as
+   `pThis`, so this is two pointer hops and a bit test. No scan, no new hook.
+2. **`Core.Object` exposes native `GetPropertyTextByName(name)`**, and retail script
+   calls it *on live instances*. Console `get` returns class defaults because the
+   console resolves a **class** — not because live reads are impossible. That
+   measurement stands; the conclusion drawn from it did not.
+3. **`LastPlayerInputContext` is also declared on `ShockPlayerController`**
+   (`:42`). Every scan so far has been on the **pawn**. The controller copy has
+   never been looked at, which may be the whole reason the scan never locked.
+
+So the reflection bridge drops from "first move, a project not a session" to Tier 2
+fallback — unchanged and unrejected, just no longer first
+(`docs/ARCHITECTURE.md`). `CurrentExorcismTarget` is demoted: it brackets the
+rescue only, and M3-S3 gets that plus several other sequences for the same effort.
+
+**None of this is confirmed in a headset.** All three are predictions from script
+until a live read agrees — the standard that produced `AActor::Location = +0x1D8`.
+M1-S2 is the pivotal test.
 
 Do **not** re-enable the pitch latch, pitch servo, S75 unwind, or
 ViewActor divergence as a shortcut. All four are falsified with evidence in

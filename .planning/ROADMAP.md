@@ -5,7 +5,54 @@ human putting on a headset. Current status lives in `STATE.md`.
 
 ---
 
-## Now — refactor prep
+# Current arc — live state → cutscenes → QOL
+
+**One session, one idea, one falsifiable outcome.** A session ends when its
+outcome is decided, not when the idea feels done. Cards are in
+`.planning/sessions/M<n>.md`, one file per milestone. Findings and design in
+`docs/ARCHITECTURE.md`.
+
+| | Session | Type | Outcome |
+|---|---|---|---|
+| ✅ | **M0** workflow, docs, cards | no code | this section exists |
+| ☐ | **M1-S1** pin `PlayerController.myHUD` | diagnostic | a stable non-null HUD pointer, confirmed by back-reference |
+| ☐ | **M1-S2** read `bHideHUD`, prove it tracks cinematic mode | diagnostic | **the pivotal test** — a transition bracketing the bathysphere |
+| ☐ | **M1-S3** harden into `EngineBridge` | hardening | INI-overridable, fail-closed, reset at boundaries |
+| ☐ | **M2-S1** StateBus | refactor | `GameState_Cutscene()` returns the real signal; no behaviour change |
+| ☐ | **M2-S2** HUD gate on the real signal | visible | HUD hidden in cutscenes, correct everywhere else |
+| ☐ | **M2-S3** cutscene anchor, gated | visible | opening anchored; in-world moments unaffected |
+| ☐ | **M2-S4** rotation comfort, gated | visible | no forced rotation in cutscenes; bathysphere still walks correctly |
+
+**M1-S2 is the pivotal test of the whole arc.** If `bHideHUD` transitions around
+the opening bathysphere, M2 is mechanical and the longest-standing problem is
+closed. If not, skip M1-S3 and open M3 immediately.
+
+### Later milestones — stubs, promoted to cards when they open
+
+Their specifications depend on M1's verdict, so writing detail now is waste.
+
+**M3 — native call bridge (Tier 1).** Opens if M1/M2 leave gaps, **and they will**,
+for the Little Sister rescue (pushes `NullInput`, never enters cinematic mode).
+S1: locate `Object::GetPropertyTextByName` by the FName/string chain, reusing the
+staged scan at anchor `module scan`/`FindCalcView` in `Camera/CameraHook.cpp` — log
+the address, call nothing. S2: call it on `Health` and **confirm it tracks damage**
+— the discriminator between "bridge broken" and "property empty". S3: read
+`ShockPlayerController.LastPlayerInputContext` (the controller copy, never
+examined) and feed the existing `kContexts` table, which has never had an input.
+
+**M4 — QOL the signal unlocks.** S1: arms/sleeves visible only during cutscenes.
+S2: right-stick look during scripted sequences. S3: settle the aim/movement
+measurement — does the firing trace read `Controller.Rotation` (`+0x1E4`) or the
+weapon socket? **Either answer is worth having.**
+
+**M5 — metadata walk (Tier 2).** `docs/proposals/ue2-reflection-bridge.md`,
+unchanged. Opens only if M3 fails.
+
+---
+
+# Backlog — outside the current arc
+
+## Done — refactor prep
 
 Behaviour-preserving. See the plan file for detail.
 
@@ -60,23 +107,23 @@ the controller points" problem is solvable. If `Controller.Rotation`, it is not,
 and the honest answer is to document the coupling and stop. Either result is
 worth having; the current state is guessing.
 
-## Then — cutscene detection
+## Then — cutscene detection → **superseded, see § *Current arc* above**
 
-The largest open problem. Everything downstream is built and waiting: the HUD
-gate, the cutscene anchor, comfort settings, right-stick look during scripted
-sequences. See `docs/modules/gamestate.md` for the full graveyard.
+The largest open problem, and it now has a plan. Everything downstream is built
+and waiting: the HUD gate, the cutscene anchor, comfort settings, right-stick look
+during scripted sequences.
 
-Attack in this order, stopping at the first thing that works:
+**The attack order that used to be here is retired.** It opened with a string scan
+and treated the reflection bridge as the general answer, because it assumed live
+property reads were impossible. `docs/ARCHITECTURE.md` shows they are not: the game's
+cutscenes set `myHUD.bHideHUD`, and `Core.Object` exposes a native live-property
+accessor that retail script calls on instances. The current order is
+§ *Current arc* above — Tier 0 offset read first, native call second, metadata walk
+parked as the fallback.
 
-1. **String-scan the executable** for `PUSHINPUTCONTEXT`, `GETALL`, `EDITACTOR`.
-   Free, no build. Any hit is far cheaper than what follows.
-2. **`CurrentExorcismTarget`.** A pointer bracketing the Little Sister rescue.
-   Narrow — solves one sequence, not cutscenes generally — but cheap and testable
-   in a session. Fix the pawn-change snapshot reset first, then do a clean run
-   with a marker key.
-3. **The UE2 reflection bridge** — `docs/proposals/ue2-reflection-bridge.md`.
-   The general answer, and a project rather than a session. Stage 1 is one
-   keypress and one log line that decides whether stages 2–4 are worth starting.
+`CurrentExorcismTarget` is no longer a headline lead: it brackets the Little Sister
+rescue only, and M3-S3 reads the input context that brackets the rescue *and*
+several other sequences for the same effort.
 
 Do **not** re-enable the pitch latch, pitch servo, S75 unwind, or ViewActor
 divergence as a shortcut.
