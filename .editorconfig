@@ -1,0 +1,36 @@
+# Visual Studio and most editors honour this automatically. It enforces the
+# mechanical things -- indentation, encoding, line endings, trailing whitespace
+# -- without touching how code is laid out.
+#
+# There is deliberately NO .clang-format. Measured: even at its most permissive
+# it wanted to change 37% of the source, and every disagreement was one where
+# the hand-formatting is better (column-aligned extern blocks, paired idioms on
+# one line, hanging continuation indents instead of aligning to column 40).
+# See docs/STYLE.md.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{cpp,h,c}]
+indent_size = 4
+max_line_length = 80
+
+[*.md]
+trim_trailing_whitespace = false   # two trailing spaces is a hard line break
+max_line_length = 80
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.{ini,def}]
+indent_size = 4
+
+[*.{vcxproj,filters,slnx,config}]
+indent_size = 2

@@ -12,6 +12,8 @@ measuring, not read out of an SDK.
    Check it before proposing anything; several plausible ideas in this project
    have already been built, measured, and falsified.
 3. **`.planning/STATE.md`** — what is actually true right now.
+4. **`docs/STYLE.md`** — how this codebase is written. There is no
+   auto-formatter, deliberately; do not bulk-reformat anything.
 
 `docs/ENGINE-MAP.md` (memory offsets) only when touching engine memory.
 

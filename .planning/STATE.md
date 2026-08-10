@@ -12,6 +12,34 @@ chat sessions. It is the answer to "where is this project right now".
 
 ---
 
+## Next step
+
+**Read live property values out of the running game**, so "am I in a scripted
+event or cutscene" can be answered with certainty rather than inferred.
+
+Everything downstream is already built and waiting on that one signal: the HUD
+gate, the cutscene anchor, rotation comfort. It also unlocks the QOL work the
+project actually wants — arms visible only during cutscenes, right-stick look
+during scripted sequences, no forced camera rotation.
+
+Attack in this order, stopping at the first that works
+(`docs/modules/gamestate.md`, `docs/proposals/ue2-reflection-bridge.md`):
+
+1. **String-scan the executable** for `PUSHINPUTCONTEXT`, `GETALL`, `EDITACTOR`.
+   Free, no build. Any hit is far cheaper than what follows.
+2. **`CurrentExorcismTarget`** — declared at `ShockPlayer.uc:348`, brackets the
+   whole Little Sister rescue. Now that the decompiled corpus exists, its offset
+   can be *computed* from declaration order rather than hunted
+   (`docs/UNREALSCRIPT.md`), then confirmed against a live read.
+3. **The UE2 reflection bridge** — the general answer. Stage 1 is one keypress
+   and one log line that decides whether stages 2–4 are worth starting.
+
+Do **not** re-enable the pitch latch, pitch servo, S75 unwind, or
+ViewActor divergence as a shortcut. All four are falsified with evidence in
+`docs/INVARIANTS.md`.
+
+---
+
 ## Recently closed
 
 **The duplicate-world square — FIXED.** A textured full-screen quad was landing
