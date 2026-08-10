@@ -145,12 +145,12 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_input.cpp" />
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_main.cpp" />
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_render.cpp" />
+    <ClCompile Include="src\shim_input.cpp" />
+    <ClCompile Include="src\shim_main.cpp" />
+    <ClCompile Include="src\shim_render.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\BioshockVR\OpenXRShim\shim.h" />
+    <ClInclude Include="src\shim.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="exports.def" />

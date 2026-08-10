@@ -20,11 +20,17 @@ measuring, not read out of an SDK.
 Two projects, both **`Release | Win32`**. Win32 is mandatory — the game is 32-bit.
 
 ```bash
-"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" BioshockVR/BioshockVR.vcxproj -p:Configuration=Release -p:Platform=Win32 -v:minimal
+"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" BioshockVR/BioshockVR.vcxproj -p:Configuration=Release -p:Platform=Win32 "-p:SolutionDir=C:\dev\Bioshock-Remastered-VR\" -v:minimal
 ```
+
+**`-p:SolutionDir` is required** when building a `.vcxproj` directly. Both
+projects resolve `third_party\` and `packages\` through `$(SolutionDir)`, which
+is empty outside a solution build — the result is
+`Cannot open include file: 'MinHook.h'`. The trailing backslash matters.
 
 - `BioshockVR.vcxproj` → `Release/BioshockVR.dll`, the mod.
 - `OpenXRShim/OpenXRShim.vcxproj` → `Release/openxr_loader.dll`, the SteamVR shim.
+  Sources are in `OpenXRShim/src/`.
   **`Release|Win32` is the only config that produces a DLL.** The other three are
   `ConfigurationType=Application` and silently build an `.exe`.
 - `/MT` runtime, so there is no VC++ redistributable dependency. Keep it.

@@ -131,7 +131,7 @@ a raw `GetAsyncKeyState`, which is why `VK_PRIOR` has three independent readers
 and `VK_DELETE` has two. Kept because wiring it is the fix, not deleting it.
 → **`docs/modules/input.md`**
 
-### `OpenXRShim/` (1861 across 3 files + header) — OpenXR over OpenVR
+### `OpenXRShim/src/` (1861 across 3 files + header) — OpenXR over OpenVR
 A separate project producing `openxr_loader.dll`. Implements exactly the 36
 OpenXR exports the mod imports (see `OpenXRShim/exports.def`), backed by
 SteamVR, because SteamVR's own OpenXR runtime has no 32-bit support. Projection

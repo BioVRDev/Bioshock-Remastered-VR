@@ -10,14 +10,23 @@ description: Build BioshockVR.dll and/or the OpenXR shim, deploy to the game fol
 Both projects are **`Release | Win32`**. Win32 is mandatory — the game is 32-bit.
 
 ```bash
-"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" BioshockVR/BioshockVR.vcxproj -p:Configuration=Release -p:Platform=Win32 -v:minimal
+"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" BioshockVR/BioshockVR.vcxproj -p:Configuration=Release -p:Platform=Win32 "-p:SolutionDir=C:\dev\Bioshock-Remastered-VR\" -v:minimal
 ```
 
 ```bash
-"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" OpenXRShim/OpenXRShim.vcxproj -p:Configuration=Release -p:Platform=Win32 -v:minimal
+"C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe" OpenXRShim/OpenXRShim.vcxproj -p:Configuration=Release -p:Platform=Win32 "-p:SolutionDir=C:\dev\Bioshock-Remastered-VR\" -v:minimal
 ```
 
 Outputs land in `Release/`: `BioshockVR.dll` and `openxr_loader.dll`.
+
+⚠ **`-p:SolutionDir` is required when building a `.vcxproj` directly.** Both
+projects resolve `third_party\minhook\include` and `packages\OpenXR.*` through
+`$(SolutionDir)`, which is empty outside a solution build. The symptom is
+`error C1083: Cannot open include file: 'MinHook.h'` — it looks like a missing
+dependency but the file is right there. The trailing backslash matters.
+
+Visual Studio itself sets this automatically, so this only bites command-line
+builds.
 
 ⚠ **`Release|Win32` is the only shim configuration that produces a DLL.** The
 other three are `ConfigurationType=Application` and quietly build an `.exe`. If

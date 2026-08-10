@@ -15,18 +15,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_input.cpp">
+    <ClCompile Include="src\shim_input.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_main.cpp">
+    <ClCompile Include="src\shim_main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\BioshockVR\OpenXRShim\shim_render.cpp">
+    <ClCompile Include="src\shim_render.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\BioshockVR\OpenXRShim\shim.h">
+    <ClInclude Include="src\shim.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
