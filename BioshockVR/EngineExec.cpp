@@ -48,7 +48,94 @@ typedef int(__fastcall* EngineExecFn)(void* execThis, void* edx,
 // of the command; every slot returns zero and pops the same 8 bytes, which is
 // what the inspected build expects. A `set` that succeeds typically never
 // touches it at all.
-static int __stdcall OutputNoop(void*, int) { return 0; }
+// ---- OUTPUT CAPTURE ------------------------------------------------------
+// The engine reports command results through FOutputDevice::Serialize, which
+// on x86 __thiscall is (this in ECX, const TCHAR* V, EName Event) -- two stack
+// args, 8 bytes, callee-cleaned. That is EXACTLY the shape the old no-op stub
+// already had, so pointing the slots at a capturing function of the same
+// signature adds no new stack risk: it just stops throwing the text away.
+//
+// This is what makes `GET` usable. `SET` never printed anything, so a no-op
+// device was fine; reading a property back requires actually keeping the text.
+static wchar_t g_outBuf[512] = {};
+static bool    g_outGot = false;
+static int     g_outCalls = 0;   // did the engine touch our device AT ALL?
+static void* g_outFirstArg = nullptr;
+
+// MEASURED: calls=1 per `get`, firstArg=0x2F8 -- a small constant, not a
+// pointer, and the same for every command. So the string is NOT the first stack
+// argument; 0x2F8 is almost certainly the EName. Take four slots and find the
+// one that actually points at readable wide text.
+// MEASURED from the slot dump: (EName 0x2F8, flag 1, const TCHAR* text, ret).
+// The text is the THIRD stack argument. Three args = 12 bytes popped, which is
+// what the engine actually pushes -- the 16-byte version faulted every call.
+// 8 bytes is the PROVEN pop size -- 12 and 16 both faulted, 8 did not. So the
+// engine pushes exactly two stack args and neither holds the text, which means
+// the slot being called is not the one we assumed. We fill all 24 slots with
+// the same stub, so we have never known WHICH. One thunk per slot fixes that.
+static int g_outSlot = -1;
+
+static int __stdcall OutputCapture(void* a0, void* a1)
+{
+    ++g_outCalls;
+    if (!g_outFirstArg) g_outFirstArg = a0;
+    Log("exec: device SLOT %d  args %08X %08X", g_outSlot,
+        (unsigned)(uintptr_t)a0, (unsigned)(uintptr_t)a1);
+
+    void* text = nullptr;
+    if (a0 && (uintptr_t)a0 > 0x10000 && !IsBadReadPtr(a0, 4)) text = a0;
+    else if (a1 && (uintptr_t)a1 > 0x10000 && !IsBadReadPtr(a1, 4)) text = a1;
+
+    if (text)
+
+    if (text && !IsBadReadPtr(text, sizeof(wchar_t)))
+    {
+        __try
+        {
+            const wchar_t* s = (const wchar_t*)text;
+            size_t n = 0;
+            while (n < 511 && s[n]) { g_outBuf[n] = s[n]; ++n; }
+            g_outBuf[n] = 0;
+            g_outGot = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    // MEASURED: slot 4 is called once per `get` with the SAME two args
+    // (0x2F8, 1) no matter which property we ask for -- so it is not carrying
+    // our text. It is invariant, which is the shape of a QUERY, not a write.
+    // We have been answering 0 to it. If it means "will you accept output?",
+    // 0 is us declining and the text never gets written. Say yes and see.
+    return 1;
+}
+
+bool EngineExec_GetLastOutput(wchar_t* out, size_t chars)
+{
+    if (!out || !chars || !g_outGot) return false;
+    size_t n = 0;
+    while (n < chars - 1 && g_outBuf[n]) { out[n] = g_outBuf[n]; ++n; }
+    out[n] = 0;
+    return true;
+}
+
+#define MAKE_SLOT(N) static int __stdcall OutSlot##N(void* a, void* b) \
+    { g_outSlot = N; return OutputCapture(a, b); }
+MAKE_SLOT(0)  MAKE_SLOT(1)  MAKE_SLOT(2)  MAKE_SLOT(3)
+MAKE_SLOT(4)  MAKE_SLOT(5)  MAKE_SLOT(6)  MAKE_SLOT(7)
+MAKE_SLOT(8)  MAKE_SLOT(9)  MAKE_SLOT(10) MAKE_SLOT(11)
+MAKE_SLOT(12) MAKE_SLOT(13) MAKE_SLOT(14) MAKE_SLOT(15)
+MAKE_SLOT(16) MAKE_SLOT(17) MAKE_SLOT(18) MAKE_SLOT(19)
+MAKE_SLOT(20) MAKE_SLOT(21) MAKE_SLOT(22) MAKE_SLOT(23)
+#undef MAKE_SLOT
+
+static void* const g_slotThunks[24] = {
+    (void*)&OutSlot0,  (void*)&OutSlot1,  (void*)&OutSlot2,  (void*)&OutSlot3,
+    (void*)&OutSlot4,  (void*)&OutSlot5,  (void*)&OutSlot6,  (void*)&OutSlot7,
+    (void*)&OutSlot8,  (void*)&OutSlot9,  (void*)&OutSlot10, (void*)&OutSlot11,
+    (void*)&OutSlot12, (void*)&OutSlot13, (void*)&OutSlot14, (void*)&OutSlot15,
+    (void*)&OutSlot16, (void*)&OutSlot17, (void*)&OutSlot18, (void*)&OutSlot19,
+    (void*)&OutSlot20, (void*)&OutSlot21, (void*)&OutSlot22, (void*)&OutSlot23,
+};
 
 static void* g_outVt[24] = {};
 static void* g_outObj = nullptr;
@@ -56,7 +143,7 @@ static void* g_outObj = nullptr;
 static void EnsureOutputStub()
 {
     if (g_outObj) return;
-    for (int i = 0; i < 24; ++i) g_outVt[i] = (void*)&OutputNoop;
+    for (int i = 0; i < 24; ++i) g_outVt[i] = g_slotThunks[i];
     static void* obj = nullptr;
     obj = (void*)g_outVt;      // the object is just a pointer to its vtable
     g_outObj = &obj;
@@ -139,6 +226,11 @@ bool EngineExec_Run(const char* command)
 
     EnsureOutputStub();
 
+    g_outGot = false;
+    g_outBuf[0] = 0;
+    g_outCalls = 0;
+    g_outFirstArg = nullptr;
+
     void* execThis = ResolveExecThis();
     if (!execThis) return false;
 
@@ -177,6 +269,11 @@ bool EngineExec_Run(const char* command)
         return false;
     }
 
-    Log("exec: '%ls' -> %s", wide, result ? "HANDLED" : "unhandled");
+    Log("exec: '%ls' -> %s   device calls=%d firstArg=%08X%s%ls%s",
+        wide, result ? "HANDLED" : "unhandled",
+        g_outCalls, (unsigned)(uintptr_t)g_outFirstArg,
+        g_outGot ? "   OUTPUT: [" : "",
+        g_outGot ? g_outBuf : L"",
+        g_outGot ? "]" : "");
     return result != 0;
 }

@@ -1144,6 +1144,24 @@ static void PollProbeKeys(const uint8_t* obj)
     if (dH && !kH) SnapshotFloats(obj);
     kH = dH;
 
+    // CONSOLE GET TEST. END fires four probes: one SET we know works (the
+    // control), then three GETs. If any GET comes back with OUTPUT: [...] then
+    // the engine can hand us LastPlayerInputContext directly -- an authoritative
+    // cutscene signal with no offsets, no scanning and no heuristics.
+    static bool kG = false;
+    const bool dG = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
+    if (dG && !kG)
+    {
+        Log(">>> GETTEST: ---- console GET probe ----");
+        EngineExec_Run("get ShockPlayer bReticleDisabled");
+        EngineExec_Run("get ShockPlayer Health");
+        EngineExec_Run("get ShockPlayer Location");
+        EngineExec_Run("get ShockPlayerController DontUpdateFocus");
+        EngineExec_Run("get ShockPlayer HudElementsDisabled");
+        Log(">>> GETTEST: ---- end ----");
+    }
+    kG = dG;
+
     const bool dE = (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;
     if (dE && !kE) DiffFloats(obj);
     kE = dE;

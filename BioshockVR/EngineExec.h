@@ -19,3 +19,5 @@
 
 // Returns true only if the engine reports it HANDLED the command.
 bool EngineExec_Run(const char* command);
+
+bool EngineExec_GetLastOutput(wchar_t* out, size_t chars);
