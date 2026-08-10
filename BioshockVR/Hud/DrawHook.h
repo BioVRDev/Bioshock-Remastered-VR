@@ -1,4 +1,4 @@
-// BioshockVR/DrawHook.h
+// BioshockVR/Hud/DrawHook.h
 #pragma once
 
 struct ID3D11Texture2D;
@@ -25,11 +25,17 @@ bool DrawHook_NoWorldRender();
 // Hooks ID3D11DeviceContext::DrawIndexed and ::Draw so we can IDENTIFY and then
 // SUPPRESS individual draw calls -- the HUD, the reticle, the menus, coronas.
 //
-// PHASE 1 (this file, now): FINGERPRINT ONLY. Every draw is counted by its
-// IndexCount/VertexCount. Numpad 3 dumps the table. Nothing is suppressed until
-// you put counts in the ini, so installing this cannot change what you see.
+// The fingerprint table is still here and still useful, but it is now a
+// DIAGNOSTIC rather than the mechanism: Numpad * clears it, Numpad 3 dumps it,
+// Numpad - steps the isolate walker. Suppression, HUD capture and alpha repair
+// are all live, driven by the ini lists and by structural render-target
+// classification rather than by counts alone.
 //
-// PHASE 2 (after we read a dump): suppression by count, then depth placement.
+// Count-based classification turned out to be the wrong long-term architecture
+// -- it is fragile across scenes and cannot see a draw's role -- but the DUMP
+// remains the fastest way to name an unknown draw. It is what identified the
+// duplicate-world square: normal play captured 5d tex=no, the square 6d
+// tex=yes, and that one difference was the whole fix.
 //
 // Install from the RENDER THREAD on the first Present, with the vtable slots
 // Hooks.cpp already reads (ctxVT[12] == DrawIndexed, ctxVT[13] == Draw).

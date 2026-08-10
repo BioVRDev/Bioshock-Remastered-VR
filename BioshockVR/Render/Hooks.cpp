@@ -1,4 +1,4 @@
-// BioshockVR/Hooks.cpp
+// BioshockVR/Render/Hooks.cpp
 //
 // Present hook, XR bring-up
 //
@@ -476,9 +476,17 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // Present fires TWICE per stereo pair, and this block re-evaluated
             // on both. XR_SubmitPair stashes eye 0 and only submits on eye 1,
             // so a mid-pair flip left xrBeginFrame with no matching xrEndFrame
-            // and then ran a whole second frame through the mono path. The
-            // stranded eye-0 image plus a mono quad the compositor did not
-            // expect is the flat "second copy of the world" square.
+            // and then ran a whole second frame through the mono path. That
+            // strands the eye-0 image and hands the compositor a mono quad it
+            // did not expect. The latch below is the fix and must stay.
+            //
+            // HISTORICAL CORRECTION: this comment used to claim the resulting
+            // artifact WAS the flat "second copy of the world" square. It was
+            // not. That square survived every mono/pair/theater change and was
+            // finally isolated by the HudRedirect=0 A/B to the HUD capture --
+            // a textured full-screen quad landing in the capture slot, fixed in
+            // DrawHook.cpp with a PSSrv0Res guard. Two different bugs that
+            // happened to look alike. See docs/INVARIANTS.md.
             //
             // starved is a 250 ms timer and drawMenu is per-frame; both can
             // change between two Presents 4 ms apart.

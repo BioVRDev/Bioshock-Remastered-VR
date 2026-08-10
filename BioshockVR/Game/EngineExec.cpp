@@ -1,4 +1,4 @@
-// BioshockVR/EngineExec.cpp
+// BioshockVR/Game/EngineExec.cpp
 //
 // See EngineExec.h for why this file breaks the project's no-hardcoded-offsets
 // rule and what guards that decision.
@@ -24,8 +24,6 @@
 #include "Core/Config.h"
 
 extern void LogFile(const char* msg);
-
-// From dllmain.cpp -- all four ini-overridable, see EngineExec.h.
 
 static_assert(sizeof(void*) == 4, "BioShock Remastered is x86; build Win32.");
 

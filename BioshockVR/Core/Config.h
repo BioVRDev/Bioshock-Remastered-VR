@@ -1,4 +1,4 @@
-// BioshockVR/Config.h
+// BioshockVR/Core/Config.h
 #pragma once
 
 // EVERY SETTING, IN ONE PLACE.

@@ -1,4 +1,4 @@
-// BioshockVR/GameState.cpp
+// BioshockVR/Game/GameState.cpp
 //
 // See GameState.h for why this is a structural scan and not a reflection walk.
 //

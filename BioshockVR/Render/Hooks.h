@@ -1,4 +1,4 @@
-// BioshockVR/Hooks.h
+// BioshockVR/Render/Hooks.h
 #pragma once
 
 // Creates a throwaway D3D11 device+swapchain, reads the shared vtable,

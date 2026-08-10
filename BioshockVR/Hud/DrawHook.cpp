@@ -1,4 +1,4 @@
-// BioshockVR/DrawHook.cpp
+// BioshockVR/Hud/DrawHook.cpp
 //
 // FINGERPRINT FIRST, SUPPRESS SECOND.
 //

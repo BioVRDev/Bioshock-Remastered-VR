@@ -1,4 +1,4 @@
-// BioshockVR/Keybinds.cpp
+// BioshockVR/Core/Keybinds.cpp
 //
 // See Keybinds.h. Names are parsed case-insensitively so "num8", "NUM8" and
 // "Num8" are all the same key -- users type what they type.

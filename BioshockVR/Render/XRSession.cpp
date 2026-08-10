@@ -1,3 +1,4 @@
+// BioshockVR/Render/XRSession.cpp
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 

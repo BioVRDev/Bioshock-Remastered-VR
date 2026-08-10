@@ -1,4 +1,4 @@
-// BioshockVR/InputHook.h
+// BioshockVR/Input/InputHook.h
 #pragma once
 
 // QUEST TOUCH CONTROLLERS -> VIRTUAL XBOX PAD (Phase B)
@@ -75,6 +75,11 @@ bool Input_GetHandPose(int hand, HandPose* out);
 // CameraHook's render-side cutscene turn: during input context NullInput the
 // game DISCARDS stick input (ShockPlayerController::Use pushes NullInput), so
 // reading the stick here is the ONLY way to turn during a scripted sequence.
+//
+// The original consumer -- CameraHook's render-side cutscene turn (S75/S78/S79)
+// -- is RETIRED; it made scripted sequences worse. The live consumer is ModYaw,
+// which rotates g_aimBase directly and gives turning the same authority for the
+// same reason. See docs/modules/camera.md.
 bool Input_GetTurnX(float* out);
 
 // ---- consumer: call from Hooks.cpp --------------------------------------

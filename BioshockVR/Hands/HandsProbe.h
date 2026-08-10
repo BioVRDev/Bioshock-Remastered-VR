@@ -1,4 +1,4 @@
-// BioshockVR/HandsProbe.h
+// BioshockVR/Hands/HandsProbe.h
 #pragma once
 
 // FINDING THE `Hands` ACTOR -- the prerequisite for 6-DOF weapon holding, and

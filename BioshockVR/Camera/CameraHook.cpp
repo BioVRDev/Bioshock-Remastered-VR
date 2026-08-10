@@ -1,4 +1,4 @@
-// BioshockVR/CameraHook.cpp
+// BioshockVR/Camera/CameraHook.cpp
 //
 // Phase 6: the six-stage FName search (UNCHANGED from Phase 5), plus
 //   * automatic site0 detection -- the render view is the site with the most
@@ -38,7 +38,6 @@
 
 extern void LogFile(const char* msg);
 
-// From dllmain.cpp / BioshockVR.ini
 extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render thread)
 extern void  XR_GetHeadPos(float out[3]);
 bool GameState_GetPawnEyePoint(float outPos[3]);   // GameState.cpp

@@ -1,4 +1,4 @@
-// BioshockVR/dllmain.cpp
+// BioshockVR/Core/dllmain.cpp
 //
 // Entry point and logging.
 //

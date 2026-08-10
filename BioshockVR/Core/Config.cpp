@@ -1,4 +1,4 @@
-// BioshockVR/Config.cpp
+// BioshockVR/Core/Config.cpp
 //
 // Reading BioshockVR.ini into g_cfg, and echoing what was actually read.
 //

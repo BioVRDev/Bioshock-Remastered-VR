@@ -1,4 +1,4 @@
-// BioshockVR/GameState.h
+// BioshockVR/Game/GameState.h
 #pragma once
 
 // THE GAME'S OWN UI STATE, read instead of inferred.
@@ -22,8 +22,35 @@
 // This is the same discipline that found +0x1E4: verified against a real value,
 // never assumed. If nothing matches, we log every string field we did find and
 // fall back to the old draw-signature path with nothing lost.
+//
+// ============================================================================
+//  ⚠ MEASURED: THE SCAN HAS NEVER LOCKED. READ THIS BEFORE BUILDING ON IT.
+// ============================================================================
+// The design above is sound and the search works -- it brackets the right
+// window (pawn+0x728..+0xA7C, anchored on FirstPersonHands.PlayerHands) and
+// matches a wall of known localized constants. It then never finds a context
+// name. There is not one ">>> CONTEXT" line in any session on record.
+//
+// So GameState_MenuUp(), GameState_RadialOpen(), GameState_ScriptedSequence()
+// and GameState_Cutscene() are effectively INERT. They compile, they are
+// correct, and they always return false. Everything downstream of a cutscene
+// signal -- the HUD gate, the cutscene anchor, comfort settings -- is built and
+// waiting for a value that never arrives.
+//
+// The likely reason: LastPlayerInputContext is declared `var private travel
+// string` and NOTHING in the decompiled script writes it, so it is presumably
+// native and may be inert on this build. See research/uscript/.
+//
+// GameState_Paused() is the exception and is genuinely reliable -- it reads
+// Level.Pauser, the game's own pause test, not a scanned field.
+//
+// Do not add a heuristic here to paper over this. docs/INVARIANTS.md lists six
+// that were tried and falsified. docs/modules/gamestate.md holds the two live
+// leads.
+// ============================================================================
 
 // A full-screen UI is up, read from Level.Pauser (the game's own pause test).
+// THE ONE RELIABLE SIGNAL IN THIS FILE.
 bool GameState_Paused();
 
 // Call from hkCalcView with `pThis`. Cheap once locked (three reads).

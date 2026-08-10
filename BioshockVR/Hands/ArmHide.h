@@ -1,4 +1,4 @@
-// BioshockVR/ArmHide.h
+// BioshockVR/Hands/ArmHide.h
 #pragma once
 
 // HIDING THE FIRST-PERSON FOREARMS WITHOUT HIDING THE HANDS.

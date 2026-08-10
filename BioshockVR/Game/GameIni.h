@@ -1,4 +1,4 @@
-// BioshockVR/GameIni.h
+// BioshockVR/Game/GameIni.h
 #pragma once
 
 // Pushes the VR-relevant values from BioshockVR.ini into the GAME's Bioshock.ini

@@ -1,4 +1,4 @@
-// BioshockVR/InputHook.cpp
+// BioshockVR/Input/InputHook.cpp
 //
 // Touch controllers -> synthetic Xbox pad. See InputHook.h for the shape.
 //
@@ -46,8 +46,6 @@
 #include "Core/Config.h"
 
 extern void LogFile(const char* msg);
-
-// dllmain.cpp -- see the block at the bottom of this file for the lines to add.
 
 bool CameraHook_GetPitchError(float* outDeg);
 bool CameraHook_GetHeadYawOffset(float* outDeg);

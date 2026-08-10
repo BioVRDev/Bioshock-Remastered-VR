@@ -1,4 +1,4 @@
-// BioshockVR/CameraHook.h
+// BioshockVR/Camera/CameraHook.h
 #pragma once
 
 // Locates APlayerController::eventPlayerCalcView via the FName chain (no

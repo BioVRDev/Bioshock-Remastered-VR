@@ -1,4 +1,4 @@
-// BioshockVR/Swing.cpp
+// BioshockVR/Input/Swing.cpp
 //
 // See Swing.h.
 //
@@ -31,8 +31,6 @@ extern int  HandsProbe_WeaponSlot();
 extern bool GameState_Paused();
 extern bool GameState_Theater();
 extern bool Input_WeaponWheelHeld();
-
-// ini, all wired in dllmain.cpp
 
 static bool  g_armed = true;
 static bool  g_havePrev = false;

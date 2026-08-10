@@ -1,4 +1,4 @@
-// BioshockVR/GameIni.cpp
+// BioshockVR/Game/GameIni.cpp
 //
 // ONE SOURCE OF TRUTH for FOV and resolution.
 //

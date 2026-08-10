@@ -1,4 +1,4 @@
-// BioshockVR/Swing.h
+// BioshockVR/Input/Swing.h
 //
 // Physical wrench swinging.
 //

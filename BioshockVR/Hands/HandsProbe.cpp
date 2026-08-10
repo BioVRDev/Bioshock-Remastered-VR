@@ -1,4 +1,4 @@
-// BioshockVR/HandsProbe.cpp
+// BioshockVR/Hands/HandsProbe.cpp
 //
 // S42. The first version PREDICTED AActor::Location at +0x1D8, reasoning from
 // the aim field at +0x1E4. That was wrong -- +0x1D8 held a position 141 m from
@@ -43,21 +43,16 @@
 #include "Core/Config.h"
 
 extern void LogFile(const char* msg);
-void Cfg_WriteVec3(const char* key, const float v[3]);   // dllmain.cpp
-// the Hands object. 0 == use g_locOff.
-// as Hands. 0 == none.
 
-// ---- S64: the weapon's own actor -----------------------------------------
-// 0 == off (no sweep, no write).
-// weapon actor. 0 == unknown, run the sweep.
-// object GunPtrOffset is relative to.
-
-// ---- S65: the weapon's own children --------------------------------------
+// ---- S64/S65: the weapon's own actor, and its children ---------------------
 // MEASURED S64: hands+0x45C is the weapon actor, and writing 0.50 into its
 // DrawScale halved the gun -- but NOT the cylinder. So part of the weapon is a
 // further actor attached to it, carrying its own scale. Same hunt, one level
 // down.
-// at a time, 2 == scale all of them at once.
+//
+// The settings that drive both sweeps -- gunScale, gunPtrOff, gunPtrBase,
+// gunChildren, handsPtrOff, handsPosOff -- are documented on their fields in
+// Core/Config.h.
 
 void GameState_SetPawn(void* pawn);   // GameState.cpp
 bool GameState_InGame();              // GameState.cpp

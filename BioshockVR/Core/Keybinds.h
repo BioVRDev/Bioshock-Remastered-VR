@@ -1,4 +1,4 @@
-// BioshockVR/Keybinds.h
+// BioshockVR/Core/Keybinds.h
 //
 // ONE PLACE for every hotkey in the mod.
 //

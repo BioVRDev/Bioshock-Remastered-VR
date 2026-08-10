@@ -1,3 +1,4 @@
+// BioshockVR/Render/XRSession.h
 #pragma once
 
 struct ID3D11Device;

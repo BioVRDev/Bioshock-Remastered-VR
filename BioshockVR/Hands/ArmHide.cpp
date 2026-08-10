@@ -1,4 +1,4 @@
-// BioshockVR/ArmHide.cpp
+// BioshockVR/Hands/ArmHide.cpp
 //
 // TWO features, one skeleton. See ArmHide.h.
 //
