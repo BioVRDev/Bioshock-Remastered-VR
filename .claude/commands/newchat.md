@@ -1,5 +1,5 @@
 ---
-description: Bring every planning and doc file up to date, then print a short prompt to paste into a fresh chat.
+description: Bring every planning and doc file up to date, then print a short prompt to paste into a fresh chat. Use when the user says they are stopping, wrapping up, ending the session, or wants a handoff written. Replaced the old session-wrap skill, which did a strict subset of this.
 ---
 
 Close out this session so the next one starts from the real state instead of
