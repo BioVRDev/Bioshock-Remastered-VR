@@ -69,6 +69,13 @@ handoff disagree, this file wins.
   bracket, zero false positives in six minutes of mixed play. **It does not cover
   the Little Sister rescue or the EVE injection** — those are Hands *states*, a
   different mechanism. `docs/ENGINE-MAP.md` § *Hands actor*.
+- **An oracle you only LOG is not a guard.** The bathysphere read had a perfect
+  self-check built in — the same engine call that sets `bCannotFall` clears the
+  capsule bit, so a genuine ride always shows `capsule=0`. It was printed on
+  every line and gated on nothing, and a stale pawn pointer holding ASCII
+  (`0x32313936`) raised a false `BATHYSPHERE MODE ON` whose own log line said
+  `capsule=1`. **Gate on the oracle, do not just print it.** Same for any bool:
+  a lone bool reads exactly 0 or 1, so anything else is a wrong pointer.
 - **You cannot hide by bone and measure by bone at the same time.** `ArmHide`
   clears the skeleton's dirty byte so its writes stick, which stops the engine
   re-evaluating **the whole bone array** — so any signal read from that array

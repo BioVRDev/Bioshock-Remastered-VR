@@ -85,6 +85,28 @@ ViewActor divergence as a shortcut. All four are falsified with evidence in
 
 ## Recently closed
 
+**M7 — scripted-event QOL, and the arc's longest bug is fixed (2026-08-10).**
+Verified in the headset across several cycles. What works now:
+
+- **Scripted sequences land where they intend.** Neither head look nor the right
+  stick influences the walking direction any more. That coupling
+  (`Controller.Rotation` drives view, weapon trace *and* walk direction) is the
+  longest-standing bug in this project.
+- **The scripted camera turns the player again**, and the right stick still
+  works during a sequence — view-only, via `g_aimBase`, never the aim field.
+- **Arms and hands appear only while the rig is actually animating.** Tester
+  verdict: the Little Sister crawl "works perfectly now", unhiding for the bottle
+  catch and hidden for the rest; the plasmid scene "pretty much perfect".
+
+Two signals carried it, both Tier 0 and both measured:
+`hands+0x594` bit 2 (`CurrentlyExecutingScriptedHandAnimationSequence`) and
+rig **motion** — after `bFinishedStateAnimations` was tried and falsified.
+
+**Still open from that arc:** the entry stall (`bIsForcingPlayerMove`, now
+located at `controller+0x9E0`), and the balcony fall not rotating the player,
+noted as minor.
+
+
 **M3-S1 — the native accessors are LOCATED. Passed in one cycle, 2026-08-10.**
 
 ```

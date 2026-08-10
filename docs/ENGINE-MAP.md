@@ -40,6 +40,7 @@ roll sign is opposite most external examples and is handled in the basis convers
 | `AllPossibleWeaponClasses` | `pawn+0x750` | the real 8-entry list |
 | `PreloadClasses` (decoy) | `pawn+0x998` | different ordering — **not** slot authority |
 | `LastPlayerInputContext` | `pawn+0x934` (window `+0x728..+0xA7C`) | scan has never locked |
+| **`ShockPlayerController.bIsForcingPlayerMove`** | `controller+0x9E0` | **measured M7-S5** — see below |
 | Quest arrow actor | `pawn+0xAE4` | proximity probe result |
 
 > ### ⚠ `Controller.Rotation` (`+0x1E4`) has three consumers
@@ -90,6 +91,33 @@ field declared after `FixedRotation` therefore shifts `+0xC` from a naive walk:
 `DesiredFOV` (`+0x648`) is confirmed unshifted by seven independent anchors,
 including both bool packs — 17 bools sharing one DWORD at `controller+0x468`,
 38 sharing two at `+0x594`.
+
+### `controller+0x9E0` — `bIsForcingPlayerMove`, measured M7-S5, 2026-08-10
+
+Found by differential probe, not arithmetic — `ShockPlayerController`'s fields
+begin at the end of `PlayerController` and **that size is unknown**, so it could
+not be computed. Correlated across three events whose durations differ by 24x,
+each matching the tester's independent report:
+
+| Event | `+0x9E0` high for | Reported as |
+|---|---|---|
+| Scripted scene #1 | **1.0 s** | "went straight in" |
+| Scripted scene #2 | **0.24 s** | instant |
+| Bathysphere entry | **5.75 s** | "the slewing, not quite as long this time" |
+
+The `SLEW` diagnostic fires inside those windows with the stick centred, and the
+flag drops **0.09 s after** the scripted animation begins. That is the entry
+stall: `StartForcePlayerMove` interpolates the player into position and heading
+*before* the animation starts, and anything writing `Controller.Rotation` through
+that window fights it.
+
+**Verify by shape before trusting it:** it is a lone bool, so it reads exactly
+`0` or `1`. Anything else means the pointer or the offset is wrong.
+
+**Free consequence for M3-S3.** Walking `ShockPlayerController.uc` backwards from
+line 47 to line 42 puts **`LastPlayerInputContext` at `+0x9C4`** (if interface
+refs are 4 bytes) or **`+0x9C0`** (if 8). Two computed candidates for the field
+whose *pawn* copy has never locked, instead of another blind scan.
 
 ## Pawn bool block — computed M7-S4, oracle-checked
 
