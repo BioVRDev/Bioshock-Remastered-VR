@@ -14,13 +14,24 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**Find `ShockPlayer.bCannotFall` and close the `FreezeGameplayRotation` gap** —
-the tester asked for this explicitly on 2026-08-10. Full reasoning and the
-corpus evidence are in `.planning/ROADMAP.md` § *Next — the bathysphere probe*.
-Short version: bathysphere rides are not scripted animations, so the gameplay
-rotation freeze wrongly applies to them; `ActionEnableBathysphereModeForPlayer`
-sets `bCannotFall = true` for the ride, which is a Tier 0 bool. Level-name
-gating was considered and rejected — **the mod does not know what map it is on**.
+**Run `.planning/sessions/M6.md` § M6-S1** — separate left and right hands. Read
+the card, not this section.
+
+**M7 is closed and verified.** The tester's words: "Perfect on every front."
+Scripted events land where they intend, arms and hands appear only while the rig
+is animating, the entry stall is gated, and gameplay screenshake is gone.
+
+**M6 is the hand rig**, and its shape is already settled by
+`docs/proposals/vr-features-research.md`: separate hands, two-handed grip and
+left-handed mode are **one mechanism** — a rigid transform on a bone cluster.
+Build it once; the three are configuration on top.
+
+> **The trap M6 will hit, and it has already cost a cycle once.** Writing bones
+> clears the dirty byte, which freezes the whole array — and M7's working
+> arm feature samples bone 27 from that array to decide whether the arms show.
+> A cluster write that ignores this will break a signed-off feature silently.
+> `docs/INVARIANTS.md`: *you cannot hide by bone and measure by bone at the same
+> time.*
 
 
 

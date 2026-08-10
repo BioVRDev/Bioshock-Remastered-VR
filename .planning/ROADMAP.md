@@ -20,7 +20,8 @@ outcome is decided, not when the idea feels done. Cards are in
 | ⛔ | **M1-S3** harden into `EngineBridge` | — | **skipped**: S2 returned no, nothing to harden |
 | ✅ | **M3-S1** locate `GetPropertyTextByName` | diagnostic | **YES** — rva `0x7346E0` (Steam), all four accessors, stable across two launches. `enginebridge.md` |
 | ☐ | **M3-S2** call it on `Health` | diagnostic | the value **tracks damage** — bridge proven, or not |
-| ☐ | **M3-S3** read the controller's `LastPlayerInputContext` | diagnostic | `kContexts` finally gets an input |
+| ☐ | **M3-S3** read the controller's `LastPlayerInputContext` | diagnostic | `kContexts` finally gets an input. **Now has computed candidates: `controller+0x9C4` or `+0x9C0`**, walked back from the measured `+0x9E0` |
+| ✅ | **M7** scripted-event detection and QOL | visible | **"Perfect on every front."** Sequences land where they intend; arms follow rig motion; entry stall gated; gameplay shake gone |
 | ☐ | **M2-S1** StateBus | refactor | `GameState_Cutscene()` returns the real signal; no behaviour change |
 | ☐ | **M2-S2** HUD gate on the real signal | visible | HUD hidden in cutscenes, correct everywhere else |
 | ☐ | **M2-S3** cutscene anchor, gated | visible | opening anchored; in-world moments unaffected |
@@ -53,10 +54,11 @@ weapon socket? **Either answer is worth having.**
 **M5 — metadata walk (Tier 2).** `docs/proposals/ue2-reflection-bridge.md`,
 unchanged. Opens only if M3 fails.
 
-**M6 — the hand rig.** Roomscale, left-handed mode, detached hands and
-two-handed grip — researched 2026-08-10 in
-**`docs/proposals/vr-features-research.md`**. The finding that shapes the
-milestone: those four asks need only **two** enablers, not four.
+**M6 — the hand rig. PROMOTED TO A CARD: `.planning/sessions/M6.md`, and it is
+next.** Roomscale, left-handed mode, detached hands and two-handed grip —
+researched 2026-08-10 in **`docs/proposals/vr-features-research.md`**. The
+finding that shapes the milestone: those four asks need only **two** enablers,
+not four.
 
 - Three of them (handedness, detached hands, two-handed grip) are one mechanism
   — a **rigid bone-cluster transform**, applied late, on the bone array
