@@ -7,9 +7,12 @@ description: Read BioshockVR.log or openxr_shim.log in the correct diagnostic or
 
 ## Where the logs are
 
+**Read them off disk yourself — never ask the user to paste a log.** The mod
+truncates `BioshockVR.log` at startup, so it always contains exactly one run.
+
 | File | Location |
 |---|---|
-| `BioshockVR.log` | beside `BioshockVR.dll` in `Build\Final\` |
+| `BioshockVR.log` | `Build\Final\logs\` |
 | `openxr_shim.log` | **`Build\Final\logs\`** — moved; not beside the DLL |
 | `setup.log` | `Build\Final\logs\` |
 | `Bioshock.log` | game profile folder — **only opened at shutdown**, so it can never contain anything from a live session. Do not ask for it. |

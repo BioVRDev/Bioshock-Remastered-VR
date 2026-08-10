@@ -41,8 +41,18 @@ goes **directly beside `BioshockHD.exe`** — there is no `BioPlugins` folder.
 
 ## Test loop
 
-Build → deploy → headset → read `BioshockVR.log`. There is no test suite and no
-way to automate the verification step; a human has to put the headset on.
+**Claude builds and deploys. The user only launches the game.**
+
+1. Build both projects as above.
+2. **Copy `Release/BioshockVR.dll` into the game folder yourself** — it is
+   writable without elevation. Do not ask the user to run a deploy script.
+   Back up the existing DLL first if the change is structural.
+3. Tell the user what to do in the headset and what to look for.
+4. **Read `…\Build\Final\logs\BioshockVR.log` directly** — do not ask them to
+   paste it. The mod truncates it at startup, so it always contains one run.
+
+The game must be closed before copying. There is no test suite and no way to
+automate the verification step itself; a human has to put the headset on.
 
 **Check the build stamp first, every time.** A stale DLL has invalidated seven
 sessions of this project. `dllmain build: …` in the log must have advanced.

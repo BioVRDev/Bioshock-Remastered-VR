@@ -35,20 +35,33 @@ you get `openxr_loader.exe`, you built the wrong config.
 Report the warning count. New warnings in a behaviour-preserving change are a
 finding, not noise.
 
-## Deploy
+## Deploy — do this yourself, do not ask the user
 
-`deploy.bat` (gitignored — the user's copy has their machine path). The DLL goes
-**directly beside `BioshockHD.exe`**; there is no `BioPlugins` folder.
+The game folder is **writable without elevation**. Copy the DLL directly; the
+user should never have to run a deploy script.
 
 ```
 C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final\
 ```
 
-If the copy fails: the game is open, or it needs administrator rights.
+The DLL goes **directly beside `BioshockHD.exe`** — there is no `BioPlugins`
+folder, despite what the old `deploy.bat` did.
 
-The shim is deployed as a **pristine source** (`openxr_loader_steam.dll`), not
+1. Check the game is closed (`tasklist | grep -i bioshock`). A running game locks
+   the DLL and the copy fails.
+2. For a structural change, back up the existing DLL first
+   (`BioshockVR.dll.pre-refactor-backup` or similar) so the user has a one-copy
+   rollback that does not need a rebuild.
+3. Copy `Release/BioshockVR.dll` → `<game>/BioshockVR.dll`.
+
+The shim is deployed as a **pristine source** (`openxr_loader_steam.dll`), never
 over the live `openxr_loader.dll` — `Setup.bat` selects the live loader by
-copying. Overwriting the live file directly bypasses that selection.
+copying, and overwriting it directly bypasses that selection. Leave a working
+live loader alone unless the shim itself changed.
+
+Note that two builds of identical shim source produce **different bytes** — MSVC
+embeds a build timestamp in the PE header. Do not read a hash mismatch as a code
+change; compare the sources instead.
 
 ## Verify — do not skip this
 
