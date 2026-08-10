@@ -143,7 +143,7 @@ rescue, and that is expected rather than a failure.
 
 | Finding | Status |
 |---|---|
-| 1 — `bHideHUD` written only by cinematic enter/exit | **Verified** in the corpus. Offsets unmeasured, live behaviour unconfirmed. |
+| 1 — `bHideHUD` written only by cinematic enter/exit | **Corpus claim verified. Live behaviour FALSIFIED (M1-S2).** Offsets measured and confirmed (`controller+0x71C`, bool DWORD `+0x490`), and the bit never moves — not even while the HUD visibly hides. The script really does write it; the retail sequences do not run through those actions. See `docs/INVARIANTS.md`. |
 | 2 — natives exist, script calls them on instances | **Verified** in the corpus. Addresses unlocated, calling untried. |
 | 3 — the controller's copy was never scanned | **Verified** it is declared and unexamined. That it holds live data is **inference**. |
 

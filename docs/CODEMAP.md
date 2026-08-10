@@ -4,7 +4,7 @@ The index. One block per module: what it owns, which thread it runs on, and
 **when to load its deep doc**. Read this to orient; load a module doc only when
 the work actually touches that area.
 
-Regenerate with `/codemap` after any structural change.
+Regenerate with `/codemap` after any structural change. **Measured 2026-08-10.**
 
 ---
 
@@ -61,7 +61,7 @@ dependencies are readable without opening anything.
 
 ## Modules
 
-### `Core/dllmain.cpp` (297) — entry point and logging
+### `Core/dllmain.cpp` (298) — entry point and logging
 Finds a writable place for the log (harder than it sounds), and runs the init
 thread that loads config, syncs the game ini and arms the hooks.
 
@@ -72,16 +72,20 @@ actually took effect. Replaced 138 loose globals and 161 duplicated `extern`
 declarations across the consumers.
 → **`docs/modules/config.md`** when adding a setting or chasing a default mismatch.
 
-### `Render/Hooks.cpp` (820) — D3D11 acquisition and frame orchestration
+### `Render/Hooks.cpp` (821) — D3D11 acquisition and frame orchestration
 Creates a throwaway device+swapchain to read the shared vtable, MinHooks
 `Present` (slot 8), and routes each frame between the stereo and mono paths.
 Owns the deferred install of the draw hooks.
 → **`docs/modules/render.md`**
 
-### `Render/XRSession.cpp` (1426) — OpenXR session, swapchains, submission
+### `Render/XRSession.cpp` (1427) — OpenXR session, swapchains, submission
 Session lifecycle, view location, projection layer, crosshair quad, HUD quad,
 menu/mono path, and the per-call timing breakdown that solved the frame-pacing
 work. Publishes head pose to the game thread via seqlock.
+**Also owns the `KEY: vk` keylogger** in `PollFovKeys` — a 103-virtual-key sweep
+that looks like noise and is not: it is the only reason M1-S2's marker presses
+were recoverable after the marker key turned out to be dead. Keep a logging path
+if the sweep is ever optimised.
 → **`docs/modules/render.md`**
 
 ### `Camera/CameraHook.cpp` (2583) — the camera seam ⚠️ largest file
@@ -106,29 +110,38 @@ skips any draw with a bound shader resource, because the interface is untextured
 and the square was textured.
 → **`docs/modules/hud.md`** — mandatory before changing anything in the capture path.
 
-### `Input/InputHook.cpp` (1338) — OpenXR actions → synthetic XInput
+### `Input/InputHook.cpp` (1339) — OpenXR actions → synthetic XInput
 Producer on the render thread (one action set, synced per XR frame, published
 through a seqlock); consumer is the `XInputGetState` detour. Owns hand poses,
 the d-pad modifier, pause/help chords, head-relative movement, grip
 threshold/hysteresis.
 → **`docs/modules/input.md`**
 
-### `Game/GameState.cpp` (1166) — the game's own UI/context state
+### `Game/GameState.cpp` (1681) — the game's own UI/context state
 `Level.Pauser` for pause, plus a one-shot scan of the pawn for the
 `LastPlayerInputContext` FString and a `kContexts` classification table.
 **The scan has never locked** — zero `>>> CONTEXT` lines in any session — so
 `GameState_MenuUp`/`RadialOpen`/`ScriptedSequence`/`Cutscene` are effectively
 inert. Everything downstream of cutscene detection is built and waiting.
+
+Also holds the two M1 probes, both **read-only, one-shot, gating nothing**:
+banners `MYHUD PROBE` (locks `PlayerController.myHUD` at `+0x71C` by searched
+back-reference) and `THE CINEMATIC FLAG` (reads the bool DWORD at `myHUD+0x490`,
+logs transitions only). **`bHideHUD` never moves on this build** — grave 1. The
+readers are kept as the reference implementation of an identity-checked engine
+read, which M3 needs. Other banners: `the scan`, `WORLD FOV CEILING`,
+`PAUSE / FULL-MENU DETECTION`, `PAWN FRESHNESS`, `FLOAT SNAPSHOT / DIFF PROBE`,
+`FOV AUTO-DIFF`.
 → **`docs/modules/gamestate.md`** — read before any cutscene-detection idea.
 
-### `Hands/HandsProbe.cpp` (1707) — pawn/hands/weapon discovery
+### `Hands/HandsProbe.cpp` (1713) — pawn/hands/weapon discovery
 Three-stage positional identification: pawn by proximity to the camera, Hands by
 matching camera position *and* view rotator simultaneously. Per-weapon grip and
 cursor offsets, live numpad tuning that saves back to the INI, weapon-slot and
 plasmid-mode detection.
 → **`docs/modules/hands.md`**
 
-### `Hands/ArmHide.cpp` (504) — sleeve and inactive-hand suppression
+### `Hands/ArmHide.cpp` (505) — sleeve and inactive-hand suppression
 Collapses ten sleeve bones to zero scale at the skeleton, leaving the 34
 hand/finger bones and the weapon attachment alone. Fail-closed: two vtables
 verified, skeleton ownership checked, bone count must be exactly 47.
@@ -142,7 +155,7 @@ collision. Gated on `HandsProbe_WeaponSlot() == 0`, so it is dead if the hands
 probe is disabled.
 → **`docs/modules/hands.md`**
 
-### `Game/EngineExec.cpp` (273) — the Unreal `Exec` seam
+### `Game/EngineExec.cpp` (274) — the Unreal `Exec` seam
 Runs console commands through `UGameEngine::Exec`. `set` writes the class
 default, so it survives respawn, level change and save reload — which is why the
 reticle kill uses it. **Now also reads**: per-slot output-device thunks, with
@@ -151,18 +164,24 @@ Its proven limit is that `get` reads the **class default object**, not live
 instance state. Three absolute addresses, INI-overridable, vtable-verified.
 → **`docs/modules/gamestate.md`**
 
-### `Game/GameIni.cpp` (213) — game config synchronisation
+### `Game/GameIni.cpp` (214) — game config synchronisation
 Pushes FOV and viewport size into the game's `Bioshock.ini` so the mod's reported
 FOV and the rendered image can never drift. Writes five keys, touches nothing else.
 → **`docs/modules/packaging.md`**
 
-### `Core/Keybinds.cpp` (219) — rebindable keys ⚠️ **dead code**
-Complete and correct, with **zero callers**. Every key check in the codebase is
-a raw `GetAsyncKeyState`, which is why `VK_PRIOR` has three independent readers
-and `VK_DELETE` has two. Kept because wiring it is the fix, not deleting it.
+### `Core/Keybinds.cpp` (256) — rebindable keys ⚠️ **dead code, and it bites**
+Complete and correct, with **zero callers — `Key_Init` is never invoked**, so
+every binding resolves to VK 0 and `Key_Down`/`Key_Fired` always return false.
+Every key check in the codebase is a raw `GetAsyncKeyState`, which is why the
+collisions the header claims to have corrected are all still live: `VK_PRIOR`
+three readers, `VK_DELETE` two, `VK_NEXT` two, `VK_NUMPAD9` two.
+**This is not harmless.** M1-S2 bound its marker key through this API and got
+zero presses for a full headset cycle, with no error anywhere. Bind with
+`GetAsyncKeyState` until `Key_Init` has a caller. Kept because wiring it is the
+fix, not deleting it — it also ships rebinding for users with no numpad.
 → **`docs/modules/input.md`**
 
-### `OpenXRShim/src/` (1861 across 3 files + header) — OpenXR over OpenVR
+### `OpenXRShim/src/` (2039 across 3 files + header) — OpenXR over OpenVR
 A separate project producing `openxr_loader.dll`. Implements exactly the 36
 OpenXR exports the mod imports (see `OpenXRShim/exports.def`), backed by
 SteamVR, because SteamVR's own OpenXR runtime has no 32-bit support. Projection
@@ -177,6 +196,27 @@ Windows checks the exe's own folder first, so this wins and pulls in
 on the first export call, not in `DllMain`, because `LoadLibrary` under the
 loader lock deadlocks. Writes `logs\BioshockVR_loader.log` as a breadcrumb.
 → **`docs/modules/packaging.md`**
+
+---
+
+## Declared but never called
+
+Measured 2026-08-10. Nothing here is a bug on its own; each is a promise the
+code does not keep, and two of them have already cost a session.
+
+| Symbol | Why it matters |
+|---|---|
+| **all of `Key_*`** | `Key_Init` has no caller, so the whole keybind module is inert. See above. |
+| **`GameState_Reset`** | **Nothing calls it.** So the "clear cached state at level load and save reload" story is not actually wired anywhere — the only lifetime reset that runs is the per-consumer one. Check this before trusting any "reset at boundaries" claim. |
+| `GameState_ScriptedSequence`, `GameState_RadialOpen` | Providers with no consumers. "Everything downstream is built and waiting" is true of the *features*, not of these two predicates — nothing would light up even if the scan locked. |
+| `EngineExec_GetLastOutput` | The console read channel works; nothing reads its result programmatically. |
+| `DrawHook_CutsceneBarsActive` | Cutscene-bar detection with no consumer. |
+| `Hooks_Remove`, `DrawHook_Remove`, `CameraHook_Remove`, `XR_Shutdown` | **There is no teardown path at all.** The mod is never cleanly unloaded; the process just exits. Fine today, relevant the moment anything wants to re-init. |
+
+Note when repeating this analysis: consumers **forward-declare** cross-module
+functions locally (`bool GameState_Theater();` at the top of a `.cpp`) instead of
+including the header, so a header-based scan over-reports. Grep the name.
+`GameState_Theater` is used by two modules and is not in `GameState.h` at all.
 
 ---
 

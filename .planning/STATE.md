@@ -14,35 +14,39 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**Run `.planning/sessions/M1.md` § M1-S1.** The arc is planned in `ROADMAP.md`
-§ *Current arc*; read the card, not this section.
+**Run `.planning/sessions/M3.md` § M3-S1** — locate `Object::GetPropertyTextByName`
+by pattern. Read the card, not this section.
 
-### The premise changed — 2026-08-09
+**Why M3 and not M2:** M1-S2 was the pivotal test of the whole arc and it came
+back **no**. M2 (StateBus, HUD gate, cutscene anchor, comfort) is all downstream
+of a working signal, so it stays blocked until one exists. M3 — the native
+property call, finding 2 — is the next untried source. M1-S3 is skipped.
 
-The blocker was framed as *this UE2.5 fork has no reflection system, so live
-property reads require building one*. **That is false**, and the decompiled corpus
-proves it (`docs/ARCHITECTURE.md` § *the findings*):
+### The premise, after M1 — 2026-08-09
 
-1. **`PlayerController.myHUD.bHideHUD` is an exact cinematic-mode flag** — set by
-   `ActionCinematicEnter`, cleared by `ActionCinematicExit`, and written from
-   nowhere else in 1,765 classes. `CameraHook` already holds the PlayerController as
-   `pThis`, so this is two pointer hops and a bit test. No scan, no new hook.
+The blocker was framed as *this UE2.5 fork has no reflection system*. That framing
+is still wrong, and the corpus still says so. But **M1 turned the corpus findings
+from three predictions into one measured negative and two untested claims**, and
+the distinction it drew is the most useful thing to carry forward:
+
+> **The corpus tells you what the script *can* do. It does not tell you what the
+> shipped game *does*.**
+
+1. **`myHUD.bHideHUD` — FALSIFIED LIVE (M1-S2).** The script really is written the
+   way finding 1 said. The bit still never moves. Offsets confirmed and kept
+   (`docs/ENGINE-MAP.md`); the *inference* that retail cutscenes run through
+   `ActionCinematicEnter`/`Exit` is dead. Grave 1 in `CLAUDE.md`.
 2. **`Core.Object` exposes native `GetPropertyTextByName(name)`**, and retail script
-   calls it *on live instances*. Console `get` returns class defaults because the
-   console resolves a **class** — not because live reads are impossible. That
-   measurement stands; the conclusion drawn from it did not.
+   calls it *on live instances*. **Untested.** Console `get` returns class defaults
+   because the console resolves a **class** — that measurement stands, the
+   conclusion drawn from it did not. **This is M3 and it is now the main line.**
 3. **`LastPlayerInputContext` is also declared on `ShockPlayerController`**
    (`:42`). Every scan so far has been on the **pawn**. The controller copy has
-   never been looked at, which may be the whole reason the scan never locked.
+   still never been looked at. **Untested**, and M3-S3 reads it.
 
-So the reflection bridge drops from "first move, a project not a session" to Tier 2
-fallback — unchanged and unrejected, just no longer first
-(`docs/ARCHITECTURE.md`). `CurrentExorcismTarget` is demoted: it brackets the
-rescue only, and M3-S3 gets that plus several other sequences for the same effort.
-
-**None of this is confirmed in a headset.** All three are predictions from script
-until a live read agrees — the standard that produced `AActor::Location = +0x1D8`.
-M1-S2 is the pivotal test.
+Treat 2 and 3 the way 1 should have been treated: as predictions that owe a live
+read. M1 cost two cycles and returned one solid measurement plus one clean
+negative, which is the system working.
 
 Do **not** re-enable the pitch latch, pitch servo, S75 unwind, or
 ViewActor divergence as a shortcut. All four are falsified with evidence in
@@ -74,10 +78,36 @@ thunks plus returning `1` from slot 4 (the "will you accept output?" query) make
 state. `Health` stayed `200.0` after damage; `Location` stayed `(0,0,0)` after
 walking. Useful for defaults and for confirming `set`; useless as a state source.
 
-**New measured offset.** `PlayerController +0x5C0/+0x5C8` is the Acceleration
-request the engine writes from the left stick — `0.000` at rest, `778–875` when
-the stick is held, **including while pinned in a corner and provably not moving**.
-An input-*accepted* signal, not velocity. Walking into geometry cannot false-fire it.
+**M1-S1 — `myHUD` PINNED, and the PlayerController layout with it.**
+`PlayerController.myHUD = controller+0x71C`, `HUD.PlayerOwner = myHUD+0x470`,
+the six-bool DWORD at `myHUD+0x490` with `bHideHUD` as bit 0. Confirmed by a
+self-validating back-reference on two controllers, stable over ten samples each,
+and nine consecutive HUD fields matched their declared types on inspection.
+Declaration-order arithmetic predicted `+0x710` and passed through seven
+independent `ENGINE-MAP` anchors; the `+0xC` gap was `FMatrix` being 16-byte
+aligned, so **every `PlayerController` field after `FixedRotation` shifts `+0xC`
+from a naive walk** — recorded in `docs/ENGINE-MAP.md`.
+
+**M1-S2 — `bHideHUD` FALSIFIED. The pivotal test of the arc returned no.**
+The DWORD read `0x00000020` and never changed: 16 minutes, four controller
+lifetimes, the bathysphere descent, a level load, the plasmid injection, combat,
+barrels, both halves of a Little Sister sequence. **Eight marked boundaries,
+zero transitions at any of them.** Decisive: the tester made the HUD visibly
+appear and disappear by stepping in and out of the bathysphere entrance and the
+DWORD did not move. So HUD visibility here is not driven by `bHideHUD` —
+`HideMovie('HUD')` on the Scaleform controller is the new suspect.
+
+**Two offsets renamed, free from S1's arithmetic.** `+0x5C0`/`+0x5C8` are
+`PlayerController.aForward`/`aStrafe` — the **raw input axes**, which is *why*
+the old measurement read `778–875` while pinned in a corner and provably not
+moving. It remains an input-*requested* signal that geometry cannot false-fire.
+And `+0x620` is `ViewTarget`, not a Pawn alias — which is why grave 2 (ViewActor
+divergence) watched it track the pawn for whole sessions.
+
+**`Core/Keybinds.cpp` is dead code.** `Key_Init` has **no caller anywhere**, so
+every binding resolves to VK 0 and `Key_Down`/`Key_Fired` always return false.
+Found the hard way: the M1-S2 marker key was routed through it and produced zero
+marks for a whole run. Bind with `GetAsyncKeyState` until it is wired.
 
 ---
 
@@ -90,17 +120,28 @@ The longest-running problem. Everything downstream is built and waiting.
 ViewTarget path and by non-latching pitch telemetry. The context scan brackets
 the right window and has **never locked** — zero `>>> CONTEXT` lines, ever.
 
-Graveyard (evidence in `docs/INVARIANTS.md`): ViewActor divergence · pitch-rate
-latch · pitch servo · S75/S78/S79 unwind · cached view-target scans · console
-`get` · the input-ignored detector.
+Graveyard (evidence in `docs/INVARIANTS.md`): **`myHUD.bHideHUD`** · ViewActor
+divergence · pitch-rate latch · pitch servo · S75/S78/S79 unwind · cached
+view-target scans · console `get` · the input-ignored detector. **Nine now.**
 
-Two live leads, both in `docs/modules/gamestate.md`:
-1. **`CurrentExorcismTarget`** — a pointer that brackets the Little Sister rescue
-   exactly. Narrow but cheap. The probe exists; the run that produced candidates
-   contained no rescue and had a stale-snapshot bug on pawn change. `+0xEA4` and
-   `+0xB58` are the surviving candidates. Unresolved.
-2. **The UE2 reflection bridge** — `docs/proposals/ue2-reflection-bridge.md`. The
-   general answer. A project, not a session.
+Live leads, best first:
+1. **The native property call (Tier 1)** — `Object::GetPropertyTextByName`, which
+   retail script calls on live instances. **This is M3 and it is the main line.**
+   It can crash, so it must be located by pattern and validated on `Health`
+   before anything trusts it.
+2. **`ShockPlayerController.LastPlayerInputContext`** — the *controller* copy,
+   never examined; every scan so far was on the pawn. M3-S3. It is also the only
+   lead that covers the Little Sister rescue, which pushes `NullInput` and never
+   enters cinematic mode at all.
+3. **`HideMovie('HUD')` on the Scaleform GUI controller** — new from M1-S2. The
+   HUD demonstrably hides without `bHideHUD` moving, so something else is doing
+   it, and `ShockPlayer.uc` calls exactly this during the rescue. Unexplored.
+4. **`CurrentExorcismTarget`** — brackets the rescue only. The probe exists; the
+   run that produced candidates contained no rescue and had a stale-snapshot bug
+   on pawn change. `+0xEA4` and `+0xB58` survive. Superseded by lead 2, which
+   costs the same and covers more.
+5. **The UE2 metadata walk (Tier 2)** — `docs/proposals/ue2-reflection-bridge.md`.
+   Parked; opens only if M3 fails.
 
 ### Aim / movement coupling
 `Controller.Rotation` (`+0x1E4`) drives the view, the weapon trace **and** the
@@ -134,9 +175,20 @@ are inert. Keep them; do not delete.
   leftover Visual Studio wizard `dllmain.cpp`, each defining `DllMain` (LNK2005).
   Template deleted 2026-08-09; all three projects now build. Worth remembering
   that the dead-code audit only covered `BioshockVR/`.
-- **Diagnostic key collisions.** `VK_PRIOR` has three readers, `VK_DELETE` two.
-  Wiring `Keybinds.cpp` (complete, zero callers) fixes both plus the 103-VK
-  per-frame sweep in `PollFovKeys`.
+- **`Keybinds.cpp` is never initialised — CONFIRMED, and it bit us.** `Key_Init`
+  has zero callers, so the whole module is inert and `[KEYS]` is read by nothing.
+  Every working hotkey calls `GetAsyncKeyState` directly, which means the
+  collisions the header claims to have "corrected" are all still live:
+  `VK_PRIOR` three readers, `VK_DELETE` two, `VK_NEXT` two, `VK_NUMPAD9` two.
+  Wiring it fixes all four plus the 103-VK per-frame sweep in `PollFovKeys`, and
+  ships rebinding for users with no numpad. `dist/BioshockVR.ini` now documents
+  the real compiled-in keys and says plainly that rebinding needs a code fix —
+  **a `[KEYS]` section was deliberately NOT added**, because nothing would read
+  it. See `DECISIONS.md`.
+- **Keep the `KEY: vk` keylogger in `PollFovKeys`.** It is the sweep above and it
+  looks like pure noise, but it is the only reason M1-S2's eight marker presses
+  were recoverable after the marker key turned out to be dead. If the sweep is
+  optimised, keep a logging path for it.
 - **Plasmid hand, first equip.** On the first plasmid pull of a session it bound
   to the *right* hand instead of the left, and both plasmids showed the
   right-hand model. Cycling weapons cleared it and it did not recur. Observed
@@ -206,18 +258,35 @@ from a real run is **byte-identical to the pre-refactor baseline**, all 90 lines
 3c changed no code at all — file moves, include paths and comments — so it
 carries no behavioural risk beyond the build itself, which is clean.
 
-**Not yet run in a headset:** the post-3c build. It should be indistinguishable;
-if anything differs, the cause is the move, and
-`BioshockVR.dll.pre-refactor-backup` in the game folder is a one-copy rollback.
+**The post-3c build has now run in a headset** — several times, across M1-S1 and
+M1-S2 on 2026-08-09, including a full new game, a level load, a save reload and
+~16 minutes of play. No regression reported and no crash. The refactor is
+settled; the rollback copy is no longer needed.
 
 ---
 
 ## Last verified in a headset
 
-The `002a81a` build, on the session that produced the square fix: square gone,
-HUD correct in normal play, `CAPTURED: 5d tex=no` steady. One cosmetic
-regression noted and not diagnosed — **the ammo counter reads slightly more
-transparent**. `HudAlphaFix=0` did not change it, so it is not the alpha repair.
-Candidate: the ammo counter is itself a textured draw now excluded by the guard,
-which would put it on the backbuffer instead of the quad. The `CAPTURED:`
-diagnostic would answer it in one run.
+**2026-08-09, build `M1-S2 cinematic flag` (23:19:49).** New game → intro
+bathysphere → level load → out of the bathysphere → plasmid injection → combat
+and barrels → load a save → both halves of a Little Sister sequence. ~16 minutes.
+
+Health signals all correct: `>>> XR: runtime = OpenVR/SteamVR via BioshockVR
+shim` · `EYEQ: depth min=1 max=1` · `hud: host found 30718 frames` ·
+`POLL: synth 234/s realpad 0/s hook=ON xr=ON`. No errors, no warnings, no
+crash, and the `myHUD` pointer re-resolved cleanly across all four controller
+changes.
+
+**Noticed and not chased**, all reported as long-standing rather than new:
+- The **vita chamber "What is this?" prompt is head-attached, not world-anchored.**
+  Related to the empty `AnchorIndexCounts` in P2 above.
+- **HUD behaviour in the first bathysphere is generally odd** — absent on
+  regaining control, appearing only on walking out, and toggling on stepping in
+  and out of the entrance. That last one is what falsified `bHideHUD`, so it is
+  evidence rather than only a bug.
+
+**Still open from the previous headset session:** the ammo counter reads slightly
+more transparent since the square fix. `HudAlphaFix=0` did not change it, so it
+is not the alpha repair. Candidate: the counter is itself a textured draw now
+excluded by the guard, putting it on the backbuffer instead of the quad. The
+`CAPTURED:` diagnostic would answer it in one run.

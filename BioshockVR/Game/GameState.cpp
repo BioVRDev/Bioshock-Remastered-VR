@@ -27,14 +27,18 @@
 
 #include "Game/GameState.h"
 #include "Game/EngineExec.h"
+#include "Core/Keybinds.h"
 
 #include <windows.h>
 #include <intrin.h>
+#include <psapi.h>          // MYHUD probe: module bounds for the vtable check
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
 #include "Core/Config.h"
+
+#pragma comment(lib, "psapi.lib")
 
 extern void LogFile(const char* msg);
 
@@ -442,6 +446,10 @@ static void RecheckCandidates(const uint8_t* obj)
 // caller and lives above them.
 static void PollProbeKeys(const uint8_t* obj);
 static void ApplyForegroundFov(const uint8_t* obj);
+static void MyHudTick(const uint8_t* controller);
+static void MyHudReset();
+static void CineTick(const uint8_t* controller);
+static void CineReset();
 
 // ---- WORLD FOV CEILING ---------------------------------------------------
 // MEASURED: a vita chamber respawn drives controller+0x45C from 75 to 139.9,
@@ -904,6 +912,15 @@ void GameState_Observe(void* playerController)
     ApplyForegroundFov((const uint8_t*)playerController);
     ClampWorldFov((const uint8_t*)playerController);
 
+    // M1-S1. Read-only and one-shot, and it runs on the same reasoning as the
+    // FOV probes above: the controller pointer is already here, and it is a
+    // different feature from the (dead) context scan, so it does not belong
+    // behind EnableGameState.
+    MyHudTick((const uint8_t*)playerController);
+
+    // M1-S2. Reads the flag MyHudTick just located. Gates nothing.
+    CineTick((const uint8_t*)playerController);
+
     // Before the EnableGameState early-return: the reticle should still go away
     // when the context scan is switched off. Different feature, different switch.
     Reticle_Tick();
@@ -1092,10 +1109,15 @@ static void ApplyForegroundFov(const uint8_t* obj)
 }
 
 // ---- FOV AUTO-DIFF (read only) -------------------------------------------
-// The manual snapshot/diff is on PGUP/PGDN, which does not register on this
-// keyboard. So do it unattended: remember every FOV-plausible float on the
-// controller and log the ones that MOVE. Die in a vita chamber and the change
-// lands in the log by itself, with its offset.
+// Unattended version of the manual snapshot/diff: remember every FOV-plausible
+// float on the controller and log the ones that MOVE. Die in a vita chamber and
+// the change lands in the log by itself, with its offset.
+//
+// CORRECTED 2026-08-09: this comment used to justify itself with "PGUP/PGDN
+// does not register on this keyboard". False -- the tester uses both routinely.
+// The auto-diff is still worth having, because a probe that needs a keypress
+// produces nothing when the tester is busy playing; that reason stands and the
+// dead-key one never did. M1-S2 acted on the false version and lost a detour.
 static void FovAutoDiff(const uint8_t* obj)
 {
     static float prev[256] = {};
@@ -1122,6 +1144,466 @@ static void FovAutoDiff(const uint8_t* obj)
         prev[i] = plausible ? v : 0.0f;
     }
     have = true;
+}
+
+// ============================================================================
+// M1-S1: MYHUD PROBE -- pin PlayerController.myHUD, self-validated
+//
+// DIAGNOSTIC ONLY. It reads engine memory, writes none of it, and gates no
+// behaviour. One shot: it locks and stops. No standing scan.
+//
+// WHY THIS FIELD. docs/ARCHITECTURE.md finding 1: Engine.HUD.bHideHUD is
+// written from exactly two places in all 1,765 script classes --
+// ActionCinematicEnter and ActionCinematicExit -- which makes it an EXACT
+// cinematic-mode flag rather than another state inferred from a side effect.
+// Eight inferred detectors are already in docs/INVARIANTS.md as falsified.
+// Reading it is two pointer hops off the controller this function already
+// receives every frame. This session pins the first hop; M1-S2 reads the flag.
+//
+// ---- ROUTE A: PREDICTED +0x710 -------------------------------------------
+// By declaration order from the AActor base 0x450 -- UE2 lays properties out
+// in declaration order (docs/UNREALSCRIPT.md). The working, with the
+// docs/ENGINE-MAP.md anchors that check it:
+//
+//   Controller.uc        +0x450  Pawn             <-- anchor
+//                        +0x45C  FovAngle         <-- anchor, world FOV
+//                        +0x460  ForegroundFov    <-- anchor, foreground FOV
+//                        +0x468  SEVENTEEN bools -> ONE dword, not seventeen
+//                        +0x46C  six input bytes -> 6 bytes, pad to +0x474
+//                        ...     ends at +0x590
+//   PlayerController.uc  +0x594  THIRTY-EIGHT bools -> TWO dwords (32 + 6)
+//                        +0x5C0  aForward         <-- anchor
+//                        +0x5C8  aStrafe          <-- anchor
+//                        +0x5D4  xForward         <-- anchor
+//                        +0x620  ViewTarget       <-- anchor
+//                        +0x648  DesiredFOV       <-- anchor, "world FOV mirror"
+//                        +0x674  RenderWorldToCamera, FMatrix, 64 bytes
+//                        +0x710  myHUD
+//
+// SEVEN anchor hits, three of them downstream of both bool packs and of the
+// byte padding -- so the arithmetic is checked through every construct that
+// could have gone wrong BUT ONE. If FMatrix is 16-byte aligned on this build,
+// RenderWorldToCamera starts at +0x680 instead, everything after shifts +0xC,
+// and myHUD is +0x71C. The window below covers both and the live read decides.
+// That is exactly what route B is for.
+//
+// TWO CORRECTIONS TO docs/ENGINE-MAP.md, free from this arithmetic:
+//   The "acceleration request +0x5C0/+0x5C8" is aForward/aStrafe -- the RAW
+//   INPUT AXES. That independently explains its own measured note that the
+//   value still read ~875 while pinned in a corner, provably not moving.
+//   The +0x620 "Pawn alias" is ViewTarget -- which is why grave 1 (ViewActor
+//   divergence) watched it track the pawn for whole sessions.
+//
+// ---- ROUTE B: THE LIVE READ ----------------------------------------------
+// A pointer that merely looks like an object proves nothing. A pointer whose
+// target points BACK at the controller we started from proves identity. Same
+// three-stage positional trick HandsProbe uses (docs/modules/hands.md).
+//
+// The back-reference offset is SEARCHED, not assumed, so HUD.PlayerOwner
+// (route A predicts +0x470) gets validated in the same pass -- M1-S2 depends
+// on the HUD-side arithmetic just as much as on this one.
+//
+// EXPECT MORE THAN ONE PASSING CANDIDATE. ViewTarget at +0x620 is the pawn,
+// and Pawn.Controller points straight back here, so it passes the same test.
+// That is a working test, not a broken one. We reject the two objects we can
+// already name (the controller itself, and the pawn) and then FAIL CLOSED:
+// lock only when the survivor is unambiguous, otherwise log everything and
+// lock nothing.
+// ============================================================================
+
+static const size_t kMyHudPredicted = 0x710;    // route A, banner above
+static const size_t kMyHudLo        = 0x600;    // covers +0x710 and +0x71C
+static const size_t kMyHudHi        = 0x800;
+
+// Bounds the back-reference SEARCH inside a candidate. HUD's own fields start
+// at the AActor base and PlayerOwner is the 7th of them; this range only says
+// where to look, never what to find.
+static const size_t kBackrefLo = 0x450;
+static const size_t kBackrefHi = 0x550;
+
+static void*  g_myHud       = nullptr;
+static size_t g_myHudOff    = 0;
+static size_t g_backrefOff  = 0;
+static void*  g_myHudOwner  = nullptr;   // controller it was resolved against
+static int    g_myHudSettle = 0;
+static bool   g_myHudDone   = false;
+static int    g_myHudTick   = 0;
+static int    g_myHudChecks = 0;
+
+static void MyHudReset()
+{
+    g_myHud = nullptr;
+    g_myHudOff = 0;
+    g_backrefOff = 0;
+    g_myHudOwner = nullptr;
+    g_myHudSettle = 0;
+    g_myHudDone = false;
+    g_myHudTick = 0;
+    g_myHudChecks = 0;
+    CineReset();        // the flag reader has the same lifetime as the pointer
+}
+
+// The vtable must live inside BioshockHD.exe. GsLooksLikeObject already proves
+// the first vtable entry is executable; this rules out a heap block that merely
+// happens to begin with a pointer into somewhere executable.
+static bool InMainModule(const void* p)
+{
+    static uint8_t* base = nullptr;
+    static size_t   size = 0;
+    if (!base)
+    {
+        HMODULE h = GetModuleHandleW(nullptr);
+        MODULEINFO mi = {};
+        if (!h || !GetModuleInformation(GetCurrentProcess(), h, &mi, sizeof(mi)))
+            return false;
+        base = (uint8_t*)mi.lpBaseOfDll;
+        size = mi.SizeOfImage;
+    }
+    const uint8_t* a = (const uint8_t*)p;
+    return a >= base && a < base + size;
+}
+
+// Lowest offset inside `obj` that points back at `owner`, or 0 for none.
+// Offset 0 is the vtable slot, so 0 is unambiguous as "no back-reference".
+static size_t FindBackref(const uint8_t* obj, const void* owner)
+{
+    for (size_t off = kBackrefLo; off + 4 <= kBackrefHi; off += 4)
+    {
+        if (!Readable(obj + off, 4)) continue;
+        if (*(void* const*)(obj + off) == owner) return off;
+    }
+    return 0;
+}
+
+// M1-S2 reads bHideHUD out of a 6-bool DWORD predicted at HUD+0x490 -- and
+// bHideHUD is bit 0 of it, sharing with bShowScores, bShowDebugInfo,
+// bHideCenterMessages, bBadConnectionAlert and bMessageBeep. Dumping the head
+// of the object here is free, read-only, and lets that prediction be checked
+// from THIS session's log rather than costing S2 a cycle to discover the HUD
+// layout is shifted too. No bit is interpreted here -- that is S2's job.
+static void DumpHudHead(const uint8_t* hud)
+{
+    Log(">>> MYHUD:   object head (for M1-S2; bHideHUD dword predicted +0x490):");
+    for (size_t row = 0x450; row < 0x4A0; row += 0x10)
+    {
+        if (!Readable(hud + row, 0x10))
+        {
+            Log(">>> MYHUD:   +0x%03X  <unreadable>", (unsigned)row);
+            continue;
+        }
+        const uint32_t* d = (const uint32_t*)(hud + row);
+        Log(">>> MYHUD:   +0x%03X  %08X %08X %08X %08X",
+            (unsigned)row, d[0], d[1], d[2], d[3]);
+    }
+}
+
+static void MyHudProbe(const uint8_t* controller)
+{
+    Log(">>> MYHUD: ---- controller 0x%08X, window +0x%03X..+0x%03X, "
+        "route A predicts +0x%03X ----",
+        (unsigned)(uintptr_t)controller, (unsigned)kMyHudLo,
+        (unsigned)kMyHudHi, (unsigned)kMyHudPredicted);
+
+    const void* pawn = g_pawn;
+
+    size_t hitOff[8] = {};
+    void*  hitPtr[8] = {};
+    size_t hitBack[8] = {};
+    int    nHit = 0;
+    int    noise = 0;
+
+    for (size_t off = kMyHudLo; off + 4 <= kMyHudHi; off += 4)
+    {
+        if (!Readable(controller + off, 4)) continue;
+        void* p = *(void* const*)(controller + off);
+        if (!p) continue;
+        if (!GsLooksLikeObject(p)) continue;
+
+        // Named already, so not myHUD. RealViewTarget is a Controller and can
+        // be this very object; ViewTarget is normally the pawn.
+        if (p == (const void*)controller)
+        {
+            Log(">>> MYHUD:   +0x%03X  0x%08X  skip: the controller itself",
+                (unsigned)off, (unsigned)(uintptr_t)p);
+            continue;
+        }
+        if (pawn && p == pawn)
+        {
+            Log(">>> MYHUD:   +0x%03X  0x%08X  skip: the pawn (ViewTarget)",
+                (unsigned)off, (unsigned)(uintptr_t)p);
+            continue;
+        }
+
+        void* vt = *(void* const*)p;
+        if (!InMainModule(vt))
+        {
+            if (++noise <= 32)
+                Log(">>> MYHUD:   +0x%03X  0x%08X  reject: vtable 0x%08X is "
+                    "outside the module",
+                    (unsigned)off, (unsigned)(uintptr_t)p,
+                    (unsigned)(uintptr_t)vt);
+            continue;
+        }
+
+        const size_t back = FindBackref((const uint8_t*)p, controller);
+        if (!back)
+        {
+            if (++noise <= 32)
+                Log(">>> MYHUD:   +0x%03X  0x%08X  vt=0x%08X  reject: no "
+                    "back-reference to this controller",
+                    (unsigned)off, (unsigned)(uintptr_t)p,
+                    (unsigned)(uintptr_t)vt);
+            continue;
+        }
+
+        Log(">>> MYHUD:   +0x%03X  0x%08X  vt=0x%08X  backref=+0x%03X  PASS%s",
+            (unsigned)off, (unsigned)(uintptr_t)p, (unsigned)(uintptr_t)vt,
+            (unsigned)back, (off == kMyHudPredicted) ? "  <-- ROUTE A" : "");
+
+        if (nHit < 8)
+        {
+            hitOff[nHit] = off; hitPtr[nHit] = p; hitBack[nHit] = back;
+        }
+        ++nHit;
+    }
+
+    if (noise > 32)
+        Log(">>> MYHUD:   ...%d further rejects not logged", noise - 32);
+
+    // FAIL CLOSED. Route A wins outright if it is among the survivors; a lone
+    // survivor is accepted as the FMatrix-alignment case; anything else is
+    // reported and nothing is locked. Guessing between two plausible offsets
+    // is how this project loses cycles.
+    int pick = -1;
+    const int listed = (nHit < 8) ? nHit : 8;
+    for (int i = 0; i < listed; ++i)
+        if (hitOff[i] == kMyHudPredicted) pick = i;
+    if (pick < 0 && nHit == 1) pick = 0;
+
+    if (pick >= 0)
+    {
+        g_myHud = hitPtr[pick];
+        g_myHudOff = hitOff[pick];
+        g_backrefOff = hitBack[pick];
+
+        Log(">>> MYHUD: predicted=+0x%03X confirmed=+0x%03X vtable=0x%08X "
+            "backref=%s ok%s",
+            (unsigned)kMyHudPredicted, (unsigned)g_myHudOff,
+            (unsigned)(uintptr_t)*(void* const*)g_myHud,
+            (g_backrefOff == 0x470) ? "+0x470" : "other",
+            (g_myHudOff == kMyHudPredicted)
+                ? "   ROUTES AGREE"
+                : "   route B only -- FMatrix alignment, shift later offsets");
+
+        if (g_backrefOff != 0x470)
+            Log(">>> MYHUD: NOTE backref landed at +0x%03X, not the predicted "
+                "+0x470 -- the HUD-side arithmetic is off and M1-S2's +0x490 "
+                "bHideHUD dword must be re-derived from the dump below.",
+                (unsigned)g_backrefOff);
+
+        DumpHudHead((const uint8_t*)g_myHud);
+    }
+    else if (!nHit)
+    {
+        Log(">>> MYHUD: NO CANDIDATE PASSED. Route A predicts +0x%03X and "
+            "route B found nothing pointing back. Do NOT widen the window and "
+            "retry blind -- see .planning/sessions/M1.md, M1-S1 'If it fails'.",
+            (unsigned)kMyHudPredicted);
+    }
+    else
+    {
+        Log(">>> MYHUD: %d candidates passed and NONE is at the predicted "
+            "+0x%03X. Locking nothing -- adjudicate from the list above "
+            "before M1-S2.", nHit, (unsigned)kMyHudPredicted);
+    }
+
+    Log(">>> MYHUD: ---- end ----");
+}
+
+// Drives the probe. One shot per controller, then a short stability watch,
+// then silent. Re-runs by itself when the controller changes -- fix lifetime,
+// not range (docs/INVARIANTS.md).
+static void MyHudTick(const uint8_t* controller)
+{
+    if (g_myHudOwner && g_myHudOwner != (const void*)controller)
+    {
+        Log(">>> MYHUD: controller changed 0x%08X -> 0x%08X. Re-resolving.",
+            (unsigned)(uintptr_t)g_myHudOwner,
+            (unsigned)(uintptr_t)controller);
+        MyHudReset();
+    }
+
+    if (!g_myHudDone)
+    {
+        // Let the level settle first, for the same reason the context scan
+        // waits: the HUD does not exist during load.
+        if (++g_myHudSettle < 600) return;
+        g_myHudDone = true;
+        g_myHudOwner = (void*)controller;
+        MyHudProbe(controller);
+        return;
+    }
+
+    // "Stable across several seconds of play" -- ten samples about a second
+    // apart, logging only a change, then it stops for good.
+    if (!g_myHud || g_myHudChecks >= 10) return;
+    if ((++g_myHudTick & 0x3F) != 0) return;
+
+    void* now = Readable(controller + g_myHudOff, 4)
+              ? *(void* const*)(controller + g_myHudOff) : nullptr;
+    if (now != g_myHud)
+    {
+        Log(">>> MYHUD: UNSTABLE -- +0x%03X was 0x%08X, now 0x%08X, after %d "
+            "checks. The offset is wrong or the HUD was replaced.",
+            (unsigned)g_myHudOff, (unsigned)(uintptr_t)g_myHud,
+            (unsigned)(uintptr_t)now, g_myHudChecks);
+        g_myHudChecks = 10;                 // said once, never spammed
+        return;
+    }
+
+    if (++g_myHudChecks >= 10)
+        Log(">>> MYHUD: stable -- 0x%08X unchanged over 10 checks (~10 s).",
+            (unsigned)(uintptr_t)g_myHud);
+}
+
+// ============================================================================
+// M1-S2: THE CINEMATIC FLAG -- read myHUD.bHideHUD, log transitions only
+//
+// DIAGNOSTIC ONLY. Reads, never writes. GATES NOTHING -- M2-S1 is the first
+// session allowed to change what the user sees, and wiring this into the HUD
+// or the camera now would make a false positive invisible instead of obvious.
+//
+// WRITING to bHideHUD is specifically forbidden: it would fight the game's own
+// ActionCinematicEnter/Exit logic and confound M2-S2.
+//
+// THE CLAIM UNDER TEST. docs/ARCHITECTURE.md finding 1 says Engine.HUD.bHideHUD
+// is written from exactly two places in all 1,765 script classes --
+// ActionCinematicEnter and ActionCinematicExit. If that holds live, this bit is
+// an EXACT cinematic-mode flag. Eight previous detectors inferred the state
+// from a side effect (pitch rate, draw counts, view-target identity, timing)
+// and all eight are in docs/INVARIANTS.md as falsified. This one reads the
+// state the game itself keeps, which is the class of approach never tried.
+//
+// A CLEAN NO IS A SUCCESSFUL SESSION. If the dword never moves, or moves
+// constantly in ordinary play, that is the deliverable -- record it and open
+// M3-S1. Do not start deriving a signal from pitch or timing again.
+//
+// WHERE THE BIT IS -- measured M1-S1, not predicted:
+//   myHUD           = controller+0x71C   (back-reference at myHUD+0x470)
+//   the bool dword  = myHUD+0x490, read 0x00000020 in ordinary play
+//   bit 0 bHideHUD          bit 3 bHideCenterMessages
+//   bit 1 bShowScores       bit 4 bBadConnectionAlert
+//   bit 2 bShowDebugInfo    bit 5 bMessageBeep   <-- the set bit in that 0x20
+//
+// LOG THE WHOLE DWORD, never just the bit. If a neighbouring bool turns out to
+// be what moves, the raw value is the only thing that can tell us.
+//
+// EXPECTED NOT TO FIRE FOR THE LITTLE SISTER RESCUE. ShockPlayer.uc:2442 pushes
+// the NullInput context instead of entering cinematic mode (finding 3). A
+// non-firing rescue CONFIRMS the model; it does not break it.
+// ============================================================================
+
+static const size_t   kHudBoolDword = 0x490;    // measured M1-S1
+static const uint32_t kBitHideHud   = 0x00000001;
+
+static uint32_t g_cineDword = 0;
+static bool     g_cineHave  = false;
+static bool     g_cineDead  = false;   // identity failed; silent until re-lock
+static int      g_cineTick  = 0;
+static int      g_markN     = 0;
+
+static void CineReset()
+{
+    g_cineDword = 0;
+    g_cineHave = false;
+    g_cineDead = false;
+    g_cineTick = 0;
+}
+
+// Seconds since the first tick. Every log line is already timestamped; this
+// exists only so a CINE line and a MARK line can be compared by eye without
+// doing arithmetic on wall clock times.
+static float CineTime()
+{
+    static DWORD t0 = 0;
+    const DWORD now = GetTickCount();
+    if (!t0) t0 = now;
+    return (now - t0) / 1000.0f;
+}
+
+// Per-tick guard. Readable() is a VirtualQuery, and this runs on the game
+// thread once per CalcView -- doing the full identity check every frame would
+// be a few hundred VirtualQuery calls a second for a diagnostic. So: SEH here
+// every tick, which cannot fault and costs nothing, and the real identity
+// check once a second below.
+static bool SafeReadDword(const void* p, uint32_t* out)
+{
+    __try { *out = *(const uint32_t*)p; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Non-null, vtable plausible and inside the module, back-reference intact --
+// the same three stages that locked the pointer in the first place.
+static bool CineIdentityOk(const uint8_t* controller)
+{
+    if (!g_myHud || !g_myHudOff) return false;
+    if (!Readable(controller + g_myHudOff, 4)) return false;
+    if (*(void* const*)(controller + g_myHudOff) != g_myHud) return false;
+    if (!GsLooksLikeObject(g_myHud)) return false;
+    if (!InMainModule(*(void* const*)g_myHud)) return false;
+    if (!Readable((const uint8_t*)g_myHud + g_backrefOff, 4)) return false;
+    return *(void* const*)((const uint8_t*)g_myHud + g_backrefOff)
+           == (const void*)controller;
+}
+
+static void CineTick(const uint8_t* controller)
+{
+    if (g_cineDead || !g_myHud) return;
+
+    // FAIL CLOSED: one line, then silence until the controller changes and
+    // MyHudReset re-arms us. A detector that keeps reading a stale object is
+    // how the CurrentExorcismTarget probe produced 18 meaningless transitions.
+    if ((++g_cineTick & 0x3F) == 0 && !CineIdentityOk(controller))
+    {
+        Log(">>> CINE: identity check FAILED -- myHUD 0x%08X no longer "
+            "validates. Reads stopped until the controller changes.",
+            (unsigned)(uintptr_t)g_myHud);
+        g_cineDead = true;
+        return;
+    }
+
+    uint32_t d = 0;
+    if (!SafeReadDword((const uint8_t*)g_myHud + kHudBoolDword, &d))
+    {
+        Log(">>> CINE: read faulted at myHUD+0x%03X. Reads stopped.",
+            (unsigned)kHudBoolDword);
+        g_cineDead = true;
+        return;
+    }
+
+    if (!g_cineHave)
+    {
+        g_cineHave = true;
+        g_cineDword = d;
+        Log(">>> CINE: baseline dword 0x%08X  bHideHUD=%d  (t=%.1f)",
+            d, (d & kBitHideHud) ? 1 : 0, CineTime());
+        return;
+    }
+
+    if (d == g_cineDword) return;               // the common case: silence
+
+    const uint32_t was = g_cineDword;
+    g_cineDword = d;
+
+    const char* what;
+    if ((was ^ d) & kBitHideHud)
+        what = (d & kBitHideHud) ? "   bHideHUD 0->1  CINEMATIC ENTER"
+                                 : "   bHideHUD 1->0  CINEMATIC EXIT";
+    else
+        what = "   (a neighbouring bool moved, NOT bHideHUD)";
+
+    Log(">>> CINE: dword 0x%08X -> 0x%08X  (t=%.1f)%s", was, d,
+        CineTime(), what);
 }
 
 static void PollProbeKeys(const uint8_t* obj)
@@ -1155,6 +1637,36 @@ static void PollProbeKeys(const uint8_t* obj)
     const bool dE = (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;
     if (dE && !kE) DiffFloats(obj);
     kE = dE;
+
+    // M1-S1: re-run the myHUD probe. A FALLBACK, not the trigger -- MyHudTick
+    // fires by itself once the level settles, because a probe that only fires
+    // on a keypress can silently produce nothing and cost the whole cycle.
+    // That is not hypothetical here: PGUP and PGDN have never once registered
+    // on the tester's board (see the banner in Core/Keybinds.cpp).
+    static bool kProbe = false;
+    const bool dProbe = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    if (dProbe && !kProbe)
+    {
+        Log(">>> MYHUD: manual re-probe (F2).");
+        MyHudReset();
+        g_myHudSettle = 600;         // no settle wait on a deliberate re-run
+    }
+    kProbe = dProbe;
+
+    // M1-S2 MARKER. The tester cannot see log timestamps live, so this is the
+    // only way a visual event gets pinned to a log line. Numbered, so "the
+    // third mark" in a verbal report is findable without counting.
+    //
+    // MEASURED M1-S2, THE HARD WAY: this was written as Key_Fired(KEY_CINE_MARK)
+    // and produced ZERO marks across a full 16-minute test run, because
+    // Key_Init is never called and every binding in Core/Keybinds.cpp resolves
+    // to VK 0. Direct GetAsyncKeyState, like every hotkey that works. Do not
+    // "improve" this back onto the Key_* API until Key_Init has a caller.
+    static bool kMark = false;
+    const bool dMark = (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
+    if (dMark && !kMark)
+        Log(">>> ===== MARK %d =====  (t=%.1f)", ++g_markN, CineTime());
+    kMark = dMark;
 }
 
 void GameState_Reset()
@@ -1166,4 +1678,5 @@ void GameState_Reset()
     g_offset = 0;
     g_nCand = 0;
     g_recheck = 0;
+    MyHudReset();       // level load / save reload: re-resolve, never carry over
 }

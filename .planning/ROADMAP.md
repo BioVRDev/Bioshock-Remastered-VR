@@ -15,30 +15,31 @@ outcome is decided, not when the idea feels done. Cards are in
 | | Session | Type | Outcome |
 |---|---|---|---|
 | ✅ | **M0** workflow, docs, cards | no code | this section exists |
-| ☐ | **M1-S1** pin `PlayerController.myHUD` | diagnostic | a stable non-null HUD pointer, confirmed by back-reference |
-| ☐ | **M1-S2** read `bHideHUD`, prove it tracks cinematic mode | diagnostic | **the pivotal test** — a transition bracketing the bathysphere |
-| ☐ | **M1-S3** harden into `EngineBridge` | hardening | INI-overridable, fail-closed, reset at boundaries |
+| ✅ | **M1-S1** pin `PlayerController.myHUD` | diagnostic | **`+0x71C`**, back-reference `+0x470`, stable. Layout in `ENGINE-MAP.md` |
+| ✅ | **M1-S2** read `bHideHUD`, prove it tracks cinematic mode | diagnostic | **NO** — flat across 8 marked boundaries. Grave 1 |
+| ⛔ | **M1-S3** harden into `EngineBridge` | — | **skipped**: S2 returned no, nothing to harden |
+| ☐ | **M3-S1** locate `GetPropertyTextByName` | diagnostic | an address, logged; **call nothing** |
+| ☐ | **M3-S2** call it on `Health` | diagnostic | the value **tracks damage** — bridge proven, or not |
+| ☐ | **M3-S3** read the controller's `LastPlayerInputContext` | diagnostic | `kContexts` finally gets an input |
 | ☐ | **M2-S1** StateBus | refactor | `GameState_Cutscene()` returns the real signal; no behaviour change |
 | ☐ | **M2-S2** HUD gate on the real signal | visible | HUD hidden in cutscenes, correct everywhere else |
 | ☐ | **M2-S3** cutscene anchor, gated | visible | opening anchored; in-world moments unaffected |
 | ☐ | **M2-S4** rotation comfort, gated | visible | no forced rotation in cutscenes; bathysphere still walks correctly |
 
-**M1-S2 is the pivotal test of the whole arc.** If `bHideHUD` transitions around
-the opening bathysphere, M2 is mechanical and the longest-standing problem is
-closed. If not, skip M1-S3 and open M3 immediately.
+**M1-S2 was the pivotal test and it returned no** (2026-08-09). `bHideHUD` is
+grave 1 in `CLAUDE.md`; the script writes it, the shipped game does not.
+**M2 moves behind M3** — every M2 session is downstream of a working signal, and
+there is not one yet. M3 is the card set in flight; its S2 is the new pivotal
+test, and it is the one session in this arc whose failure mode is a **crash**
+rather than a wrong number, so it ships default-off behind an INI switch.
+
+**The lesson M1 bought, and it applies to every remaining card:** the corpus
+tells you what the script *can* do, not what the shipped game *does*. Findings 2
+and 3 are still predictions that owe a live read.
 
 ### Later milestones — stubs, promoted to cards when they open
 
-Their specifications depend on M1's verdict, so writing detail now is waste.
-
-**M3 — native call bridge (Tier 1).** Opens if M1/M2 leave gaps, **and they will**,
-for the Little Sister rescue (pushes `NullInput`, never enters cinematic mode).
-S1: locate `Object::GetPropertyTextByName` by the FName/string chain, reusing the
-staged scan at anchor `module scan`/`FindCalcView` in `Camera/CameraHook.cpp` — log
-the address, call nothing. S2: call it on `Health` and **confirm it tracks damage**
-— the discriminator between "bridge broken" and "property empty". S3: read
-`ShockPlayerController.LastPlayerInputContext` (the controller copy, never
-examined) and feed the existing `kContexts` table, which has never had an input.
+**M4 — QOL the signal unlocks.** S1: arms/sleeves visible only during cutscenes.
 
 **M4 — QOL the signal unlocks.** S1: arms/sleeves visible only during cutscenes.
 S2: right-stick look during scripted sequences. S3: settle the aim/movement

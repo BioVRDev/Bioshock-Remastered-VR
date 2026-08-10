@@ -178,3 +178,64 @@ All of them are now greppable anchors — banner text (`the classifier`,
 `ALPHA REPAIR`) or code (`PSSrv0Res(ctx) == nullptr`). File sizes stay as
 numbers because they are informative rather than navigational, and `/codemap`
 refreshes them.
+
+---
+
+## 2026-08-09 — `bHideHUD` is not the cinematic flag; Tier 0 dead-ends
+
+**M1-S1 succeeded and M1-S2 falsified what it was for.** Both results stand on
+their own and neither is wasted.
+
+**S1 pinned the offsets and they are good.** `PlayerController.myHUD =
+controller+0x71C`, `HUD.PlayerOwner = myHUD+0x470`, the six-bool DWORD at
+`myHUD+0x490` with `bHideHUD` as bit 0. Declaration-order arithmetic predicted
+`+0x710` and passed through seven independent `ENGINE-MAP` anchors; the `+0xC`
+gap was `FMatrix` being 16-byte aligned, which the live read settled in one run.
+Nine consecutive HUD fields matched their declared types on inspection. This
+also renamed two long-mislabelled offsets: `+0x5C0`/`+0x5C8` are `aForward`/
+`aStrafe` (raw input axes — which explains the old "reads 875 while pinned in a
+corner" measurement) and `+0x620` is `ViewTarget`, not a Pawn alias.
+
+**S2 then measured the bit and it never moves.** `0x00000020`, unchanged across
+16 minutes and four controller lifetimes covering the bathysphere descent, a
+level load, the plasmid injection, combat, barrels and both halves of a Little
+Sister sequence. Zero transitions, zero identity failures. **The decisive
+observation was the tester's:** they made the HUD visibly appear and disappear
+by stepping in and out of the bathysphere entrance, and the DWORD did not move.
+
+So `docs/ARCHITECTURE.md` finding 1 read the corpus correctly —
+`ActionCinematicEnter`/`Exit` really do write that bool — but the retail
+sequences do not run through those script actions. **The corpus tells you what
+the script *can* do, not what the shipped game *does*.** That is the
+transferable lesson, and it applies to findings 2 and 3 as well.
+
+**Consequences.** M1-S3 is skipped; `EngineBridge` is not built speculatively
+and arrives when a working signal needs it. The next move is M3-S1. The lead
+this leaves is `HideMovie('HUD')` on the Scaleform GUI controller, already
+noted in `docs/modules/gamestate.md` for the rescue and now the prime suspect
+for how the HUD actually hides.
+
+**Two process failures worth more than the result.**
+
+`Core/Keybinds.cpp` is **dead code — `Key_Init` has no caller anywhere**, so
+every binding resolves to VK 0 and `Key_Down`/`Key_Fired` always return false.
+The S2 marker key was routed through that API and produced zero marks for a
+whole run. It looked like the established pattern; nobody had checked it was
+wired up. Bind with `GetAsyncKeyState` until `Key_Init` gets a caller.
+
+**The run was saved by a diagnostic nobody was looking at.** `PollFovKeys` in
+`Render/XRSession.cpp` logs `KEY: vk 0x%02X` for every nav/numpad/F-row key,
+and it had quietly recorded all eight F1 presses. The marks were recovered
+after the fact and the S2 verdict is stronger for it. **Check the log for
+evidence already in it before writing off a run** — and keep that keylogger.
+
+The shipped `dist/BioshockVR.ini` promised a `[KEYS]` rebinding section that
+never existed. **Adding one was considered and rejected**: with `Key_Init`
+uncalled it would be read by nothing, so it would have converted a broken
+cross-reference into settings that silently do nothing. The section now lists
+the real compiled-in keys, including the four live key collisions, and says
+plainly that rebinding needs a code fix.
+
+**Do not treat a source comment about the tester's hardware as fact.** Two
+comments claim `PGUP`/`PGDN` "never register". The tester uses both routinely.
+Acting on the stale comment produced a keybinding detour that was never needed.

@@ -27,6 +27,40 @@ struct KeyDef
     int         vk;          // resolved at Key_Init
 };
 
+// ============================================================================
+// ⚠⚠ THIS WHOLE MODULE IS NOT WIRED UP. READ BEFORE USING IT.
+//
+// MEASURED M1-S2: Key_Init IS NEVER CALLED FROM ANYWHERE. Every g_keys[].vk
+// below therefore stays 0, Key_Down and Key_Fired always return false, and
+// nothing is ever read from [KEYS]. The table is decoration.
+//
+// Every hotkey that actually works in this mod calls GetAsyncKeyState directly
+// and ignores this file. So a new binding routed through Key_Fired() produces
+// a key that CANNOT FIRE, silently -- which is exactly what happened to the
+// M1-S2 marker key, dead for a whole headset cycle with no error anywhere.
+//
+// Until someone calls Key_Init from InitThread and moves the existing call
+// sites over, BIND WITH GetAsyncKeyState like the surrounding code does.
+//
+// ---- THE TESTER'S KEYBOARD -- check before picking any default -------------
+//
+// A 96% / 1800-compact board. THERE IS NO `END` KEY ON ANY LAYER, and there is
+// no Ins/Home/End nav block. The top-right cluster is DEL, PRTSC, PGUP, PGDN,
+// and holding Fn turns those four into ScrollLock, HOME, Pause and INSERT. So
+// HOME and INSERT exist, but only via Fn.
+//
+// PGUP AND PGDN DO WORK -- confirmed directly by the tester across many
+// sessions. The claims to the contrary in Hands/HandsProbe.cpp (the NUMPAD9
+// comment) and Game/GameState.cpp (above FovAutoDiff) are STALE; whatever they
+// described has not been true for a long time.
+//
+// The numpad is 100% allocated. F11/F12 are the HUD tuning pair. F1-F10 free.
+//
+// And the tester is WEARING A HEADSET and cannot see the keyboard, so a
+// default should be findable by feel -- anchored to a corner or an edge, not
+// counted out from the middle of a row.
+// ============================================================================
+
 // Order MUST match the KeyId enum.
 static KeyDef g_keys[KEY_COUNT] = {
     { "GripForwardPlus",   "NUM8",   0 },
@@ -58,6 +92,9 @@ static KeyDef g_keys[KEY_COUNT] = {
     { "ProbeDiff",         "PGDN",   0 },
     { "HandsSnapshot",     "NONE",   0 },
     { "HandsDiff",         "NONE",   0 },
+
+    { "CineMark",          "F1",     0 },
+    { "MyHudProbe",        "F2",     0 },
 };
 
 struct NameVk { const char* name; int vk; };

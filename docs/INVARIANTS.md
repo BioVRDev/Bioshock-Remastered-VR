@@ -103,6 +103,30 @@ handoff disagree, this file wins.
   `PSSrv0Res(ctx) == nullptr` in the redirect condition of `Hud/DrawHook.cpp`.
 
 ### Cutscene detection (still open — these are the graves)
+- **`myHUD.bHideHUD` as the cinematic flag.** *Falsified live, M1-S2,
+  2026-08-09.* The offset work is sound and stands: `myHUD = controller+0x71C`,
+  the six-bool DWORD at `myHUD+0x490` with `bHideHUD` as bit 0, all confirmed
+  by back-reference (`docs/ENGINE-MAP.md`). **The DWORD read `0x00000020`
+  and never changed once** across a 16-minute run and four controller
+  lifetimes — the intro bathysphere descent, a level load, walking out of the
+  bathysphere, the plasmid injection, combat, barrels, and both halves of a
+  Little Sister sequence. Zero transitions, zero identity failures.
+  **Eight marked cutscene boundaries, zero transitions at any of them.** The
+  marker key was itself broken during the run (see below), but the presses were
+  recovered afterwards from the unrelated `KEY: vk` keylogger in
+  `Render/XRSession.cpp` — eight `vk 0x70` presses, four sequences by two ends,
+  matching the tester's account exactly. So this is not merely "nothing was
+  observed": every boundary the tester marked has a timestamp, and the DWORD is
+  flat across all of them.
+  **The decisive datapoint:** the tester made the HUD visibly appear and
+  disappear by walking in and out of the bathysphere entrance, and the DWORD
+  did not move. So HUD visibility on this build is **not** driven by
+  `bHideHUD`. `docs/ARCHITECTURE.md` finding 1 read the corpus correctly —
+  `ActionCinematicEnter`/`Exit` really do write that bool — but the retail
+  sequences evidently do not run through those script actions.
+  **The lead it leaves:** `HideMovie('HUD')` on the Scaleform GUI controller,
+  already noted in `docs/modules/gamestate.md` for the rescue, is now the
+  prime suspect for how the HUD actually hides.
 - **ViewActor divergence.** Does not leave the pawn on this build; `+0x450`,
   `+0x620` and `+0x914` all track the pawn for entire sessions.
 - **Pitch-rate as a binary detector.** Latched during ordinary combat for four

@@ -86,7 +86,34 @@ See `docs/INVARIANTS.md` § *Cutscene detection* for the full list with evidence
 ViewActor divergence, pitch-rate latching, the pitch servo, S75/S78/S79 unwind,
 cached view-target scans, and the input-ignored detector.
 
-## The two live leads
+## The `myHUD` probe and the `bHideHUD` reader (M1, 2026-08-09)
+
+Two sections live in this file, both **read-only, one-shot and gating nothing**.
+Grep the banners `MYHUD PROBE` and `THE CINEMATIC FLAG`.
+
+`MyHudTick` locks `PlayerController.myHUD` — measured **`controller+0x71C`**,
+validated by a searched back-reference at `myHUD+0x470` (`HUD.PlayerOwner`)
+rather than by arithmetic alone. It fires by itself once the level settles,
+re-resolves whenever the controller changes, and stops. `CineTick` then reads
+the six-bool DWORD at `myHUD+0x490` and logs only transitions, re-checking
+identity once a second and failing closed on mismatch.
+
+**`bHideHUD` never moves on this build** — see `docs/INVARIANTS.md`. The reader
+is kept because it is free when silent and because it is the reference
+implementation of the identity-checked read that M3 will need. The offsets are
+good and are recorded in `docs/ENGINE-MAP.md`; only the *inference* about what
+the bit means for retail cutscenes was wrong.
+
+**The HUD hides by some other mechanism.** The tester made it appear and
+disappear by stepping in and out of the bathysphere entrance while the DWORD sat
+flat. `HideMovie('HUD')`, noted below for the rescue, is the suspect.
+
+## The live leads
+
+**0. The native property call (Tier 1) — the main line.** `.planning/sessions/M3.md`.
+Retail script calls `Object::GetPropertyTextByName` on live instances, and the
+controller's own `LastPlayerInputContext` is the payload that would finally give
+`kContexts` an input. This supersedes both leads below.
 
 **1. `CurrentExorcismTarget` — a pointer, not a string.** Set at the start of the
 rescue and cleared at the end, bracketing the entire sequence including the

@@ -54,20 +54,21 @@ is plausible enough to be proposed again — that is why it is here.** It lives 
 this file so the check costs nothing.
 
 *Cutscene detection:*
-1. **ViewActor divergence** — never leaves the pawn; `+0x450`/`+0x620`/`+0x914` track it for whole sessions.
-2. **Pitch-rate latch** — latched during ordinary combat for four straight seconds.
-3. **Pitch servo** — runaway feedback loop; froze the view and the hand.
-4. **S75/S78/S79 render-side unwind** — made scripted sequences worse.
-5. **Cached view-target scans** — no signal.
-6. **`LastPlayerInputContext` on the pawn** — window correct, has *never* locked. (The **controller** copy is untried — `docs/ARCHITECTURE.md` finding 3.)
-7. **Console `get`** — returns the class default object, not live state.
-8. **Input-ignored detector** — sound, but needs the player to push the stick, so it is silent when a cutscene starts standing still.
+1. **`myHUD.bHideHUD`** — the offsets are right (`controller+0x71C`, bool DWORD `+0x490` bit 0, back-reference confirmed). The DWORD **never changed once** in 16 minutes across bathysphere, plasmid, rescue and combat — and did not move even while the HUD visibly appeared and disappeared. Suspect `HideMovie('HUD')` instead.
+2. **ViewActor divergence** — never leaves the pawn; `+0x450`/`+0x620`/`+0x914` track it for whole sessions.
+3. **Pitch-rate latch** — latched during ordinary combat for four straight seconds.
+4. **Pitch servo** — runaway feedback loop; froze the view and the hand.
+5. **S75/S78/S79 render-side unwind** — made scripted sequences worse.
+6. **Cached view-target scans** — no signal.
+7. **`LastPlayerInputContext` on the pawn** — window correct, has *never* locked. (The **controller** copy is untried — `docs/ARCHITECTURE.md` finding 3.)
+8. **Console `get`** — returns the class default object, not live state.
+9. **Input-ignored detector** — sound, but needs the player to push the stick, so it is silent when a cutscene starts standing still.
 
 *Aim and movement:*
-9. **`AimSource=2`** cannot exist — the game's heading freezes permanently.
-10. **Body-follow yaw servo** — ported from the reference mod; did not feel right.
-11. **`ModYaw` alone** — zeroing `sThumbRX` freezes `Controller.Rotation`, which forced-move sequences steer by. The opening bathysphere walks into the back wall.
-12. **The coupling is structural** — `Controller.Rotation` (`+0x1E4`) drives view, weapon trace *and* walk direction. No arrangement of that one field separates them.
+10. **`AimSource=2`** cannot exist — the game's heading freezes permanently.
+11. **Body-follow yaw servo** — ported from the reference mod; did not feel right.
+12. **`ModYaw` alone** — zeroing `sThumbRX` freezes `Controller.Rotation`, which forced-move sequences steer by. The opening bathysphere walks into the back wall.
+13. **The coupling is structural** — `Controller.Rotation` (`+0x1E4`) drives view, weapon trace *and* walk direction. No arrangement of that one field separates them.
 
 *HUD:* the scene-sampling leak guard, `DrawHook_NoWorldRender()`,
 `g_gameplayConfirmed`, `MenuMaxIndexed=0` — all dead. The square was solved by one

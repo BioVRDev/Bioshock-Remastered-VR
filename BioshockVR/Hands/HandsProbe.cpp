@@ -271,9 +271,15 @@ static void PollGripKeys()
     static float step = 2.0f;
     static float rotStep = 1.0f;
 
-    // NUMPAD 9 cycles what the six keys edit. It used to be PGUP, but VK_PRIOR
-    // is bound in three places and has never once registered in a log on this
-    // keyboard -- so rotation mode was unreachable for several sessions.
+    // NUMPAD 9 cycles what the six keys edit. PGUP still works as a second
+    // trigger below.
+    //
+    // CORRECTED 2026-08-09: this comment used to claim VK_PRIOR "has never once
+    // registered in a log on this keyboard". That is false -- the tester
+    // confirmed directly that PGUP and PGDN both work and are used routinely.
+    // Whatever the original symptom was, it was not a dead key, and acting on
+    // the claim cost a detour in M1-S2. VK_PRIOR being bound in three places at
+    // once is real, though: one press fires all three.
     //   0 POSITION  8/2 fwd   6/4 right  0/5 up     (cm)   -- the hands actor
     //   1 ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the hands MODEL
     //   2 CURSOR    8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the aim ray

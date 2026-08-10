@@ -68,6 +68,13 @@ enum KeyId
     KEY_HANDS_SNAPSHOT,      // NONE   was PGUP -- collided with the two above
     KEY_HANDS_DIFF,          // NONE   was PGDN -- collided with the two above
 
+    // ---- M1 engine-state probes (GameState.cpp) -- debug only --------------
+    // F1/F2 and not END/INSERT: the tester's board HAS NO END KEY, and INSERT
+    // needs Fn. F1 is one key right of ESC, which is the only thing findable
+    // by feel with a headset on. See the banner in Keybinds.cpp.
+    KEY_CINE_MARK,           // F1     pin a visual moment to a log line
+    KEY_MYHUD_PROBE,         // F2     re-run the myHUD offset probe
+
     KEY_COUNT
 };
 
