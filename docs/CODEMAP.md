@@ -161,3 +161,4 @@ Minimal `dxgi.dll` proxy.
 | "Am I in a cutscene / menu / container?" | `gamestate.md` |
 | Install, loader selection, logs, storefronts | `packaging.md` |
 | Adding or trusting a memory offset | `ENGINE-MAP.md` + the `engine-offset` skill |
+| "What does the game actually do here?" | **`docs/UNREALSCRIPT.md`** — 1,765 decompiled classes in `research/uscript/` |

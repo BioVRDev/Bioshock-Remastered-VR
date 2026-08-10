@@ -95,8 +95,14 @@ are inert. Keep them; do not delete.
 - **Diagnostic key collisions.** `VK_PRIOR` has three readers, `VK_DELETE` two.
   Wiring `Keybinds.cpp` (complete, zero callers) fixes both plus the 103-VK
   per-frame sweep in `PollFovKeys`.
-- **`openxr_loader_steam.dll` is missing** from the install — the shim source was
-  consumed, so `Setup.bat` cannot select it. Rebuild and place it.
+- **Plasmid hand, first equip.** On the first plasmid pull of a session it bound
+  to the *right* hand instead of the left, and both plasmids showed the
+  right-hand model. Cycling weapons cleared it and it did not recur. Observed
+  2026-08-09 on the post-refactor build; **almost certainly pre-existing** —
+  the refactor was verified semantically identical, and `ControllerLayout` (its
+  one changed default) governs button layout, not hands. Smells like probe
+  ordering on first equip. Low priority, but reproduce before touching
+  `HandsProbe` for any other reason.
 - **Index binding hazard**: `menu` (trackpad click) and `rest_l` (trackpad touch)
   share the left trackpad, so a menu press always arrives with the modifier held.
   With `DpadFlip=1` or `DpadModifier=4` that turns pause into context-help.

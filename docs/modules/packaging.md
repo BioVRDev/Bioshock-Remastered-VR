@@ -10,9 +10,10 @@
     dxgi.dll                      plugin loader
     BioshockVR.dll                the mod          ← directly here
     BioshockVR.ini                config
-    openxr_loader.dll             the LIVE selected loader
-    openxr_loader_standard.dll    pristine source: Khronos loader
-    openxr_loader_steam.dll       pristine source: the shim
+    openxr_loader.dll             the LIVE loader (shim OR Khronos)
+    openxr_loader_standard.dll    the parked one, when SteamVR is active
+      -- or --
+    openxr_loader_steam.dll       the parked one, when native OpenXR is active
     Setup.bat  Uninstall.bat
     openvr_input\                 shim-generated SteamVR bindings
     logs\                         BioshockVR.log, openxr_shim.log, setup.log
@@ -25,21 +26,43 @@
 Steam AppID `409710`. The intended loader is SnowTempest's
 `BSHD-PluginLoader 1.0.2` `dxgi.dll`, not the ReShade-oriented `version.dll`.
 
-## Loader selection — copy, never rename
+## Loader selection — a two-file swap
 
-`Setup.bat` selects a runtime by **copying** the chosen pristine source over the
-live `openxr_loader.dll`, and binary-verifies the result. It must never rename or
-move the sources, because that consumes them and the choice becomes one-way.
+> **There are always exactly TWO loader files. Three is a fault state.**
 
-> ### ⚠ Current drift
-> The game folder has `openxr_loader_standard.dll` and a live
-> `openxr_loader.dll`, but **no `openxr_loader_steam.dll`** — which is exactly
-> what `Setup.bat` looks for as the shim source. The shim source was consumed.
-> Rebuilding the shim and placing it as `openxr_loader_steam.dll` restores the
-> selector.
+`Setup.bat` swaps by **renaming** (`move /y`), not copying. The live loader is
+always `openxr_loader.dll`; the *inactive* one is parked under its own name:
+
+| Active runtime | `openxr_loader.dll` | parked file |
+|---|---|---|
+| SteamVR shim | the shim | `openxr_loader_standard.dll` (Khronos) |
+| Native OpenXR | the Khronos loader | `openxr_loader_steam.dll` (shim) |
+
+So the *absence* of `openxr_loader_steam.dll` is not drift — it is exactly what a
+correctly-configured SteamVR install looks like. Do not "restore" it.
+
+The script is well defended, and reading it is worth more than trusting the
+strategy notes in the old handoffs:
+
+- already-active state is detected and becomes a no-op,
+- a missing live file with both sources present is recovered,
+- **three valid files** are treated as "a previous COPY-based setup left a
+  duplicate": it byte-compares (`fc /b`) the live loader against each source and
+  deletes the redundant one. If the live loader matches *neither* — e.g. someone
+  dropped in a freshly-built shim, which differs from the deployed one only by
+  its PE build timestamp — it bails to `:loaderambiguous` rather than guessing.
+
+That last branch is why an extra `openxr_loader_steam.dll` breaks runtime
+switching with a confusing error rather than destroying anything.
+
+The earlier handoffs record "copy, never rename" as the intended strategy, on the
+grounds that renaming consumes the source. The shipped script does the opposite
+and handles it correctly. **The implementation is the authority here**; if the
+strategy is ever revisited, that is a decision to make deliberately, not a bug
+to fix.
 
 `openxr_loader_steamvr.dll` is a legacy alias — uninstall should clean it up, but
-it is not the current source name.
+it is not a current source name.
 
 Headset choice and runtime choice are **separate questions** in both the installer
 and the logs. A 32-bit runtime registration at

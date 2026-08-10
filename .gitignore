@@ -44,3 +44,9 @@ HANDOFF*.md
 *_HANDOFF*.md
 NOTES.md
 scratch/
+
+# Decompiled UnrealScript exported from the game packages with UE Explorer.
+# A local research resource only -- this is 2K's copyrighted content and must
+# never be committed or published. See docs/modules/gamestate.md for what it is
+# good for; regenerate with the CLI documented there.
+research/

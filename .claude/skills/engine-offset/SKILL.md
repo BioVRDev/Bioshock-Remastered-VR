@@ -27,14 +27,24 @@ Prefer, in order:
 
 ## 2. Predict before you hunt
 
+**Read the decompiled script first.** `research/uscript/` holds 1,765 decompiled
+classes — see `docs/UNREALSCRIPT.md`. It has repeatedly answered in minutes what
+memory scanning could not answer in sessions.
+
 The best offsets in this project were predictions, not searches.
 `AActor::Location = +0x1D8` came from script saying `GetViewRotation()` returns
 `Rotation + …` — so `Rotation` is the actor member already being written at
 `+0x1E4`, and UE2 puts `Location` (12 bytes) immediately before it. That is one
 comparison to confirm, not a scan.
 
-Read the decompiled script first. UE Explorer is available and it has repeatedly
-answered in minutes what memory scanning could not.
+**UE2 lays out properties in declaration order**, so a `.uc` file gives you the
+field *sequence* a blind scan lacks. Anchor on a measured offset, walk the
+declarations forward, add sizes: 4 for float/int/pointer/object-ref, 8 for
+`FName`, 12 for `FVector`/`FRotator`/`FString`/`TArray` — and watch `bool`,
+which packs into a shared bitfield rather than taking 4 bytes each.
+
+That turns an offset hunt into arithmetic. It is still a prediction: verify it
+against a live read before writing.
 
 ## 3. Design a test the wrong answer fails
 

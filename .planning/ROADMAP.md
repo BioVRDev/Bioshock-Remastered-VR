@@ -36,9 +36,7 @@ These are small, independent, and none depends on cutscene detection.
    explained; `HudAlphaFix=0` did not change it. Re-add the `CAPTURED:` diagnostic
    and look for a `tex=yes` line during normal play — if the counter is textured it
    is being excluded by the guard and rendering on the backbuffer. One run.
-3. **Restore `openxr_loader_steam.dll`.** The shim source was consumed, so
-   `Setup.bat` cannot select the SteamVR path on a fresh install. Rebuild and place.
-4. **Reconcile `README.md`** — it names `FirstTimeSetup.bat` and lists four install
+3. **Reconcile `README.md`** — it names `FirstTimeSetup.bat` and lists four install
    files; neither matches the real package.
 5. **Confirm `CollectLogs.bat` knows about `logs\openxr_shim.log`.** The shim log
    moved; support bundles may have been shipping without it.

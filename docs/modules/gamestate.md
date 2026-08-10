@@ -98,7 +98,20 @@ A probe was built and produced 18 transitions, but the run contained no rescue
 and `g_exPrev` was not reset on pawn change, so the pawn-lock burst polluted it.
 Two candidates survived as plausible: `+0xEA4` (8.0-second span, complementary
 with `+0x75C`, consistent across two sessions) and `+0xB58` (closest to the
-reported start, but also moves during ordinary play). **Unresolved.**
+reported start, but also moves during ordinary play). **Unresolved by probing.**
+
+**There is now a cheaper route.** `research/uscript/ShockGame/Classes/ShockPlayer.uc`
+declares it at line 348:
+
+```unrealscript
+var BaseShockAI CurrentExorcismTarget;
+```
+
+UE2 lays out properties in declaration order, so the offset can be *computed* by
+anchoring on a measured field and walking the declarations forward, instead of
+hunting for it. See `docs/UNREALSCRIPT.md`. Verify the result against a live read
+before trusting it — and note it can also disambiguate `+0xEA4` vs `+0xB58`
+rather than replacing that evidence.
 
 This is narrow — it solves the rescue, not cutscenes generally.
 
