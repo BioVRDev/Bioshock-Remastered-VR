@@ -34,19 +34,9 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include "Config.h"
 
 extern void LogFile(const char* msg);
-extern bool  g_cfgGameState;      // EnableGameState, default 1
-extern bool  g_cfgDisableReticle;
-extern int   g_cfgFgFovOffset;    // ForegroundFovOffset, 0 == off
-extern int   g_cfgWorldFovOff;
-extern int   g_cfgWorldFovOff2;
-extern float g_cfgWorldFovMax;
-extern float g_cfgWorldFovMin;
-extern float g_cfgWorldFovVal;
-extern float g_cfgFgFovValue;     // ForegroundFovValue, 0 == use src/GameFovDegrees
-extern int   g_cfgFgFovSrc;       // ForegroundFovSrcOffset, 0 == off
-extern float g_cfgFovDeg;         // GameFovDegrees
 
 static void Log(const char* fmt, ...)
 {
@@ -468,11 +458,11 @@ static void ApplyForegroundFov(const uint8_t* obj);
 // because the value itself is the evidence.
 static void ClampWorldFov(const uint8_t* obj)
 {
-    if (g_cfgWorldFovOff <= 0) return;
-    if (g_cfgWorldFovMax <= 0.0f && g_cfgWorldFovMin <= 0.0f) return;
+    if (g_cfg.worldFovOff <= 0) return;
+    if (g_cfg.worldFovMax <= 0.0f && g_cfg.worldFovMin <= 0.0f) return;
 
-    const unsigned offs[2] = { (unsigned)g_cfgWorldFovOff,
-                               (unsigned)g_cfgWorldFovOff2 };
+    const unsigned offs[2] = { (unsigned)g_cfg.worldFovOff,
+                               (unsigned)g_cfg.worldFovOff2 };
     for (int i = 0; i < 2; ++i)
     {
         if (!offs[i]) continue;
@@ -480,8 +470,8 @@ static void ClampWorldFov(const uint8_t* obj)
 
         float* const p = (float*)(obj + offs[i]);
 
-        const bool tooWide = (g_cfgWorldFovMax > 0.0f && *p > g_cfgWorldFovMax);
-        const bool tooNarrow = (g_cfgWorldFovMin > 0.0f && *p < g_cfgWorldFovMin);
+        const bool tooWide = (g_cfg.worldFovMax > 0.0f && *p > g_cfg.worldFovMax);
+        const bool tooNarrow = (g_cfg.worldFovMin > 0.0f && *p < g_cfg.worldFovMin);
         if (!tooWide && !tooNarrow) continue;
 
         static DWORD lastLog = 0;
@@ -491,9 +481,9 @@ static void ClampWorldFov(const uint8_t* obj)
             lastLog = t;
             Log(">>> WORLDFOV: +0x%03X was %.1f (%s) -- snapping to %.1f",
                 offs[i], *p, tooWide ? "too wide" : "too narrow",
-                g_cfgWorldFovVal);
+                g_cfg.worldFovVal);
         }
-        *p = g_cfgWorldFovVal;
+        *p = g_cfg.worldFovVal;
     }
 }
 
@@ -874,7 +864,7 @@ static void RefreshPawn(const void* controller)
 // the first moments of the process.
 static void Reticle_Tick()
 {
-    const int want = g_cfgDisableReticle ? 1 : 0;
+    const int want = g_cfg.disableReticle ? 1 : 0;
     const DWORD now = GetTickCount();
 
     static int   applied = -1;
@@ -918,7 +908,7 @@ void GameState_Observe(void* playerController)
     // when the context scan is switched off. Different feature, different switch.
     Reticle_Tick();
 
-    if (!g_cfgGameState) return;
+    if (!g_cfg.gameState) return;
     RefreshPawn(playerController);
 
     // S76: DRIVE THE CONTEXT SCAN. ScanForContextField and RecheckCandidates
@@ -1063,9 +1053,9 @@ static void DiffFloats(const uint8_t* obj)
 // the foreground projection for this frame.
 static void ApplyForegroundFov(const uint8_t* obj)
 {
-    if (g_cfgFgFovOffset <= 0) return;
+    if (g_cfg.fgFovOffset <= 0) return;
 
-    const size_t off = (size_t)g_cfgFgFovOffset;
+    const size_t off = (size_t)g_cfg.fgFovOffset;
     if (!Readable(obj + off, 4)) return;
 
     float* p = (float*)(obj + off);
@@ -1080,12 +1070,12 @@ static void ApplyForegroundFov(const uint8_t* obj)
     //   2. An explicit constant, for experimenting.
     //   3. GameFovDegrees, which is almost certainly wrong -- last resort.
     float want;
-    if (g_cfgFgFovSrc > 0 && Readable(obj + (size_t)g_cfgFgFovSrc, 4))
-        want = *(const float*)(obj + (size_t)g_cfgFgFovSrc);
-    else if (g_cfgFgFovValue > 1.0f)
-        want = g_cfgFgFovValue;
+    if (g_cfg.fgFovSrc > 0 && Readable(obj + (size_t)g_cfg.fgFovSrc, 4))
+        want = *(const float*)(obj + (size_t)g_cfg.fgFovSrc);
+    else if (g_cfg.fgFovValue > 1.0f)
+        want = g_cfg.fgFovValue;
     else
-        want = g_cfgFovDeg;
+        want = g_cfg.fovDeg;
 
     if (want < 5.0f || want > 170.0f) return;      // never write nonsense
 
@@ -1095,7 +1085,7 @@ static void ApplyForegroundFov(const uint8_t* obj)
         announced = true;
         Log(">>> FOVPROBE: writing ForegroundFov at +0x%03X = %.1f (was %.1f)%s",
             (unsigned)off, want, *p,
-            g_cfgFgFovSrc > 0 ? "  [copied from src]" : "");
+            g_cfg.fgFovSrc > 0 ? "  [copied from src]" : "");
     }
 
     if (*p != want) *p = want;

@@ -22,6 +22,7 @@
 #include <cmath>
 
 #include <MinHook.h>
+#include "Config.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -36,21 +37,8 @@ bool GameState_Cutscene();   // GameState.cpp
 // heuristic only while the context field is still unlocked.
 bool GameState_Theater();
 
-extern bool g_cfgCutsceneTheater;   // dllmain.cpp
 
 extern void  LogFile(const char* msg);
-extern float g_cfgFovDeg;
-extern bool  g_cfgCameraHook;
-extern bool  g_cfgDisableVSync;
-extern bool  g_cfgForceFlip;
-extern int   g_cfgMirrorEvery;
-extern bool  g_cfgMenuScreen;
-extern bool g_cfgCutsceneTheater;
-extern float g_cfgFgFovValue;
-extern bool  g_cfgFgFovAuto;
-extern float g_cfgGripTunedFgFov;   // GripTunedFgFov -- 0 == off
-extern float g_cfgGripSlot[9][3];
-extern float g_cfgHandsGrip[3];
 
 static void Log(const char* fmt, ...)
 {
@@ -112,7 +100,7 @@ static HRESULT __stdcall hkCreateSCForHwnd(IDXGIFactory2* self, IUnknown* dev,
         pDesc->Width, pDesc->Height, (int)pDesc->SwapEffect,
         pDesc->BufferCount, pDesc->Flags, pDesc->SampleDesc.Count);
 
-    if (!g_cfgForceFlip || pDesc->SampleDesc.Count > 1 ||
+    if (!g_cfg.forceFlip || pDesc->SampleDesc.Count > 1 ||
         (pDesc->Width <= 128 && pDesc->Height <= 128))
         return g_origCreateSCForHwnd(self, dev, hwnd, pDesc, pFs, out, ppSC);
 
@@ -146,7 +134,7 @@ static HRESULT __stdcall hkCreateSwapChain(IDXGIFactory* self, IUnknown* dev,
             pDesc->BufferDesc.Width, pDesc->BufferDesc.Height,
             (int)pDesc->SwapEffect, pDesc->BufferCount);
 
-    if (!g_cfgForceFlip || !pDesc)
+    if (!g_cfg.forceFlip || !pDesc)
         return g_origCreateSwapChain(self, dev, pDesc, ppSC);;
 
     // Flip model cannot do MSAA on the backbuffer. The game's count is 1, but
@@ -325,7 +313,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         }
         else
         {
-            XR_SetGameFov(g_cfgFovDeg, g_bbW, g_bbH);
+            XR_SetGameFov(g_cfg.fovDeg, g_bbW, g_bbH);
 
             // Derive the foreground projection from the REAL backbuffer, not
             // from ResolutionX/Y -- if the game ignored the requested size, the
@@ -337,11 +325,11 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // The 4/3 is the aspect the game's own foreground projection
             // assumes. At 3072x3264 / 110 this lands on 127.4, which is where
             // the hand-tuned 127 came from.
-            if (g_cfgFgFovAuto && g_bbW && g_bbH)
+            if (g_cfg.fgFovAuto && g_bbW && g_bbH)
             {
                 const double kPI = 3.14159265358979323846;
                 const double aspect = (double)g_bbW / (double)g_bbH;
-                const double half = g_cfgFovDeg * 0.5 * (kPI / 180.0);
+                const double half = g_cfg.fovDeg * 0.5 * (kPI / 180.0);
                 const double v = 2.0 * atan(tan(half) * (4.0 / 3.0) / aspect)
                     * (180.0 / kPI);
 
@@ -349,13 +337,13 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 {
                     Log(">>> FOV AUTO: backbuffer %ux%u (aspect %.4f), game FOV %.1f"
                         "  ->  ForegroundFovValue %.1f  (was %.1f)",
-                        g_bbW, g_bbH, aspect, g_cfgFovDeg, v, g_cfgFgFovValue);
-                    g_cfgFgFovValue = (float)v;
+                        g_bbW, g_bbH, aspect, g_cfg.fovDeg, v, g_cfg.fgFovValue);
+                    g_cfg.fgFovValue = (float)v;
                 }
                 else
                 {
                     Log("!!! FOV AUTO: computed %.1f is out of range. Keeping %.1f.",
-                        v, g_cfgFgFovValue);
+                        v, g_cfg.fgFovValue);
                 }
             }
 
@@ -368,30 +356,30 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // the same world offset lands at a different apparent angle. Rescale
             // RIGHT and UP; FORWARD is a depth and does not move. RotOffset and
             // CursorOffset are angles and need no correction at all.
-            if (g_cfgGripTunedFgFov > 5.0f && g_cfgFgFovValue > 5.0f)
+            if (g_cfg.gripTunedFgFov > 5.0f && g_cfg.fgFovValue > 5.0f)
             {
                 const double kPI2 = 3.14159265358979323846;
-                const double tNow = tan(g_cfgFgFovValue * 0.5 * (kPI2 / 180.0));
-                const double tRef = tan(g_cfgGripTunedFgFov * 0.5 * (kPI2 / 180.0));
+                const double tNow = tan(g_cfg.fgFovValue * 0.5 * (kPI2 / 180.0));
+                const double tRef = tan(g_cfg.gripTunedFgFov * 0.5 * (kPI2 / 180.0));
                 const double k = (tRef > 1e-6) ? (tNow / tRef) : 1.0;
 
                 if (k > 0.2 && k < 5.0 && (k < 0.999 || k > 1.001))
                 {
                     for (int s = 0; s < 9; ++s)
                     {
-                        g_cfgGripSlot[s][1] = (float)(g_cfgGripSlot[s][1] * k);
-                        g_cfgGripSlot[s][2] = (float)(g_cfgGripSlot[s][2] * k);
+                        g_cfg.gripSlot[s][1] = (float)(g_cfg.gripSlot[s][1] * k);
+                        g_cfg.gripSlot[s][2] = (float)(g_cfg.gripSlot[s][2] * k);
                     }
-                    g_cfgHandsGrip[1] = (float)(g_cfgHandsGrip[1] * k);
-                    g_cfgHandsGrip[2] = (float)(g_cfgHandsGrip[2] * k);
+                    g_cfg.handsGrip[1] = (float)(g_cfg.handsGrip[1] * k);
+                    g_cfg.handsGrip[2] = (float)(g_cfg.handsGrip[2] * k);
 
                     Log(">>> GRIP SCALE: tuned at fgFov %.1f, running at %.1f"
                         "  ->  right/up x %.4f",
-                        g_cfgGripTunedFgFov, g_cfgFgFovValue, k);
+                        g_cfg.gripTunedFgFov, g_cfg.fgFovValue, k);
                     for (int s = 0; s < 9; ++s)
                         Log("   GripOffset%d=%.1f,%.1f,%.1f", s,
-                            g_cfgGripSlot[s][0], g_cfgGripSlot[s][1],
-                            g_cfgGripSlot[s][2]);
+                            g_cfg.gripSlot[s][0], g_cfg.gripSlot[s][1],
+                            g_cfg.gripSlot[s][2]);
                 }
                 else
                 {
@@ -406,7 +394,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         if (!g_camTried)
         {
             g_camTried = true;
-            if (g_cfgCameraHook)
+            if (g_cfg.cameraHook)
                 CameraHook_Install();
             else
                 Log("camera: DISABLED by BioshockVR.ini (EnableCameraHook=0)");
@@ -457,7 +445,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // prerendered movies, which is what the intro is; the context
             // whitelist is left in for in-engine cutscenes, where the world DOES
             // render and the classifier will not fire.
-            const bool theater = g_cfgCutsceneTheater &&
+            const bool theater = g_cfg.cutsceneTheater &&
                 (DrawHook_NoWorldRender() || GameState_Theater());
 
             // Without this the cutscene inherits whatever anchor the previous
@@ -479,7 +467,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // it behind EnableMenuScreen means turning menus off also disables
             // cutscene handling, which is not a relationship anyone would
             // expect from either switch.
-            const bool ordinaryMenu = g_cfgMenuScreen &&
+            const bool ordinaryMenu = g_cfg.menuScreen &&
                 (starved || paused || anchorUi ||
                     (drawMenu && !GameState_InGame()));
 
@@ -584,7 +572,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         g_lastTick = now;
     }
 
-    if (g_cfgDisableVSync)
+    if (g_cfg.disableVSync)
     {
         if (SyncInterval != 0 && !g_loggedVSyncOverride)
         {
@@ -627,11 +615,11 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     //
     // MirrorPresentEvery: 0 = time-throttled (recommended), N = every Nth frame.
     bool doMirror;
-    if (g_cfgMirrorEvery > 0)
+    if (g_cfg.mirrorEvery > 0)
     {
         static unsigned mirrorTick = 0;
         ++mirrorTick;
-        doMirror = ((mirrorTick % (unsigned)g_cfgMirrorEvery) == 0);
+        doMirror = ((mirrorTick % (unsigned)g_cfg.mirrorEvery) == 0);
     }
     else
     {
@@ -786,7 +774,7 @@ bool Hooks_Install()
     // Arm the conversion NOW: the description can only be rewritten as the
     // swapchain is CREATED. MEASURED margin -- the 18:08 log has our init at
     // :10.5 and the game's swapchain at :28.1, so ~17 seconds. Comfortable.
-    if (g_cfgForceFlip && g_createSwapChainAddr)
+    if (g_cfg.forceFlip && g_createSwapChainAddr)
     {
         MH_STATUS f = MH_CreateHook(g_createSwapChainAddr, &hkCreateSwapChain,
             (LPVOID*)&g_origCreateSwapChain);
@@ -808,7 +796,7 @@ bool Hooks_Install()
         if (f2 == MH_OK) Log(">>> FLIP: CreateSwapChainForHwnd hook ARMED.");
         else Log("!!! FLIP: ForHwnd hook failed -> %d.", (int)f2);
     }
-    else if (g_cfgForceFlip)
+    else if (g_cfg.forceFlip)
     {
         Log("!!! FLIP: no CreateSwapChain address. Running with the stock swapchain.");
     }

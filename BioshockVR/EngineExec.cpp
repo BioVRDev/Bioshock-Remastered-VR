@@ -21,14 +21,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include "Config.h"
 
 extern void LogFile(const char* msg);
 
 // From dllmain.cpp -- all four ini-overridable, see EngineExec.h.
-extern int g_cfgEngPtrRva;
-extern int g_cfgEngVtRva;
-extern int g_cfgEngExecRva;
-extern int g_cfgEngExecThis;
 
 static_assert(sizeof(void*) == 4, "BioShock Remastered is x86; build Win32.");
 
@@ -164,11 +161,11 @@ static bool IsExecutable(const void* addr)
 static void* ResolveExecThis()
 {
     uint8_t* base = (uint8_t*)GetModuleHandleW(nullptr);
-    if (!base || g_cfgEngPtrRva <= 0 || g_cfgEngVtRva <= 0) return nullptr;
+    if (!base || g_cfg.engPtrRva <= 0 || g_cfg.engVtRva <= 0) return nullptr;
 
     __try
     {
-        uint8_t* engine = *(uint8_t**)(base + (unsigned)g_cfgEngPtrRva);
+        uint8_t* engine = *(uint8_t**)(base + (unsigned)g_cfg.engPtrRva);
         if (!engine)
         {
             // This used to return SILENTLY. The engine pointer is legitimately
@@ -183,7 +180,7 @@ static void* ResolveExecThis()
             if (++misses == 15)
             {
                 Log("!!! exec: EnginePtrRva (module+0x%X) has read NULL 15 times.",
-                    (unsigned)g_cfgEngPtrRva);
+                    (unsigned)g_cfg.engPtrRva);
                 Log("!!! exec: That address is not the UGameEngine pointer on this");
                 Log("!!! exec: build -- most likely a different STORE version of the");
                 Log("!!! exec: game (Epic vs Steam). The stock crosshair will stay.");
@@ -194,7 +191,7 @@ static void* ResolveExecThis()
         }
 
         void* actualVt = *(void**)engine;
-        void* expectVt = base + (unsigned)g_cfgEngVtRva;
+        void* expectVt = base + (unsigned)g_cfg.engVtRva;
 
         if (actualVt != expectVt)
         {
@@ -210,7 +207,7 @@ static void* ResolveExecThis()
             }
             return nullptr;
         }
-        return engine + (unsigned)g_cfgEngExecThis;
+        return engine + (unsigned)g_cfg.engExecThis;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -249,7 +246,7 @@ bool EngineExec_Run(const char* command)
     if (!n) return false;
 
     uint8_t* base = (uint8_t*)GetModuleHandleW(nullptr);
-    EngineExecFn fn = (EngineExecFn)(base + (unsigned)g_cfgEngExecRva);
+    EngineExecFn fn = (EngineExecFn)(base + (unsigned)g_cfg.engExecRva);
 
     if (!IsExecutable((void*)fn))
     {

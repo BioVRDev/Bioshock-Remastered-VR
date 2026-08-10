@@ -15,34 +15,17 @@
 
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include "Config.h"
 
 #pragma comment(lib, "d3d11.lib")
 
 extern void LogFile(const char* msg);
 
-extern float g_cfgEyeSep;    // half-IPD, game units == cm (dllmain.cpp)
-extern bool  g_cfgSwapEyes;
-extern float g_cfgMenuSize;
-extern float g_cfgMenuDist;
-extern bool  g_cfgCrosshair;
-extern float g_cfgHudWidthDeg;
-extern float g_cfgHudDist;
-extern float g_cfgHudPitchDeg;
-extern float g_cfgHudYawDeg;
-extern float g_cfgXhSize;    // DOT diameter, metres, at g_cfgXhDist
-extern float g_cfgXhDist;
-extern float g_cfgMenuHeight;
-extern float g_cfgHeightOffset;   // CameraHeightOffset, cm (dllmain.cpp)
-extern float g_cfgPlasmidAimPitch;      // dllmain.cpp
 bool HandsProbe_AbilityMode();          // HandsProbe.cpp
-extern int   g_cfgAimSource;   // dllmain.cpp -- 1 == motion aim (right controller)
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
 bool CameraHook_GetShotDir(float out[3]);
-extern float g_cfgCursorRot[3];
-extern int g_cfgForceFocus;   // ForceWindowFocus
-extern int   g_cfgXhFromShot;   // 1 = use the published applied aim
 
 static void Log(const char* fmt, ...)
 {
@@ -435,10 +418,10 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
 
     // Seeded from the ini; DEL / F11 / F12 still adjust these live, and every
     // change logs a line you can paste straight back into the ini.
-    g_hudWidthDeg = g_cfgHudWidthDeg;
-    g_hudDist = g_cfgHudDist;
-    g_hudPitchDeg = g_cfgHudPitchDeg;
-    g_hudYawDeg = g_cfgHudYawDeg;
+    g_hudWidthDeg = g_cfg.hudWidthDeg;
+    g_hudDist = g_cfg.hudDist;
+    g_hudPitchDeg = g_cfg.hudPitchDeg;
+    g_hudYawDeg = g_cfg.hudYawDeg;
 
     for (int eye = 0; eye < 2; ++eye)
     {
@@ -463,7 +446,7 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     }
 
     // ---- crosshair swapchain + dot texture --------------------------------
-    if (g_cfgCrosshair)
+    if (g_cfg.crosshair)
     {
         XrSwapchainCreateInfo xc = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
         xc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
@@ -519,10 +502,10 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
             if (SUCCEEDED(g_dev->CreateTexture2D(&td, &sd, &g_xhSrc)) && g_xhSrc)
             {
                 g_xhReady = true;
-                const float edge = g_cfgXhSize / kXhDotFrac;
+                const float edge = g_cfg.xhSize / kXhDotFrac;
                 Log(">>> XR: CROSSHAIR ready. dot %.1f mm at %.2f m = %.2f deg",
-                    g_cfgXhSize * 1000.f, g_cfgXhDist,
-                    2.f * atanf(g_cfgXhSize * 0.5f / g_cfgXhDist) * 57.2958f);
+                    g_cfg.xhSize * 1000.f, g_cfg.xhDist,
+                    2.f * atanf(g_cfg.xhSize * 0.5f / g_cfg.xhDist) * 57.2958f);
                 (void)edge;
             }
             else Log(">>> XR: !!! crosshair CreateTexture2D failed");
@@ -764,8 +747,8 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // Each eye = latched head center +- half-IPD along the
                     // latched right vector -- where that eye was actually
                     // rendered from. Same sign convention as the camera write.
-                    float s = (e == 0 ? -1.f : 1.f) * (g_cfgEyeSep * 0.01f);  // cm -> m
-                    if (g_cfgSwapEyes) s = -s;
+                    float s = (e == 0 ? -1.f : 1.f) * (g_cfg.eyeSep * 0.01f);  // cm -> m
+                    if (g_cfg.swapEyes) s = -s;
                     pv[e].pose.position.x = lp[0] + rxr * s;
                     pv[e].pose.position.y = lp[1] + ryr * s;
                     pv[e].pose.position.z = lp[2] + rzr * s;
@@ -839,7 +822,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 
             // ---- crosshair quad: head-locked, aim offset computed HERE on the
             //      render thread from fresh poses so head motion can't drag it --
-            if (g_cfgCrosshair && g_xhReady)
+            if (g_cfg.crosshair && g_xhReady)
             {
                 uint32_t xi = 0;
                 XrSwapchainImageAcquireInfo xai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -853,7 +836,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     XrSwapchainImageReleaseInfo xri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
                     xrReleaseSwapchainImage(g_xhSc, &xri);
 
-                    const float edge = g_cfgXhSize / kXhDotFrac;
+                    const float edge = g_cfg.xhSize / kXhDotFrac;
                     xh.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                         XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
                     xh.space = g_viewSpace;                 // head-locked
@@ -865,7 +848,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
                     xh.size = { edge, edge };
 
-                    const float xd = g_cfgXhDist;
+                    const float xd = g_cfg.xhDist;
 
                     // Direction the gun points, expressed in HEAD-LOCAL space:
                     //   aim_world = controller aim quat * forward(-Z)
@@ -895,7 +878,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // shot. CrosshairFromShot=0 restores the old independent
                     // reconstruction below.
                     bool usedShot = false;
-                    if (g_cfgXhFromShot && g_cfgAimSource == 1)
+                    if (g_cfg.xhFromShot && g_cfg.aimSource == 1)
                     {
                         float sd[3];
                         if (CameraHook_GetShotDir(sd))
@@ -915,12 +898,12 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 
                     HandPose hp = {};
                     const int xhHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
-                    const bool haveAim = !usedShot && (g_cfgAimSource == 1) &&
+                    const bool haveAim = !usedShot && (g_cfg.aimSource == 1) &&
                         Input_GetHandPose(xhHand, &hp) && hp.aimValid;
                     if (haveAim)
                     {
                         float qc[4];
-                        CameraHook_OffsetQuat(hp.aimQuat, g_cfgCursorRot, qc);
+                        CameraHook_OffsetQuat(hp.aimQuat, g_cfg.cursorRot, qc);
 
                         const float fwd[3] = { 0.f, 0.f, -1.f };
                         float aw[3];
@@ -934,7 +917,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         // the shot pitch together instead of splitting apart.
                         if (HandsProbe_AbilityMode())
                         {
-                            const float rp = g_cfgPlasmidAimPitch * 0.01745329f;
+                            const float rp = g_cfg.plasmidAimPitch * 0.01745329f;
                             const float cs = cosf(rp), sn = sinf(rp);
                             const float y = dl[1], z = dl[2];
                             dl[1] = y * cs - z * sn;
@@ -945,7 +928,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         if (n > 1e-4f) { dl[0] /= n; dl[1] /= n; dl[2] /= n; }
                         lastX = dl[0]; lastY = dl[1]; lastZ = dl[2];
                     }
-                    else if (!usedShot && g_cfgAimSource != 1)
+                    else if (!usedShot && g_cfg.aimSource != 1)
                     {
                         dl[0] = 0.f; dl[1] = 0.f; dl[2] = -1.f;      // motion aim off
                     }
@@ -969,7 +952,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     if (useLatched)
                     {
                         const float local[3] = { xd * dl[0],
-                                                 xd * dl[1] - g_cfgHeightOffset * 0.01f,
+                                                 xd * dl[1] - g_cfg.heightOffset * 0.01f,
                                                  xd * dl[2] };
                         float world[3];
                         XhQuatRotate(lq, local, world);
@@ -991,7 +974,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                         xh.space = g_viewSpace;
                         xh.pose.orientation = { 0.f, 0.f, 0.f, 1.f };
                         xh.pose.position = { xd * dl[0],
-                                             xd * dl[1] - g_cfgHeightOffset * 0.01f,
+                                             xd * dl[1] - g_cfg.heightOffset * 0.01f,
                                              xd * dl[2] };
                     }
                     layers[1] = (const XrCompositionLayerBaseHeader*)&xh;
@@ -1039,14 +1022,14 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
                     // value nothing is using. Report BOTH numbers once, and fall
                     // back to config rather than drawing nothing.
                     if (g_hudWidthDeg < 5.0f || g_hudWidthDeg > 160.0f)
-                        g_hudWidthDeg = (g_cfgHudWidthDeg > 5.0f) ? g_cfgHudWidthDeg : 60.0f;
+                        g_hudWidthDeg = (g_cfg.hudWidthDeg > 5.0f) ? g_cfg.hudWidthDeg : 60.0f;
 
                     static bool loggedHud = false;
                     if (!loggedHud)
                     {
                         loggedHud = true;
                         Log(">>> XR: HUD quad LIVE %.1f deg at %.2f m  (ini says %.1f / %.2f)",
-                            g_hudWidthDeg, g_hudDist, g_cfgHudWidthDeg, g_cfgHudDist);
+                            g_hudWidthDeg, g_hudDist, g_cfg.hudWidthDeg, g_cfg.hudDist);
                     }
 
                     const float rad = g_hudWidthDeg * 0.5f * 0.01745329f;
@@ -1113,7 +1096,7 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 // exists, which is not true anywhere in InitThread.
 static void ForceForeground()
 {
-    if (!g_cfgForceFocus) return;
+    if (!g_cfg.forceFocus) return;
 
     // Retried, not one-shot. MEASURED: the game launches BEFORE SteamVR
     // finishes starting, so a single grab at the first frame lands while the
@@ -1326,10 +1309,10 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
                 // right -- the S17 slight-rotation artifact.
                 const float yaw = atan2f(-fx, -fz);
                 g_menuAnchor.orientation = { 0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f) };
-                hp[1] += g_cfgMenuHeight;      // manual height nudge (S25)
-                g_menuAnchor.position = { hp[0] + fx * g_cfgMenuDist,
+                hp[1] += g_cfg.menuHeight;      // manual height nudge (S25)
+                g_menuAnchor.position = { hp[0] + fx * g_cfg.menuDist,
                                           hp[1],
-                                          hp[2] + fz * g_cfgMenuDist };
+                                          hp[2] + fz * g_cfg.menuDist };
                 g_menuAnchorSet = true;
                 g_menuAnchorHead[0] = hp[0];
                 g_menuAnchorHead[1] = hp[1];
@@ -1351,11 +1334,11 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
             // in the world; the runtime maps the whole imageRect onto it and
             // does NOT preserve aspect for you. MenuScreenSize = the LONG edge.
             {
-                float qw = g_cfgMenuSize, qh = g_cfgMenuSize;
+                float qw = g_cfg.menuSize, qh = g_cfg.menuSize;
                 if (g_w && g_h)
                 {
-                    if (g_w >= g_h) qh = g_cfgMenuSize * (float)g_h / (float)g_w;
-                    else            qw = g_cfgMenuSize * (float)g_w / (float)g_h;
+                    if (g_w >= g_h) qh = g_cfg.menuSize * (float)g_h / (float)g_w;
+                    else            qw = g_cfg.menuSize * (float)g_w / (float)g_h;
                 }
                 quad.size = { qw, qh };
 

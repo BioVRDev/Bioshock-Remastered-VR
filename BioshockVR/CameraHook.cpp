@@ -32,58 +32,28 @@
 #include <intrin.h>     // _ReturnAddress, _InterlockedIncrement
 
 #include <MinHook.h>
+#include "Config.h"
 
 #pragma comment(lib, "psapi.lib")
 
 extern void LogFile(const char* msg);
 
 // From dllmain.cpp / BioshockVR.ini
-extern bool  g_cfgCameraWrite;   // default 0 -- the Phase 6 kill switch
-extern float g_cfgEyeSep;        // half-IPD in game units (== cm). default 3.2
-extern bool  g_cfgSwapEyes;      // 1 == invert the eye polarity
 extern void  XR_GetHeadQuat(float out[4]);   // from XRSession.cpp (render thread)
-extern bool  g_cfgHeadTracking;   // EnableHeadTracking kill switch (dllmain.cpp)
 extern void  XR_GetHeadPos(float out[3]);
-extern bool  g_cfgHeadPosition;   // EnableHeadPosition kill switch (dllmain.cpp)
-extern bool  g_cfgHideArmSleeves;
-extern int   g_cfgDeltaClamp;     // 0 off, 1 player world, 2 both (dllmain.cpp)
-extern int   g_cfgHeadAimMode;    // 0 legacy additive, 1 local compose, 2 pitch-decoupled
-extern bool  g_cfgPairLock;
-extern bool  g_cfgHeadAim;
-extern bool g_cfgHeadRoll;
-extern bool g_cfgDisableHeadBob;
 bool GameState_GetPawnEyePoint(float outPos[3]);   // GameState.cpp
-extern int   g_cfgAimSource;     // 0 head, 1 right controller
-extern float g_cfgPlasmidAimPitch;  // deg, added to the plasmid hand's aim pitch
-extern float g_cfgAimClampDeg;   // max angle between aim and view
-extern float g_cfgAimSmooth;     // 0 none .. 0.95 heavy
-extern bool g_cfg6DofHands;   // Enable6DofHands
-extern float g_cfgHandsGrip[3];   // HandsGripOffset: fwd, right, up (cm)
-extern float g_cfgHandsRot[3];    // HandsRotOffset: pitch, yaw, roll (deg)
-extern float g_cfgCursorRot[3];   // CursorOffset: pitch, yaw, roll (deg)
-extern int   g_cfgArrowPtrOff;    // pawn+N -> the quest arrow actor. 0 == off
-extern float g_cfgArrowWorld[3];  // fwd, right, up from the camera (cm)
-extern float g_cfgHandsScale;   // HandsScale, DrawScale for the hands
-extern int   g_cfgSnapTurn;
-extern int   g_cfgModYaw;
-extern float g_cfgSnapTurnDeg;
-extern int   g_cfgFreezeGameRot;
-extern float g_cfgModYawSpeed;
-extern int g_cfgHideHandSlot[9];
-extern int g_cfgHideInactiveHand;
 void* GameState_Pawn();
 
 int HandsProbe_WeaponSlot();
 bool GameState_Cutscene();   // GameState.cpp
 bool GameState_Theater();    // GameState.cpp
-extern bool g_cfgCutsceneTheater;   // dllmain.cpp
 
 // One predicate, four call sites. Cheap: a cached pointer and two strcmps.
 bool DrawHook_NoWorldRender();   // DrawHook.cpp
 
 static bool TheaterMode()
 {
-    return g_cfgCutsceneTheater &&
+    return g_cfg.cutsceneTheater &&
         (DrawHook_NoWorldRender() || GameState_Theater());
 }
 
@@ -154,7 +124,6 @@ static int            g_lastEye = 1;   // so the first underrun yields eye 0
 static volatile long  g_needResync = 0;    // set on underrun; cleared on resync
 static volatile long  g_lastPushTick = 0;  // GetTickCount at last tag push (menu detect)
 static long           g_deepPops = 0;      // consecutive pops with depth > 1
-extern float g_cfgHeightOffset;   // CameraHeightOffset, cm
 static FVector g_lastCamCenter = {};
 
 // How far the camera travelled between the eye-0 and eye-1 renders -- i.e. how
@@ -924,7 +893,7 @@ static bool     g_hwValid = false;
 
 void CameraHook_LateHandsWrite()
 {
-    if (!g_cfg6DofHands || !g_hwValid || !g_hwObj) return;
+    if (!g_cfg.sixDofHands || !g_hwValid || !g_hwObj) return;
     if (GameState_Theater()) { g_hwValid = false; return; }
     if (GameState_Paused()) return;   // render-thread half of the same freeze
 
@@ -1007,14 +976,14 @@ static int __fastcall hkDelta(void* thisPtr, void* edx, void* arg1, uint32_t del
 
     uint32_t passDelta = deltaBits;
 
-    if (g_cfgDeltaClamp)
+    if (g_cfg.deltaClamp)
     {
         const bool isTarget = (g_targetLocked && self == g_targetObj);
         // Mode 2: clamp BOTH delta-receiving objects. FrameDelta proves the
         // player world is already freezing, yet the camera still moves 1.2
         // units between eyes -- so whatever carries the bathysphere is being
         // ticked by the other one.
-        const bool doClamp = (g_cfgDeltaClamp == 2) ? true : isTarget;
+        const bool doClamp = (g_cfg.deltaClamp == 2) ? true : isTarget;
 
         if (doClamp)
         {
@@ -1117,25 +1086,25 @@ void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4])
 // match was loose enough to displace world geometry for a frame at a time.
 static void DriveQuestArrow(const FVector& camLoc)
 {
-    if (!g_cfgArrowPtrOff) return;
+    if (!g_cfg.arrowPtrOff) return;
 
     void* const pawn = HandsProbe_GetPawn();
     if (!pawn) return;
-    if (!IsMemoryValid((const uint8_t*)pawn + g_cfgArrowPtrOff, 4)) return;
+    if (!IsMemoryValid((const uint8_t*)pawn + g_cfg.arrowPtrOff, 4)) return;
 
-    void* const arrow = *(void**)((uint8_t*)pawn + g_cfgArrowPtrOff);
+    void* const arrow = *(void**)((uint8_t*)pawn + g_cfg.arrowPtrOff);
     if (!arrow) return;
     if (!IsMemoryWritable((uint8_t*)arrow + 0x1D8, sizeof(FVector))) return;
 
     // Room frame, same yaw basis the head-position write uses, so "forward"
     // means where the body faces rather than where the eyes happen to point.
     const double yaw = UnitsToRad(
-        (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
+        (g_cfg.headAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
     const double cs = cos(yaw), sn = sin(yaw);
 
-    const double f = g_cfgArrowWorld[0];
-    const double r = g_cfgArrowWorld[1];
-    const double u = g_cfgArrowWorld[2];
+    const double f = g_cfg.arrowWorld[0];
+    const double r = g_cfg.arrowWorld[1];
+    const double u = g_cfg.arrowWorld[2];
 
     FVector* const L = (FVector*)((uint8_t*)arrow + 0x1D8);
     L->x = (float)(camLoc.x + (f * cs - r * sn));
@@ -1147,7 +1116,7 @@ static void DriveQuestArrow(const FVector& camLoc)
     {
         announced = true;
         Log(">>> ARROW: driving pawn+0x%X -> 0x%08X",
-            (unsigned)g_cfgArrowPtrOff, (unsigned)(uintptr_t)arrow);
+            (unsigned)g_cfg.arrowPtrOff, (unsigned)(uintptr_t)arrow);
     }
 }
 
@@ -1192,7 +1161,7 @@ static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
 
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
-    if (!g_cfg6DofHands) return;
+    if (!g_cfg.sixDofHands) return;
     if (GameState_Cutscene()) return;
     if (GameState_Paused()) return;   // hands hold still behind a menu
 
@@ -1209,13 +1178,13 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
 
     // ---- rotation: yaw and pitch only ------------------------------------
     float qOff[4], qFinal[4];
-    HandsOffsetQuat(g_cfgHandsRot, qOff);
+    HandsOffsetQuat(g_cfg.handsRot, qOff);
     QuatMul(hp.aimQuat, qOff, qFinal);
 
     double cp, cy, cr;
     HeadQuatToDeg(qFinal, cp, cy, cr);
 
-    FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfgHeadAimMode >= 2);
+    FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfg.headAimMode >= 2);
     // Roll restored. The game tick erases it, so CameraHook_LateHandsWrite
     // re-applies the whole rotator from Present, after they are done.
     want.roll = g_aimBase.roll + (int32_t)(cr * 182.0444);
@@ -1259,7 +1228,7 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     const double relFwd = -((double)P[2] - headPos[2]) * 100.0;
 
     const double roomYaw = UnitsToRad(
-        (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
+        (g_cfg.headAim && g_aimInit) ? g_aimBase.yaw : g_lastCleanYaw);
     const double cs = cos(roomYaw), sn = sin(roomYaw);
 
     double wx = camLoc.x + (relFwd * cs - relRight * sn);
@@ -1271,7 +1240,7 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     // hand sits in mesh space, rotated by the orientation that will ACTUALLY be
     // rendered -- which is `want`, now that we no longer ask for a roll the game
     // refuses to keep.
-    if (g_cfgHandsGrip[0] || g_cfgHandsGrip[1] || g_cfgHandsGrip[2])
+    if (g_cfg.handsGrip[0] || g_cfg.handsGrip[1] || g_cfg.handsGrip[2])
     {
         const double gp = UnitsToRad(want.pitch);
         const double gy = UnitsToRad(want.yaw);
@@ -1285,9 +1254,9 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
         const double Rx = SR * SP * CY - CR * SY, Ry = SR * SP * SY + CR * CY, Rz = -SR * CP;
         const double Ux = -(CR * SP * CY + SR * SY), Uy = CY * SR - CR * SP * SY, Uz = CR * CP;
 
-        const double gX = g_cfgHandsGrip[0];
-        const double gY = g_cfgHandsGrip[1];
-        const double gZ = g_cfgHandsGrip[2];
+        const double gX = g_cfg.handsGrip[0];
+        const double gY = g_cfg.handsGrip[1];
+        const double gZ = g_cfg.handsGrip[2];
 
         wx -= (Fx * gX + Rx * gY + Ux * gZ);
         wy -= (Fy * gX + Ry * gY + Uy * gZ);
@@ -1331,7 +1300,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         Log("camera:   pThis  = 0x%08X  (APlayerController*)", (unsigned)(uintptr_t)pThis);
         Log("camera:   thread = %lu   (GAME thread -- Present is on a DIFFERENT one)",
             GetCurrentThreadId());
-        Log("camera:   write  = %s", g_cfgCameraWrite ? "ENABLED (EnableCameraWrite=1)"
+        Log("camera:   write  = %s", g_cfg.cameraWrite ? "ENABLED (EnableCameraWrite=1)"
             : "disabled (EnableCameraWrite=0)");
         g_lastTick = GetTickCount();
     }
@@ -1447,7 +1416,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
         if (haveHands)
         {
-            const bool hide = g_cfgHideArmSleeves && g_cfg6DofHands &&
+            const bool hide = g_cfg.hideArmSleeves && g_cfg.sixDofHands &&
                 !theater && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
 
@@ -1455,9 +1424,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // the second hand can be kept for individual slots.
             const int wslot = HandsProbe_WeaponSlot();
             const bool hideHand = (wslot >= 0 && wslot <= 8)
-                ? (g_cfgHideHandSlot[wslot] != 0) : (g_cfgHideInactiveHand != 0);
+                ? (g_cfg.hideHandSlot[wslot] != 0) : (g_cfg.hideInactiveHand != 0);
 
-            if (hideHand && g_cfg6DofHands && !theater && !GameState_Paused())
+            if (hideHand && g_cfg.sixDofHands && !theater && !GameState_Paused())
                 ArmHide_UpdateInactiveHand(handsActor,
                     HandsProbe_AbilityMode() ? 0 : 1);
             else
@@ -1475,7 +1444,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     // eyes rather than a bobbed one.
     //
     // NOT during theater: a cinematic camera position is authored, not derived.
-    if (g_cfgDisableHeadBob && !theater && CameraLocation)
+    if (g_cfg.disableHeadBob && !theater && CameraLocation)
     {
         float eye[3];
         if (GameState_GetPawnEyePoint(eye))
@@ -1492,7 +1461,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     // PHASE 10a: which delta-receiving object does the RENDER view's controller
     // reach? That one is the player world. Throttled -- this is a scan, and it
     // stops permanently the moment it locks (rule 1, section 11).
-    if (g_cfgDeltaClamp && !g_targetLocked && (g_deltaObjA || g_deltaObjB))
+    if (g_cfg.deltaClamp && !g_targetLocked && (g_deltaObjA || g_deltaObjB))
     {
         static int probeTick = 0;
         if (((probeTick++) & 0x3F) == 0)
@@ -1533,8 +1502,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         }
         else g_pairValid = false;
     }
-    else if (!theater && g_cfgPairLock && g_pairValid &&
-        g_cfgCameraWrite && g_calls >= kArmAfterCalls)
+    else if (!theater && g_cfg.pairLock && g_pairValid &&
+        g_cfg.cameraWrite && g_calls >= kArmAfterCalls)
     {
         // Measure BEFORE discarding it.
         const double dx = (double)CameraLocation->x - (double)g_pairLoc.x;
@@ -1569,7 +1538,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         // instead of letting it swing the gun, so the failure mode is "aim
         // saturates" rather than "aim flies away".
         g_aimHandValid = false;
-        if (g_cfgAimSource == 1)
+        if (g_cfg.aimSource == 1)
         {
             HandPose hpose = {};
             // Plasmids are cast from the left hand, so the aim -- and therefore
@@ -1582,7 +1551,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // takes the same offset as the crosshair, from one value, so
                 // they cannot diverge.
                 float qAim[4];
-                CameraHook_OffsetQuat(hpose.aimQuat, g_cfgCursorRot, qAim);
+                CameraHook_OffsetQuat(hpose.aimQuat, g_cfg.cursorRot, qAim);
 
                 double ap, ay, ar;
                 HeadQuatToDeg(qAim, ap, ay, ar);
@@ -1594,18 +1563,18 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // NEGATIVE pulls the aim down. Plasmid hand only; DriveHands is
                 // deliberately left alone so the hand model still tracks the
                 // controller and keeps the casting pose.
-                if (HandsProbe_AbilityMode()) ap += (double)g_cfgPlasmidAimPitch;
+                if (HandsProbe_AbilityMode()) ap += (double)g_cfg.plasmidAimPitch;
 
                 double dY = WrapDeg180(ay - g_headYaw);
                 double dP = ap - g_headPitch;
 
-                const double c = (double)g_cfgAimClampDeg;
+                const double c = (double)g_cfg.aimClampDeg;
                 if (dY > c) dY = c;   if (dY < -c) dY = -c;
                 if (dP > c) dP = c;   if (dP < -c) dP = -c;
 
                 // Smooth the OFFSET, not the absolute angle -- so head motion
                 // stays instant and only hand tremor gets damped.
-                const double a = (double)g_cfgAimSmooth;
+                const double a = (double)g_cfg.aimSmooth;
                 const double sy = g_aimOffYaw * a + dY * (1.0 - a);
                 const double sp = g_aimOffPitch * a + dP * (1.0 - a);
 
@@ -1732,7 +1701,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             if (g_posOriginSet)
             {
                 px = g_posOrigin[0]; py = g_posOrigin[1]; pz = g_posOrigin[2];
-                if (g_cfgHeadPosition)
+                if (g_cfg.headPosition)
                 {
                     px += (float)(g_posRight * 0.01);   // cm -> m, XR +x right
                     py += (float)(g_posUp * 0.01);   //           XR +y up
@@ -1741,7 +1710,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             }
             else { px = hp[0]; py = hp[1]; pz = hp[2]; }
 
-            const bool applied = !theater && g_cfgCameraWrite && g_cfgHeadTracking &&
+            const bool applied = !theater && g_cfg.cameraWrite && g_cfg.headTracking &&
                 (g_calls >= kArmAfterCalls);
 
             // Which pose did the image ACTUALLY render from?
@@ -1751,7 +1720,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // compositor reproject with a pose the image was not rendered from
             // -- the S2 flicker, reopened backwards. Head-only, because
             // g_prevQuat is a head quaternion.
-            const bool lag = (g_cfgHeadAim && g_cfgAimSource != 1 && g_prevQuatValid);
+            const bool lag = (g_cfg.headAim && g_cfg.aimSource != 1 && g_prevQuatValid);
             const float* sq = lag ? g_prevQuat : hq;
 
             _InterlockedIncrement(&g_lpSeq);        // odd == writing
@@ -1791,7 +1760,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
     }
 
     // --- THE WRITE (§6e). Only when armed. ---
-    if (!theater && g_cfgCameraWrite && g_calls >= kArmAfterCalls)
+    if (!theater && g_cfg.cameraWrite && g_calls >= kArmAfterCalls)
     {
         if (!IsMemoryWritable(CameraLocation, sizeof(FVector)))
         {
@@ -1825,7 +1794,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // only believe the heuristic when we are NOT in gameplay.
             const bool uiUp = GameState_Paused() ||
                 (DrawHook_MenuUp() && !GameState_InGame());
-            if (g_cfgHeadAim && g_cfgHeadTracking &&
+            if (g_cfg.headAim && g_cfg.headTracking &&
                 !uiUp && !CameraHook_Starved())
             {
                 const unsigned off = kAimOffsets[g_aimCand & 1];
@@ -1879,7 +1848,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         // Requires ModYaw: the player's own stick turn also
                         // arrives as dY, so freezing without mod-side yaw would
                         // mean you could not turn at all.
-                        const bool freeze = (g_cfgFreezeGameRot && g_cfgModYaw);
+                        const bool freeze = (g_cfg.freezeGameRot && g_cfg.modYaw);
 
                         if (!aimNowCut && !freeze)
                         {
@@ -1900,7 +1869,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Rotating the heading ourselves is what gives turning authority:
             // it works even in states where the game ignores the pad entirely,
             // which is how you get stick look during a scripted sequence.
-            if (g_cfgModYaw)
+            if (g_cfg.modYaw)
             {
                 static LARGE_INTEGER s_freq = {};
                 static LARGE_INTEGER s_prev = {};
@@ -1925,7 +1894,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         const float curve = (tx < 0.0f) ? -(mag * mag)
                             : (mag * mag);
                         g_aimBase.yaw +=
-                            (int32_t)(curve * g_cfgModYawSpeed * dt * 182.0444f);
+                            (int32_t)(curve * g_cfg.modYawSpeed * dt * 182.0444f);
                     }
                 }
             }
@@ -1934,9 +1903,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Theater: the scripted camera goes through untouched. The screen is
             // world-locked, so turning your head must move your gaze ACROSS it,
             // not pan what is drawn on it.
-            if (g_cfgHeadTracking)
+            if (g_cfg.headTracking)
             {
-                if (g_cfgHeadAim && g_cfgAimSource == 1 && g_aimInit)
+                if (g_cfg.headAim && g_cfg.aimSource == 1 && g_aimInit)
                 {
                     // MOTION AIM: the aim field now carries the CONTROLLER, so
                     // the view can no longer be inherited from it. Compose the
@@ -1948,19 +1917,19 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     // path. Headbob is already zero via the mod; PC lean is
                     // unbound on a controller.
                     finalRot = ComposeHeadLocal(g_aimBase, g_headYaw, g_headPitch,
-                        g_cfgHeadAimMode >= 2);
+                        g_cfg.headAimMode >= 2);
                     finalRot.roll = g_aimBase.roll;
                     finalRot = ApplyWorldSpaceYaw(finalRot, 0.0, 0.0,
-                        g_cfgHeadRoll ? g_headRoll : 0.0);
+                        g_cfg.headRoll ? g_headRoll : 0.0);
                 }
-                else if (g_cfgHeadAim)
+                else if (g_cfg.headAim)
                 {
                     // Head yaw/pitch already reached the view THROUGH the aim
                     // field (+0x1E4 -> Controller.Rotation -> CameraRotation).
                     // Adding them here too applies the head TWICE and the view
                     // swims as if the mouse were being dragged. Roll only.
                     finalRot = ApplyWorldSpaceYaw(*CameraRotation,
-                        0.0, 0.0, g_cfgHeadRoll ? g_headRoll : 0.0);
+                        0.0, 0.0, g_cfg.headRoll ? g_headRoll : 0.0);
                 }
                 else
                 {
@@ -1973,8 +1942,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // than a code fault -- which cost a session.
                 {
                     static int lastBranch = -1;
-                    const int b = (g_cfgHeadAim && g_cfgAimSource == 1 && g_aimInit) ? 2
-                        : (g_cfgHeadAim ? 1 : 0);
+                    const int b = (g_cfg.headAim && g_cfg.aimSource == 1 && g_aimInit) ? 2
+                        : (g_cfg.headAim ? 1 : 0);
                     if (b != lastBranch)
                     {
                         lastBranch = b;
@@ -2114,7 +2083,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // -- the sliding this feature exists to eliminate. Adding to
                 // g_aimBase.yaw puts the view somewhere else on the very next
                 // frame with nothing in between.
-                if (g_cfgSnapTurn)
+                if (g_cfg.snapTurn)
                 {
                     static bool  snapArmed = true;
                     float stx = 0.0f;
@@ -2124,10 +2093,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     else if (snapArmed && fabsf(stx) > 0.75f)
                     {
                         snapArmed = false;
-                        const int step = (int)(g_cfgSnapTurnDeg * 182.0444f);
+                        const int step = (int)(g_cfg.snapTurnDeg * 182.0444f);
                         g_aimBase.yaw += (stx > 0.0f) ? step : -step;
                         Log(">>> SNAP TURN: %+.0f deg", (stx > 0.0f)
-                            ? g_cfgSnapTurnDeg : -g_cfgSnapTurnDeg);
+                            ? g_cfg.snapTurnDeg : -g_cfg.snapTurnDeg);
                     }
                 }
 
@@ -2153,7 +2122,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Positional tracking: head-frame offset rotated into world XY by
             // the CLEAN yaw (mouse heading), so leaning forward goes into the
             // screen regardless of where the head is turned. UE: fwd=+X, right=+Y.
-            if (g_cfgHeadPosition)
+            if (g_cfg.headPosition)
             {
                 // CLEAN yaw only. With head-aim, *CameraRotation CONTAINS head
                 // yaw (it comes from Controller.Rotation), so cleanRot is no
@@ -2163,7 +2132,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // g_aimBase is the mouse-only heading: it accumulates ONLY
                 // game-driven deltas, which is exactly the room frame we want.
                 const double cy = UnitsToRad(
-                    (g_cfgHeadAim && g_aimInit) ? g_aimBase.yaw : cleanRot.yaw);
+                    (g_cfg.headAim && g_aimInit) ? g_aimBase.yaw : cleanRot.yaw);
                 const double cs = cos(cy), sn = sin(cy);
 
                 // Hold the head-position offset too. Freezing rotation alone
@@ -2199,8 +2168,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             //
             // The collision capsule does NOT move. At large values you will see
             // through low ceilings before your head bumps them.
-            if (g_cfgHeightOffset != 0.0f)
-                CameraLocation->z += g_cfgHeightOffset;
+            if (g_cfg.heightOffset != 0.0f)
+                CameraLocation->z += g_cfg.heightOffset;
 
             // S57: the hands must sit at ONE world position for both eyes. The
             // per-eye IPD offset below moves the camera +-EyeSeparation, and if
@@ -2209,8 +2178,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // alone, painted flat onto the world with both open, and read as
             // huge because zero parallax means "very far away".
             g_lastCamCenter = *CameraLocation;   // hands still need this
-            double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfgEyeSep;
-            if (g_cfgSwapEyes) s = -s;
+            double s = (eye == 0 ? -1.0 : 1.0) * (double)g_cfg.eyeSep;
+            if (g_cfg.swapEyes) s = -s;
 
             // Eye offset along the FINAL (head-rotated) right vector (§6).
             const Vec3 right = RotatorRight(finalRot);
@@ -2225,7 +2194,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             if (aimField)
             {
                 FRotator want;
-                if (g_cfgHeadAimMode <= 0)
+                if (g_cfg.headAimMode <= 0)
                 {
                     // LEGACY. Kept only so the artifact can be A/B'd live.
                     want = g_aimBase;
@@ -2236,13 +2205,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 {
                     // Motion aim feeds the CONTROLLER direction here while the
                     // view above keeps the head. That split is the whole feature.
-                    const double aimY = (g_cfgAimSource == 1 && g_aimHandValid)
+                    const double aimY = (g_cfg.aimSource == 1 && g_aimHandValid)
                         ? g_aimHandYaw : g_headYaw;
-                    const double aimP = (g_cfgAimSource == 1 && g_aimHandValid)
+                    const double aimP = (g_cfg.aimSource == 1 && g_aimHandValid)
                         ? g_aimHandPitch : g_headPitch;
 
                     want = ComposeHeadLocal(g_aimBase, aimY, aimP,
-                        g_cfgHeadAimMode >= 2);
+                        g_cfg.headAimMode >= 2);
                     // The controller rotator cannot carry head roll (S6); roll
                     // still reaches the view through the compose above.
                     want.roll = g_aimBase.roll;
@@ -2279,7 +2248,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 g_armLogged = true;
                 Log(">>> CAMERA WRITE ARMED. site%d (ret mod+0x%X)  halfIPD %.2f units  swap=%d",
                     leader, (unsigned)((uint8_t*)g_sites[leader].ret - g_modBase),
-                    g_cfgEyeSep, (int)g_cfgSwapEyes);
+                    g_cfg.eyeSep, (int)g_cfg.swapEyes);
                 Log("camera:   right vec %.3f %.3f %.3f   s=%+.2f (eye %d)",
                     right.x, right.y, right.z, s, eye);
             }
@@ -2308,14 +2277,14 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             g_calls, g_siteCount, g_leader, g_wLeft, g_wRight);
         Log("  HEAD: yaw%7.1f  pitch%7.1f  roll%7.1f  deg   %s",
             g_headYaw, g_headPitch, g_headRoll,
-            g_cfgHeadTracking ? "(WRITTEN to camera)" : "(computed, not written)");
+            g_cfg.headTracking ? "(WRITTEN to camera)" : "(computed, not written)");
         Log("  INTEREYE: avg%7.2f  max%7.2f  units   clamp=%d %s",
             g_ieN ? (g_ieSum / (double)g_ieN) : 0.0, g_ieMax,
-            (int)g_cfgDeltaClamp, g_targetLocked ? "(locked)" : "(NOT locked)");
+            (int)g_cfg.deltaClamp, g_targetLocked ? "(locked)" : "(NOT locked)");
         g_ieSum = 0.0; g_ieMax = 0.0; g_ieN = 0;
         Log("  DELTA: FrameDelta min %.5f  max %.5f   clamp=%d",
             (g_fdMinBits == 0xFFFFFFFFu) ? 0.0f : *(const float*)&g_fdMinBits,
-            * (const float*)&g_fdMaxBits, (int)g_cfgDeltaClamp);
+            * (const float*)&g_fdMaxBits, (int)g_cfg.deltaClamp);
             g_fdMinBits = 0xFFFFFFFFu; g_fdMaxBits = 0;
         Log("  POS : right%7.1f%s  up%7.1f%s  fwd%7.1f%s  cm   %s",
             g_posRight, (fabs(g_posRight) >= kPosSide - 0.05) ? "*" : " ",
@@ -2323,7 +2292,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 g_posUp <= -kPosDownMax + 0.05) ? "*" : " ",
             g_posFwd, (g_posFwd >= kPosFwdMax - 0.05 ||
                 g_posFwd <= -kPosBackMax + 0.05) ? "*" : " ",
-            g_cfgHeadPosition ? "(WRITTEN)" : "(computed, not written)");
+            g_cfg.headPosition ? "(WRITTEN)" : "(computed, not written)");
 
         for (int i = 0; i < g_siteCount; ++i)
         {
@@ -2559,7 +2528,7 @@ bool CameraHook_Install()
 
     // Separate hook, separate failure. If this doesn't take, the camera still
     // works and the mod runs exactly as it does today.
-    if (g_cfgDeltaClamp)
+    if (g_cfg.deltaClamp)
     {
         void* dfn = ResolveDeltaFn();
         const uint8_t* pb = (const uint8_t*)dfn;
@@ -2605,7 +2574,7 @@ bool CameraHook_Install()
     }
     else Log("delta: DeltaClamp=0. One advance per EYE -- fast scenes will double.");
 
-    Log(">>> CAMERA HOOK ARMED (write=%d). Load a level and move.", (int)g_cfgCameraWrite);
+    Log(">>> CAMERA HOOK ARMED (write=%d). Load a level and move.", (int)g_cfg.cameraWrite);
     return true;
 }
 

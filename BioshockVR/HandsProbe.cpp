@@ -40,35 +40,16 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
+#include "Config.h"
 
 extern void LogFile(const char* msg);
-extern bool  g_cfgHandsProbe;    // EnableHandsProbe, default 0
-extern float g_cfgHandsNudgeZ;   // HandsNudgeZ, cm. 0 == off.
-extern float g_cfgHandsNudgeYaw;   // HandsNudgeYaw, degrees. 0 == off.
-extern float g_cfgHandsNudgePitch; // HandsNudgePitch, degrees. 0 == off.
-extern float g_cfgHandsGrip[3];    // HandsGripOffset: fwd, right, up (cm). LIVE.
-extern float g_cfgHandsRot[3];     // HandsRotOffset: pitch, yaw, roll (deg). LIVE.
-extern float g_cfgGripSlot[9][3];  // per-weapon position, from the ini
-extern float g_cfgRotSlot[9][3];   // per-weapon rotation, from the ini
-extern float g_cfgCursorRot[3];    // CursorOffset pitch,yaw,roll deg. LIVE.
-extern float g_cfgCursorSlot[9][3];
 void Cfg_WriteVec3(const char* key, const float v[3]);   // dllmain.cpp
-extern int   g_cfgHandsArmCalls;
-extern int   g_cfgHandsRetryCalls;
-extern int   g_cfgIdleAnimMode;
-extern int   g_cfgIdleModeSlot[9];
-extern float g_cfgHandsScale;      // HandsScale: value to sweep. 0 == no sweep.
-extern int   g_cfgHandsPosOff;     // HandsPosOffset: where Location lives on
 // the Hands object. 0 == use g_locOff.
-extern int   g_cfgHandsPtrOff;   // HandsPtrOffset: which pawn pointer to treat
 // as Hands. 0 == none.
 
 // ---- S64: the weapon's own actor -----------------------------------------
-extern float g_cfgGunScale;      // GunScale: DrawScale to write on the weapon.
 // 0 == off (no sweep, no write).
-extern int   g_cfgGunPtrOff;     // GunPtrOffset: offset of the pointer to the
 // weapon actor. 0 == unknown, run the sweep.
-extern int   g_cfgGunPtrBase;    // GunPtrBase: 0 == pawn, 1 == Hands. Which
 // object GunPtrOffset is relative to.
 
 // ---- S65: the weapon's own children --------------------------------------
@@ -76,7 +57,6 @@ extern int   g_cfgGunPtrBase;    // GunPtrBase: 0 == pawn, 1 == Hands. Which
 // DrawScale halved the gun -- but NOT the cylinder. So part of the weapon is a
 // further actor attached to it, carrying its own scale. Same hunt, one level
 // down.
-extern int   g_cfgGunChildren;   // GunChildren: 0 == off, 1 == sweep them one
 // at a time, 2 == scale all of them at once.
 
 void GameState_SetPawn(void* pawn);   // GameState.cpp
@@ -336,8 +316,8 @@ static void PollGripKeys()
     }
     prevStep = stepDown;
 
-    float* const tgt = (g_editMode == 0) ? g_cfgHandsGrip
-        : (g_editMode == 1) ? g_cfgHandsRot : g_cfgCursorRot;
+    float* const tgt = (g_editMode == 0) ? g_cfg.handsGrip
+        : (g_editMode == 1) ? g_cfg.handsRot : g_cfg.cursorRot;
     const float amt = g_editMode ? rotStep : step;
 
     bool changed = false;
@@ -358,8 +338,8 @@ static void PollGripKeys()
         // to write to. Log it, don't invent a GripOffset-1.
         const char* what = (g_editMode == 0) ? "GripOffset"
             : (g_editMode == 1) ? "RotOffset" : "CursorOffset";
-        const float* val = (g_editMode == 0) ? g_cfgHandsGrip
-            : (g_editMode == 1) ? g_cfgHandsRot : g_cfgCursorRot;
+        const float* val = (g_editMode == 0) ? g_cfg.handsGrip
+            : (g_editMode == 1) ? g_cfg.handsRot : g_cfg.cursorRot;
         const char* units = (g_editMode == 0) ? "(fwd, right, up cm)"
             : "(pitch, yaw, roll deg)";
 
@@ -382,7 +362,7 @@ static void PollGripKeys()
 bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff)
 {
     if (!g_hands) return false;
-    const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+    const size_t po = (g_cfg.handsPosOff > 0) ? (size_t)g_cfg.handsPosOff : g_locOff;
     if (obj)    *obj = g_hands;
     if (locOff) *locOff = (unsigned)po;
     if (rotOff) *rotOff = (unsigned)kActorRotation;
@@ -397,11 +377,11 @@ bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff)
 // levels; the consensus-offset vote in STAGE A is not.
 static bool PawnHasHandsOnCamera(void* pawn, const float cam[3])
 {
-    if (!pawn || g_cfgHandsPtrOff <= 0) return false;
-    if (!Readable((const uint8_t*)pawn + g_cfgHandsPtrOff, 4)) return false;
-    void* h = *(void**)((const uint8_t*)pawn + g_cfgHandsPtrOff);
+    if (!pawn || g_cfg.handsPtrOff <= 0) return false;
+    if (!Readable((const uint8_t*)pawn + g_cfg.handsPtrOff, 4)) return false;
+    void* h = *(void**)((const uint8_t*)pawn + g_cfg.handsPtrOff);
     if (!LooksLikeObject(h)) return false;
-    const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : 0x1D8;
+    const size_t po = (g_cfg.handsPosOff > 0) ? (size_t)g_cfg.handsPosOff : 0x1D8;
     if (!Readable((const uint8_t*)h + po, sizeof(AVec))) return false;
     const double d = Dist((const AVec*)((const uint8_t*)h + po), cam);
     return (d >= 0.0 && d < 60.0);
@@ -508,7 +488,7 @@ static void FindLocationAndPawn(const void* pc, const float cam[3])
     // actors outvote the real pawn (measured: +0x1D8 beat the real pawn's +0x1A0
     // 6-to-2, locking an actor 476 cm away). Prefer whichever candidate actually
     // has its Hands on the camera.
-    if (g_cfgHandsPtrOff > 0 && !PawnHasHandsOnCamera(bestObj, cam))
+    if (g_cfg.handsPtrOff > 0 && !PawnHasHandsOnCamera(bestObj, cam))
     {
         for (int i = 0; i < hits && i < 24; ++i)
         {
@@ -802,10 +782,10 @@ static const char* BaseName(unsigned b)
 // game re-authors this actor constantly and a one-shot write does not survive.
 static void ApplyHandsScale(void* hands)
 {
-    if (g_cfgHandsScale <= 0.0f || !hands) return;
+    if (g_cfg.handsScale <= 0.0f || !hands) return;
     float* p = (float*)((uint8_t*)hands + kActorDrawScale);
     if (!Writable(p, 4)) return;
-    if (*p != g_cfgHandsScale) *p = g_cfgHandsScale;
+    if (*p != g_cfg.handsScale) *p = g_cfg.handsScale;
 }
 
 // One qualifying test, used for both the weapon hunt and the child hunt.
@@ -944,7 +924,7 @@ static void ApplyGunChildren()
     for (int i = 0; i < g_nKidCand; ++i)
     {
         float* p = (float*)((uint8_t*)g_kidCand[i].obj + kActorDrawScale);
-        if (Writable(p, 4) && *p != g_cfgGunScale) *p = g_cfgGunScale;
+        if (Writable(p, 4) && *p != g_cfg.gunScale) *p = g_cfg.gunScale;
     }
 }
 
@@ -976,12 +956,12 @@ static void SweepGunChildren()
 
     float* p = (float*)((uint8_t*)g_kidCand[idx].obj + kActorDrawScale);
     if (!Writable(p, 4)) return;
-    *p = g_cfgGunScale;
+    *p = g_cfg.gunScale;
 
     Log(">>> KID SWEEP: [%d/%d] 0x%08X (gun+0x%03X) DrawScale = %.2f   <-- watch "
         "the CYLINDER now",
         idx + 1, g_nKidCand, (unsigned)(uintptr_t)g_kidCand[idx].obj,
-        g_kidCand[idx].off, g_cfgGunScale);
+        g_kidCand[idx].off, g_cfg.gunScale);
 }
 
 // Walk the candidate objects, three seconds each, writing GunScale into
@@ -989,19 +969,19 @@ static void SweepGunChildren()
 // change size -- the arm will already be scaled by HandsScale and will not move.
 static void SweepGunScale(const float cam[3])
 {
-    if (g_cfgGunScale <= 0.0f) return;
+    if (g_cfg.gunScale <= 0.0f) return;
 
     // Pinned: we already know which object it is. Keep the value applied, and
     // deal with whatever the weapon itself is built from.
     if (g_gun)
     {
         float* p = (float*)((uint8_t*)g_gun + kActorDrawScale);
-        if (Writable(p, 4) && *p != g_cfgGunScale) *p = g_cfgGunScale;
+        if (Writable(p, 4) && *p != g_cfg.gunScale) *p = g_cfg.gunScale;
 
-        if (g_cfgGunChildren)
+        if (g_cfg.gunChildren)
         {
             CollectGunChildren(cam);
-            if (g_cfgGunChildren == 1) SweepGunChildren();
+            if (g_cfg.gunChildren == 1) SweepGunChildren();
             else                       ApplyGunChildren();
         }
         return;
@@ -1034,13 +1014,13 @@ static void SweepGunScale(const float cam[3])
 
     float* p = (float*)((uint8_t*)g_gunCand[idx].obj + kActorDrawScale);
     if (!Writable(p, 4)) return;
-    *p = g_cfgGunScale;
+    *p = g_cfg.gunScale;
 
     Log(">>> GUN SWEEP: [%d/%d] 0x%08X (%s+0x%03X) DrawScale = %.2f   <-- watch "
         "the GUN now. If it shrank: GunPtrBase=%d GunPtrOffset=0x%03X",
         idx + 1, g_nGunCand, (unsigned)(uintptr_t)g_gunCand[idx].obj,
         g_gunCand[idx].base ? "hands" : "pawn", g_gunCand[idx].off,
-        g_cfgGunScale, g_gunCand[idx].base, g_gunCand[idx].off);
+        g_cfg.gunScale, g_gunCand[idx].base, g_gunCand[idx].off);
 }
 
 static void ScanHandsForPosition(const void* hands, const float cam[3])
@@ -1104,10 +1084,10 @@ static void NudgeTest(void* hands, const float cam[3], const int camRot[3])
     ScanHandsForPosition(hands, cam);
 
     if (!hands) return;
-    if (g_cfgHandsNudgeYaw == 0.0f && g_cfgHandsNudgePitch == 0.0f &&
-        g_cfgHandsNudgeZ == 0.0f) return;
+    if (g_cfg.handsNudgeYaw == 0.0f && g_cfg.handsNudgePitch == 0.0f &&
+        g_cfg.handsNudgeZ == 0.0f) return;
 
-    if ((g_cfgHandsNudgeYaw != 0.0f || g_cfgHandsNudgePitch != 0.0f) &&
+    if ((g_cfg.handsNudgeYaw != 0.0f || g_cfg.handsNudgePitch != 0.0f) &&
         Writable((uint8_t*)hands + kActorRotation, 12))
     {
         int32_t* R = (int32_t*)((uint8_t*)hands + kActorRotation);
@@ -1132,21 +1112,21 @@ static void NudgeTest(void* hands, const float cam[3], const int camRot[3])
             Log(">>> HANDS:   bias  pitch %.1f deg  yaw %.1f deg   -> applying "
                 "pitch %+.0f  yaw %+.0f",
                 (double)biasP / 182.0444, (double)biasY / 182.0444,
-                g_cfgHandsNudgePitch, g_cfgHandsNudgeYaw);
+                g_cfg.handsNudgePitch, g_cfg.handsNudgeYaw);
         }
 
-        if (g_cfgHandsNudgeYaw != 0.0f)
-            R[1] = camRot[1] + biasY + (int32_t)(g_cfgHandsNudgeYaw * 182.0444f);
-        if (g_cfgHandsNudgePitch != 0.0f)
-            R[0] = camRot[0] + biasP + (int32_t)(g_cfgHandsNudgePitch * 182.0444f);
+        if (g_cfg.handsNudgeYaw != 0.0f)
+            R[1] = camRot[1] + biasY + (int32_t)(g_cfg.handsNudgeYaw * 182.0444f);
+        if (g_cfg.handsNudgePitch != 0.0f)
+            R[0] = camRot[0] + biasP + (int32_t)(g_cfg.handsNudgePitch * 182.0444f);
     }
 
-    if (g_cfgHandsNudgeZ != 0.0f)
+    if (g_cfg.handsNudgeZ != 0.0f)
     {
         // Use the offset the position scan found, if one was given; otherwise
         // fall back to the pawn's Location offset, which is what every earlier
         // (fruitless) attempt used.
-        const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+        const size_t po = (g_cfg.handsPosOff > 0) ? (size_t)g_cfg.handsPosOff : g_locOff;
         if (Writable((uint8_t*)hands + po, sizeof(AVec)))
         {
             static bool announced = false;
@@ -1155,9 +1135,9 @@ static void NudgeTest(void* hands, const float cam[3], const int camRot[3])
                 announced = true;
                 const AVec* v = (const AVec*)((const uint8_t*)hands + po);
                 Log(">>> HANDS: NUDGE Z %+.0f cm at +0x%03X (currently %.1f %.1f %.1f)",
-                    g_cfgHandsNudgeZ, (unsigned)po, v->x, v->y, v->z);
+                    g_cfg.handsNudgeZ, (unsigned)po, v->x, v->y, v->z);
             }
-            ((AVec*)((uint8_t*)hands + po))->z += g_cfgHandsNudgeZ;
+            ((AVec*)((uint8_t*)hands + po))->z += g_cfg.handsNudgeZ;
         }
     }
 }
@@ -1254,9 +1234,9 @@ static bool g_abilityMode = false;
 
 static void UpdateHandMode(const void* hands)
 {
-    if (!hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return;   // Hands-relative only
+    if (!hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return;   // Hands-relative only
 
-    const unsigned holdOff = (unsigned)g_cfgGunPtrOff;
+    const unsigned holdOff = (unsigned)g_cfg.gunPtrOff;
     const unsigned abilOff = holdOff - 8;
 
     if (!Readable((const uint8_t*)hands + abilOff, 4)) return;
@@ -1338,10 +1318,10 @@ static void ScanWeaponClassLists(const void* pawn)
 // Reports, for every candidate array, which slot the live weapon matches.
 static void ReportWeaponIdentity(const void* hands)
 {
-    if (!g_nWepCand || !hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return;
+    if (!g_nWepCand || !hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return;
 
-    if (!Readable((const uint8_t*)hands + g_cfgGunPtrOff, 4)) return;
-    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfgGunPtrOff);
+    if (!Readable((const uint8_t*)hands + g_cfg.gunPtrOff, 4)) return;
+    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfg.gunPtrOff);
 
     static const void* lastHold = nullptr;
     if (hold == lastHold) return;          // only on a real weapon change
@@ -1389,10 +1369,10 @@ static bool  g_gripInit = false;
 
 static int ResolveWeaponSlot(const void* hands)
 {
-    if (!hands || g_cfgGunPtrOff <= 0 || !g_cfgGunPtrBase) return -1;
-    if (!Readable((const uint8_t*)hands + g_cfgGunPtrOff, 4)) return -1;
+    if (!hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return -1;
+    if (!Readable((const uint8_t*)hands + g_cfg.gunPtrOff, 4)) return -1;
 
-    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfgGunPtrOff);
+    const void* hold = *(void* const*)((const uint8_t*)hands + g_cfg.gunPtrOff);
     if (!hold) return 8;                       // plasmid / ability mode
 
     int k = -1;
@@ -1429,8 +1409,8 @@ static int ResolveWeaponSlot(const void* hands)
 // ({Data, Count, Max}); FName is 8 bytes {Index, Number}.
 static void ApplyIdleAnim(const void* hands, int slot)
 {
-    const int mode = (slot >= 0 && slot <= 8) ? g_cfgIdleModeSlot[slot]
-        : g_cfgIdleAnimMode;
+    const int mode = (slot >= 0 && slot <= 8) ? g_cfg.idleModeSlot[slot]
+        : g_cfg.idleAnimMode;
     if (mode <= 0) return;
     if (!Readable((const uint8_t*)hands + 0x45C, 4)) return;
 
@@ -1479,9 +1459,9 @@ static void UpdateWeaponGrip(const void* hands)
         for (int i = 0; i < 9; ++i)
             for (int a = 0; a < 3; ++a)
             {
-                g_gripBySlot[i][a] = g_cfgGripSlot[i][a];
-                g_rotBySlot[i][a] = g_cfgRotSlot[i][a];
-                g_cursorBySlot[i][a] = g_cfgCursorSlot[i][a];
+                g_gripBySlot[i][a] = g_cfg.gripSlot[i][a];
+                g_rotBySlot[i][a] = g_cfg.rotSlot[i][a];
+                g_cursorBySlot[i][a] = g_cfg.cursorSlot[i][a];
             }
         g_gripInit = true;
     }
@@ -1493,9 +1473,9 @@ static void UpdateWeaponGrip(const void* hands)
     {
         for (int a = 0; a < 3; ++a)
         {
-            g_gripBySlot[g_wepSlot][a] = g_cfgHandsGrip[a];
-            g_rotBySlot[g_wepSlot][a] = g_cfgHandsRot[a];
-            g_cursorBySlot[g_wepSlot][a] = g_cfgCursorRot[a];
+            g_gripBySlot[g_wepSlot][a] = g_cfg.handsGrip[a];
+            g_rotBySlot[g_wepSlot][a] = g_cfg.handsRot[a];
+            g_cursorBySlot[g_wepSlot][a] = g_cfg.cursorRot[a];
         }
         Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
             g_wepSlot, kWepName[g_wepSlot],
@@ -1506,15 +1486,15 @@ static void UpdateWeaponGrip(const void* hands)
     g_wepSlot = slot;
     for (int a = 0; a < 3; ++a)
     {
-        g_cfgHandsGrip[a] = g_gripBySlot[slot][a];
-        g_cfgHandsRot[a] = g_rotBySlot[slot][a];
-        g_cfgCursorRot[a] = g_cursorBySlot[slot][a];
+        g_cfg.handsGrip[a] = g_gripBySlot[slot][a];
+        g_cfg.handsRot[a] = g_rotBySlot[slot][a];
+        g_cfg.cursorRot[a] = g_cursorBySlot[slot][a];
     }
 
     Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
         slot, kWepName[slot],
-        g_cfgHandsGrip[0], g_cfgHandsGrip[1], g_cfgHandsGrip[2],
-        g_cfgHandsRot[0], g_cfgHandsRot[1], g_cfgHandsRot[2]);
+        g_cfg.handsGrip[0], g_cfg.handsGrip[1], g_cfg.handsGrip[2],
+        g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2]);
 
     ApplyIdleAnim(hands, slot);
 }
@@ -1576,7 +1556,7 @@ static void ProbeNearGun(const void* pawn, const void* hands, const void* gun)
 void HandsProbe_Observe(void* playerController,
     const float camLoc[3], const int camRot[3])
 {
-    if (!g_cfgHandsProbe) return;
+    if (!g_cfg.handsProbe) return;
     if (!playerController || !camLoc || !camRot) return;
 
     PollGripKeys();          // always live, even before the probe locks
@@ -1591,14 +1571,14 @@ void HandsProbe_Observe(void* playerController,
     // and we then write Location/Rotation/DrawScale into them -- that was the
     // S45 crash. GameState_InGame() above is the real guard; this is belt and
     // braces, so it is tunable rather than baked at 600 (2.7 s at 220 calls/s).
-    if (++g_calls < g_cfgHandsArmCalls) return;
+    if (++g_calls < g_cfg.handsArmCalls) return;
 
     if (!g_locOff)
     {
         // FIRST attempt goes straight through. The old code made it pay the
         // retry interval too, doubling the wait on every level load for nothing.
         static bool tried = false;
-        if (tried && ++g_retry < g_cfgHandsRetryCalls) return;
+        if (tried && ++g_retry < g_cfg.handsRetryCalls) return;
         tried = true;
         g_retry = 0;
         FindLocationAndPawn(playerController, camLoc);
@@ -1607,9 +1587,9 @@ void HandsProbe_Observe(void* playerController,
 
     // Explicit selection wins: pass 2 reports several view-tracking objects and
     // only you can see which one is the arms. HandsPtrOffset picks one.
-    if (g_cfgHandsPtrOff > 0 && g_pawn)
+    if (g_cfg.handsPtrOff > 0 && g_pawn)
     {
-        const size_t po = (size_t)g_cfgHandsPtrOff;
+        const size_t po = (size_t)g_cfg.handsPtrOff;
         if (Readable((const uint8_t*)g_pawn + po, 4))
         {
             void* t = *(void**)((const uint8_t*)g_pawn + po);
@@ -1650,20 +1630,20 @@ void HandsProbe_Observe(void* playerController,
     // the Holdable, so a pointer captured at lock time goes stale the first time
     // you press a number key -- and a stale one would leave the new gun full
     // size while we kept scaling something you are no longer holding.
-    if (g_cfgGunPtrOff > 0)
+    if (g_cfg.gunPtrOff > 0)
     {
-        void* root = g_cfgGunPtrBase ? g_hands : g_pawn;
-        if (root && Readable((const uint8_t*)root + g_cfgGunPtrOff, 4))
+        void* root = g_cfg.gunPtrBase ? g_hands : g_pawn;
+        if (root && Readable((const uint8_t*)root + g_cfg.gunPtrOff, 4))
         {
-            void* t = *(void**)((const uint8_t*)root + g_cfgGunPtrOff);
+            void* t = *(void**)((const uint8_t*)root + g_cfg.gunPtrOff);
             if (LooksLikeObject(t) && t != g_gun)
             {
                 g_gun = t;
                 g_kidCollected = false;     // new weapon, new children
                 g_nKidCand = 0;
                 Log(">>> GUN: using %s+0x%03X -> 0x%08X (GunPtrOffset)",
-                    g_cfgGunPtrBase ? "hands" : "pawn",
-                    (unsigned)g_cfgGunPtrOff, (unsigned)(uintptr_t)t);
+                    g_cfg.gunPtrBase ? "hands" : "pawn",
+                    (unsigned)g_cfg.gunPtrOff, (unsigned)(uintptr_t)t);
             }
         }
     }
@@ -1690,7 +1670,7 @@ void HandsProbe_Observe(void* playerController,
         lastCam[0] = camLoc[0]; lastCam[1] = camLoc[1]; lastCam[2] = camLoc[2];
         haveLastCam = true;
 
-        const size_t po = (g_cfgHandsPosOff > 0) ? (size_t)g_cfgHandsPosOff : g_locOff;
+        const size_t po = (g_cfg.handsPosOff > 0) ? (size_t)g_cfg.handsPosOff : g_locOff;
         double d = -1.0;
         if (Readable((const uint8_t*)g_hands + po, sizeof(AVec)))
             d = Dist((const AVec*)((const uint8_t*)g_hands + po), camLoc);

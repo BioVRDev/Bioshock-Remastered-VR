@@ -31,11 +31,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include "Config.h"
 
 extern void LogFile(const char* msg);
-extern int  g_cfgArmHideHandsVt;   // dllmain.cpp, ini-overridable
-extern int  g_cfgArmHideSkelVt;    // dllmain.cpp, ini-overridable
-extern int  g_cfgHideInactiveHand; // dllmain.cpp, HideInactiveHand
 
 static const unsigned kActorSkelOff = 0x3FC;
 static const unsigned kSkelActorOff = 0x04;
@@ -210,8 +208,8 @@ static bool LocateSkeleton(void* hands)
     // POSITIONALLY (it tracks the camera and the view rotator), the skeleton
     // must point back at this same actor, and the bone count must be exactly
     // 47. A wrong object fails all three.
-    const bool handsOk = (g_cfgArmHideHandsVt <= 0) || VtableIs(hands, g_cfgArmHideHandsVt);
-    const bool skelOk = (g_cfgArmHideSkelVt <= 0) || VtableIs(skel, g_cfgArmHideSkelVt);
+    const bool handsOk = (g_cfg.armHideHandsVt <= 0) || VtableIs(hands, g_cfg.armHideHandsVt);
+    const bool skelOk = (g_cfg.armHideSkelVt <= 0) || VtableIs(skel, g_cfg.armHideSkelVt);
 
     if (!handsOk || !skelOk)
     {
@@ -220,9 +218,9 @@ static bool LocateSkeleton(void* hands)
             g_loggedFail = true;
             Log("!!! ARMHIDE: vtable mismatch -- this is a DIFFERENT BUILD of the game.");
             Log("!!! ARMHIDE:   AHands            expected 0x%X   ACTUAL 0x%X",
-                (unsigned)g_cfgArmHideHandsVt, VtableRvaOf(hands));
+                (unsigned)g_cfg.armHideHandsVt, VtableRvaOf(hands));
             Log("!!! ARMHIDE:   SkeletonInstance  expected 0x%X   ACTUAL 0x%X",
-                (unsigned)g_cfgArmHideSkelVt, VtableRvaOf(skel));
+                (unsigned)g_cfg.armHideSkelVt, VtableRvaOf(skel));
             Log("!!! ARMHIDE: Refusing all writes. To enable arm hiding on this build,");
             Log("!!! ARMHIDE: put the two ACTUAL values into BioshockVR.ini:");
             Log("!!! ARMHIDE:   ArmHideHandsVt=0x%X", VtableRvaOf(hands));

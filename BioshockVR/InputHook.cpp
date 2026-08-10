@@ -43,40 +43,19 @@
 #include "Swing.h"
 
 #include <MinHook.h>
+#include "Config.h"
 
 extern void LogFile(const char* msg);
 
 // dllmain.cpp -- see the block at the bottom of this file for the lines to add.
-extern bool  g_cfgController;        // EnableController        default 1
-extern int   g_cfgControllerMode;    // 0 = merge, 1 = replace  default 0
-extern bool  g_cfgControllerPitch;   // emit right-stick Y      default 0
-extern bool  g_cfgStickYToDpad;      // dead Y axis -> d-pad    default 0
-extern int   g_cfgPitchServo;
-extern float g_cfgPitchServoGain;
-extern float g_cfgPitchServoDead;
-extern float g_cfgPitchServoMax;
-extern int   g_cfgSwingLog;
-extern int   g_cfgHeadRelativeMove;
-extern int   g_cfgSnapTurn;
-extern int   g_cfgModYaw;
-extern float g_cfgGripThreshold;
-extern float g_cfgGripHysteresis;
 
 bool CameraHook_GetPitchError(float* outDeg);
 bool CameraHook_GetHeadYawOffset(float* outDeg);
 
-extern float g_cfgStickDeadzone;     // radial, 0..0.9          default 0.15
-extern bool  g_cfgControllerLog;     // heartbeat               default 1
-extern int   g_cfgDpadModifier;      // 0 off / 1 thumbrest / 2 R3 / 3 Lgrip  default 1
-extern int   g_cfgDpadFlip;          // 1 = left thumbrest + right stick
-extern int   g_cfgControllerLayout;  // 0 literal / 1 jump-on-A       default 0
-extern bool  g_cfgJumpOnR3;          // R3 -> jump instead of zoom    default 0
-extern int   g_cfgPauseChord;        // 1 = X+Y chord pauses
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
 bool GameState_Paused();             // GameState.cpp
 bool GameState_Theater();            // GameState.cpp
-extern bool g_cfgHeadTracking;       // dllmain.cpp
 
 static void Log(const char* fmt, ...)
 {
@@ -250,7 +229,7 @@ bool Input_WeaponWheelHeld()
 {
     PadState s;
     if (!ReadPad(&s) || !s.active) return false;
-    return (s.gripL > g_cfgGripThreshold) || (s.gripR > g_cfgGripThreshold);
+    return (s.gripL > g_cfg.gripThreshold) || (s.gripR > g_cfg.gripThreshold);
 }
 
 // ---------------------------------------------------------------- OpenXR side
@@ -317,7 +296,7 @@ static XrSpace MakeActionSpace(XrAction act)
 
 bool Input_XrCreate(XrInstance inst, XrSession sess)
 {
-    if (!g_cfgController) { Log(">>> INPUT: DISABLED by ini (EnableController=0)"); return false; }
+    if (!g_cfg.controller) { Log(">>> INPUT: DISABLED by ini (EnableController=0)"); return false; }
     if (g_xrReady) return true;
 
     g_inst = inst;
@@ -437,9 +416,9 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
 
     g_xrReady = true;
     Log(">>> INPUT: OpenXR side READY (pitch %s, deadzone %.2f, mode %s)",
-        g_cfgControllerPitch ? "PASSED THROUGH -- expect fighting" : "dropped",
-        g_cfgStickDeadzone,
-        g_cfgControllerMode ? "replace" : "merge");
+        g_cfg.controllerPitch ? "PASSED THROUGH -- expect fighting" : "dropped",
+        g_cfg.stickDeadzone,
+        g_cfg.controllerMode ? "replace" : "merge");
     return true;
 }
 
@@ -552,8 +531,8 @@ void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
 
     GetVec2(g_aMove, &s.moveX, &s.moveY);
     GetVec2(g_aTurn, &s.turnX, &s.turnY);
-    Deadzone(&s.moveX, &s.moveY, g_cfgStickDeadzone);
-    Deadzone(&s.turnX, &s.turnY, g_cfgStickDeadzone);
+    Deadzone(&s.moveX, &s.moveY, g_cfg.stickDeadzone);
+    Deadzone(&s.turnX, &s.turnY, g_cfg.stickDeadzone);
 
     s.trigL = GetFloat(g_aTrigL);
     s.trigR = GetFloat(g_aTrigR);
@@ -695,8 +674,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // Computed HERE, at the top, because three separate things below need the
     // answer -- the d-pad modifier, the radial test, and LB/RB themselves.
     static bool gripLOn = false, gripROn = false;
-    const float onT = g_cfgGripThreshold;
-    const float offT = g_cfgGripThreshold - g_cfgGripHysteresis;
+    const float onT = g_cfg.gripThreshold;
+    const float offT = g_cfg.gripThreshold - g_cfg.gripHysteresis;
     gripLOn = gripLOn ? (s.gripL > offT) : (s.gripL > onT);
     gripROn = gripROn ? (s.gripR > offT) : (s.gripR > onT);
 
@@ -709,9 +688,9 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
 
     // ---- is the d-pad modifier held? -----------------------------------
     bool mod = false;
-    switch (g_cfgDpadModifier)
+    switch (g_cfg.dpadModifier)
     {
-    case 1: mod = g_cfgDpadFlip ? s.restL : s.restR;   break;
+    case 1: mod = g_cfg.dpadFlip ? s.restL : s.restR;   break;
     case 4: mod = s.restL;   break;      // explicit left thumbrest
     case 2: mod = s.thumbR;  break;
     case 3: mod = gripLOn; break;
@@ -730,8 +709,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         int dir = 0;   // 1 up, 2 down, 3 left, 4 right
         // FLIPPED: read the RIGHT stick and let the left keep walking you
         // around. Unflipped keeps the original left-stick behaviour.
-        const float dx = g_cfgDpadFlip ? s.turnX : s.moveX;
-        const float dy = g_cfgDpadFlip ? s.turnY : s.moveY;
+        const float dx = g_cfg.dpadFlip ? s.turnX : s.moveX;
+        const float dy = g_cfg.dpadFlip ? s.turnY : s.moveY;
         const float ax = fabsf(dx), ay = fabsf(dy);
         if (ay >= 0.5f && ay >= ax)      dir = (dy > 0.0f) ? 1 : 2;
         else if (ax >= 0.5f && ax > ay)  dir = (dx > 0.0f) ? 4 : 3;
@@ -752,7 +731,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         }
 
         // In FLIPPED mode the left stick still walks -- only turning is eaten.
-        if (g_cfgDpadFlip)
+        if (g_cfg.dpadFlip)
         {
             out->Gamepad.sThumbLX = ToAxis(s.moveX);
             out->Gamepad.sThumbLY = ToAxis(s.moveY);
@@ -769,8 +748,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         // whenever your head is turned. Theater and non-gameplay contexts get
         // the raw stick too.
         const bool headRelOk =
-            g_cfgHeadRelativeMove &&
-            g_cfgHeadTracking &&
+            g_cfg.headRelativeMove &&
+            g_cfg.headTracking &&
             !menuUp &&
             !gripLOn && !gripROn &&
             !GameState_Theater();
@@ -793,22 +772,22 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
 
     // Flipped mode owns the right stick while the modifier is held, so the
     // d-pad direction must not ALSO snap-turn you.
-    if (!(mod && g_cfgDpadFlip))
+    if (!(mod && g_cfg.dpadFlip))
         // Snap turn and mod-yaw both rotate g_aimBase directly. Sending the axis
         // as well would turn you twice, at two different rates.
         out->Gamepad.sThumbRX =
-        ((g_cfgSnapTurn || g_cfgModYaw) ? 0 : ToAxis(s.turnX));
+        ((g_cfg.snapTurn || g_cfg.modYaw) ? 0 : ToAxis(s.turnX));
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a
     // grip is held the weapon/plasmid radial NEEDS it or its top and bottom
     // entries are unreachable.
     const bool radialOpen = gripLOn || gripROn;
-    if (g_cfgControllerPitch || menuUp || radialOpen)
+    if (g_cfg.controllerPitch || menuUp || radialOpen)
     {
         out->Gamepad.sThumbRY = ToAxis(s.turnY);
     }
-    else if (g_cfgPitchServo)
+    else if (g_cfg.pitchServo)
     {
         // Drive the engine's hidden pitch toward where you are actually
         // looking. Melee aims from that pitch, so without this the wrench
@@ -816,14 +795,14 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         float err = 0.0f;
         if (CameraHook_GetPitchError(&err))
         {
-            if (err > g_cfgPitchServoDead || err < -g_cfgPitchServoDead)
+            if (err > g_cfg.pitchServoDead || err < -g_cfg.pitchServoDead)
             {
-                float v = err * g_cfgPitchServoGain;
-                if (v > g_cfgPitchServoMax) v = g_cfgPitchServoMax;
-                if (v < -g_cfgPitchServoMax) v = -g_cfgPitchServoMax;
+                float v = err * g_cfg.pitchServoGain;
+                if (v > g_cfg.pitchServoMax) v = g_cfg.pitchServoMax;
+                if (v < -g_cfg.pitchServoMax) v = -g_cfg.pitchServoMax;
                 out->Gamepad.sThumbRY = ToAxis(v);
 
-                if (g_cfgSwingLog)
+                if (g_cfg.swingLog)
                 {
                     static ULONGLONG lastP = 0;
                     const ULONGLONG nowP = GetTickCount64();
@@ -836,7 +815,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
             }
         }
     }
-    else if (g_cfgStickYToDpad && !mod)
+    else if (g_cfg.stickYToDpad && !mod)
     {
         if (s.turnY > 0.6f) out->Gamepad.wButtons |= XI_DPAD_UP;
         else if (s.turnY < -0.6f) out->Gamepad.wButtons |= XI_DPAD_DOWN;
@@ -848,7 +827,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
 
     // Logical actions first, THEN the XInput bit the game expects for each.
     bool aUse, aHypo, aHack, aJump;
-    if (g_cfgControllerLayout == 1)
+    if (g_cfg.controllerLayout == 1)
     {
         aJump = s.a;   aHack = s.b;  aUse = s.x;   aHypo = s.y;
     }
@@ -867,14 +846,14 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // the pipe. The cost is that pressing Y a frame before X can produce one
     // frame of jump on the way into a pause, which is a small hop and nothing
     // worse. R3 stays available as a second jump either way.
-    if (aJump && !(g_cfgPauseChord && s.x)) btn |= XI_Y;
-    if (g_cfgPauseChord && s.thumbR)        btn |= XI_Y;
+    if (aJump && !(g_cfg.pauseChord && s.x)) btn |= XI_Y;
+    if (g_cfg.pauseChord && s.thumbR)        btn |= XI_Y;
 
     // R3 -> JUMP. The game binds R3 to Zoom, which is unusable in VR anyway --
     // ADS drives ZoomedForegroundFOVAngle and breaks the ForegroundFov
     // calibration. ADDITIVE: the layout's normal jump button still jumps, so
     // this cannot take anything away.
-    if (g_cfgJumpOnR3 && s.thumbR) btn |= XI_Y;
+    if (g_cfg.jumpOnR3 && s.thumbR) btn |= XI_Y;
 
     // Touch has ONE application menu button, and the game wants both START
     // (pause) and BACK (ShowContextHelp -- the "WHAT IS THIS?" prompt). The
@@ -884,7 +863,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // "swap Oculus and Menu button" accessibility option sends BOTH to the
     // system. X+Y together is reserved by nobody, on any runtime.
     bool chordPause = false;
-    if (g_cfgPauseChord && s.x && s.y)
+    if (g_cfg.pauseChord && s.x && s.y)
     {
         chordPause = true;
         btn &= ~(WORD)(XI_A | XI_B | XI_X | XI_Y);   // don't hack+jump mid-pause
@@ -905,8 +884,8 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // A control used as the modifier must not ALSO send its normal button, or
     // every d-pad press would come with a stray R3 / LB. Same for one rebound
     // to jump: without this, every jump would also zoom.
-    if (s.thumbR && g_cfgDpadModifier != 2 && !g_cfgJumpOnR3) btn |= XI_RTHUMB;
-    if (gripLOn && g_cfgDpadModifier != 3) btn |= XI_LSHOULDER;
+    if (s.thumbR && g_cfg.dpadModifier != 2 && !g_cfg.jumpOnR3) btn |= XI_RTHUMB;
+    if (gripLOn && g_cfg.dpadModifier != 3) btn |= XI_LSHOULDER;
     if (gripROn)                           btn |= XI_RSHOULDER;
 
     out->Gamepad.wButtons = btn;
@@ -953,7 +932,7 @@ static DWORD WINAPI hkXInputGetState(DWORD idx, XI_STATE* st)
     // merge mode: a REAL pad plugged into slot 0 wins outright. That keeps the
     // "verify with a real Xbox pad first" test honest -- with our hook loaded,
     // a real pad still behaves exactly as if we were not here.
-    if (g_cfgControllerMode == 0 && g_origGetState)
+    if (g_cfg.controllerMode == 0 && g_origGetState)
     {
         const DWORD r = g_origGetState(idx, st);
         if (r == XI_ERR_SUCCESS)
@@ -970,7 +949,7 @@ static DWORD WINAPI hkXInputGetStateEx(DWORD idx, XI_STATE* st)
     _InterlockedIncrement(&g_nGetState);
     if (!st) return XI_ERR_DEVICE_NOT_CONNECTED;
 
-    if (g_cfgControllerMode == 0 && g_origGetStateEx)
+    if (g_cfg.controllerMode == 0 && g_origGetStateEx)
     {
         const DWORD r = g_origGetStateEx(idx, st);
         if (r == XI_ERR_SUCCESS)
@@ -988,7 +967,7 @@ static DWORD WINAPI hkXInputGetCapabilities(DWORD idx, DWORD flags, XI_CAPS* cap
 {
     _InterlockedIncrement(&g_nGetCaps);
 
-    if (g_cfgControllerMode == 0 && g_origGetCaps)
+    if (g_cfg.controllerMode == 0 && g_origGetCaps)
     {
         const DWORD r = g_origGetCaps(idx, flags, caps);
         if (r == XI_ERR_SUCCESS) return r;
@@ -1266,7 +1245,7 @@ static bool TryInstall()
 
 void Input_Tick()
 {
-    if (!g_cfgController) return;
+    if (!g_cfg.controller) return;
 
     // The game may load its XInput DLL lazily, well after our first Present, and
     // may load a SECOND one later still -- so keep scanning even once armed.
@@ -1296,7 +1275,7 @@ void Input_Tick()
         }
     }
 
-    if (!g_cfgControllerLog) return;
+    if (!g_cfg.controllerLog) return;
 
     static DWORD lastTick = 0;
     const DWORD now = GetTickCount();

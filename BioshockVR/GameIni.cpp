@@ -25,15 +25,11 @@
 #include <cstdlib>
 
 #include "GameIni.h"
+#include "Config.h"
 
 #pragma comment(lib, "shell32.lib")
 
 extern void  LogFile(const char* msg);
-extern float g_cfgFovDeg;
-extern int   g_cfgResX;
-extern int   g_cfgResY;
-extern int   g_cfgFullscreen;
-extern bool  g_cfgSyncGameIni;
 
 static void Log(const char* fmt, ...)
 {
@@ -138,7 +134,7 @@ static void WriteInt(const char* path, const char* sec, const char* key, int val
 
 void SyncGameIni()
 {
-    if (!g_cfgSyncGameIni)
+    if (!g_cfg.syncGameIni)
     {
         Log("gameini: SyncGameIni=0. Leaving Bioshock.ini alone.");
         return;
@@ -154,7 +150,7 @@ void SyncGameIni()
     Log("gameini: %s", path);
 
     // FOV. Round to int -- HorizontalFOV is an integer key in this game.
-    const int fov = (int)(g_cfgFovDeg + 0.5f);
+    const int fov = (int)(g_cfg.fovDeg + 0.5f);
     WriteInt(path, kSecUser, "HorizontalFOV", fov);
 
     // Pin the FOV so the engine stops deriving it from aspect ratio. Without
@@ -171,21 +167,21 @@ void SyncGameIni()
     // resolution silently stopped working the moment fullscreen was enabled.
     // Both pairs get the same value, so switching modes cannot change the
     // buffer shape -- which ForegroundFovAuto derives the weapon FOV from.
-    if (g_cfgResX > 0 && g_cfgResY > 0)
+    if (g_cfg.resX > 0 && g_cfg.resY > 0)
     {
-        WriteInt(path, kSecWin, "WindowedViewportX", g_cfgResX);
-        WriteInt(path, kSecWin, "WindowedViewportY", g_cfgResY);
-        WriteInt(path, kSecWin, "FullscreenViewportX", g_cfgResX);
-        WriteInt(path, kSecWin, "FullscreenViewportY", g_cfgResY);
+        WriteInt(path, kSecWin, "WindowedViewportX", g_cfg.resX);
+        WriteInt(path, kSecWin, "WindowedViewportY", g_cfg.resY);
+        WriteInt(path, kSecWin, "FullscreenViewportX", g_cfg.resX);
+        WriteInt(path, kSecWin, "FullscreenViewportY", g_cfg.resY);
     }
 
     // Fullscreen EXCLUSIVE is the only mode MEASURED to ignore the display
     // refresh cap -- windowed presents are throttled by the compositor to one
     // per composition no matter what SyncInterval says, which is why
     // DisableVSync=1 never helped. -1 leaves the game's own choice alone.
-    if (g_cfgFullscreen >= 0)
+    if (g_cfg.fullscreen >= 0)
         WritePrivateProfileStringA(kSecWin, "StartupFullscreen",
-            g_cfgFullscreen ? "True" : "False", path);
+            g_cfg.fullscreen ? "True" : "False", path);
 
     WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);   // flush cache
 

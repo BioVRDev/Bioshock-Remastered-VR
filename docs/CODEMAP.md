@@ -39,10 +39,15 @@ CalcView (game thread) ── camera pose + eye tag ──▶ [FIFO] ──▶ P
 
 ## Modules
 
-### `dllmain.cpp` (909) — entry, logging, config
-Defines ~130 `g_cfg*` globals, reads them from `BioshockVR.ini`, clamps, and
-emits the grouped startup echo that is the authority on what took effect.
-Consumers re-declare each global as a loose `extern` in their own file.
+### `dllmain.cpp` (297) — entry point and logging
+Finds a writable place for the log (harder than it sounds), and runs the init
+thread that loads config, syncs the game ini and arms the hooks.
+
+### `Config.h` / `Config.cpp` (206 / 494) — every setting, one struct
+138 settings in `struct VrConfig`, one instance `g_cfg`, read from
+`BioshockVR.ini` and echoed at startup. That echo is the authority on what
+actually took effect. Replaced 138 loose globals and 161 duplicated `extern`
+declarations across the consumers.
 → **`docs/modules/config.md`** when adding a setting or chasing a default mismatch.
 
 ### `Hooks.cpp` (825) — D3D11 acquisition and frame orchestration

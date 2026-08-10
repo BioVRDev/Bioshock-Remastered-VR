@@ -22,6 +22,7 @@
 #include <cstdio>
 
 #include "InputHook.h"      // HandPose, Input_GetHandPose, HAND_LEFT/RIGHT
+#include "Config.h"
 
 extern void LogFile(const char* msg);
 
@@ -32,15 +33,6 @@ extern bool GameState_Theater();
 extern bool Input_WeaponWheelHeld();
 
 // ini, all wired in dllmain.cpp
-extern int   g_cfgSwingEnabled;      // SwingEnabled
-extern float g_cfgSwingThreshold;    // SwingThreshold      m/s
-extern float g_cfgSwingRearm;        // SwingRearm          m/s
-extern int   g_cfgSwingCooldownMs;   // SwingCooldownMs
-extern int   g_cfgSwingPulseMs;      // SwingPulseMs
-extern int   g_cfgSwingDelayMs;      // SwingDelayMs
-extern int   g_cfgSwingLog;          // SwingLog
-extern float g_cfgSwingOutFrac;      // how much of the speed must be outward
-extern float g_cfgSwingTravel;       // metres of hand travel required
 
 static bool  g_armed = true;
 static bool  g_havePrev = false;
@@ -72,7 +64,7 @@ void Swing_Reset()
 
 void Swing_Update()
 {
-    if (!g_cfgSwingEnabled) { Swing_Reset(); return; }
+    if (!g_cfg.swingEnabled) { Swing_Reset(); return; }
 
     HandPose right = {};
     if (!Input_GetHandPose(HAND_RIGHT, &right) || !right.gripValid)
@@ -123,7 +115,7 @@ void Swing_Update()
     memcpy(g_prevRel, rel, sizeof(rel));
     g_prevTime = now;
 
-    if (speed <= g_cfgSwingRearm)
+    if (speed <= g_cfg.swingRearm)
     {
         g_armed = true;
         // Remember where the hand settled. Travel is measured from HERE, so a
@@ -158,7 +150,7 @@ void Swing_Update()
     }
 
     // Peak speed once a second, so "it never fires" becomes a number.
-    if (g_cfgSwingLog)
+    if (g_cfg.swingLog)
     {
         static float peak = 0.0f;
         static ULONGLONG lastPeak = 0;
@@ -167,7 +159,7 @@ void Swing_Update()
         {
             lastPeak = now;
             Log("  SWING: peak %.2f m/s (need %.2f)  out %+.2f  travel %.2f m  armed=%d slot=%d",
-                peak, g_cfgSwingThreshold, outward, travel,
+                peak, g_cfg.swingThreshold, outward, travel,
                 (int)g_armed, HandsProbe_WeaponSlot());
             peak = 0.0f;
         }
@@ -186,13 +178,13 @@ void Swing_Update()
         GameState_Theater() ||
         Input_WeaponWheelHeld();
 
-    const bool goodDir = (outward >= g_cfgSwingThreshold * g_cfgSwingOutFrac);
-    const bool goodTravel = (travel >= g_cfgSwingTravel);
+    const bool goodDir = (outward >= g_cfg.swingThreshold * g_cfg.swingOutFrac);
+    const bool goodTravel = (travel >= g_cfg.swingTravel);
 
-    if (blocked || !g_armed || speed < g_cfgSwingThreshold ||
+    if (blocked || !g_armed || speed < g_cfg.swingThreshold ||
         !goodDir || !goodTravel || now < g_cooldownUntil)
     {
-        if (g_cfgSwingLog && speed >= g_cfgSwingThreshold && blocked)
+        if (g_cfg.swingLog && speed >= g_cfg.swingThreshold && blocked)
         {
             static ULONGLONG lastBlock = 0;
             if (now - lastBlock > 1000)
@@ -207,18 +199,18 @@ void Swing_Update()
     }
 
     g_armed = false;
-    g_pulseBegin = now + (ULONGLONG)(g_cfgSwingDelayMs < 0 ? 0 : g_cfgSwingDelayMs);
-    g_pulseEnd = g_pulseBegin + (ULONGLONG)(g_cfgSwingPulseMs < 20 ? 20 : g_cfgSwingPulseMs);
-    g_cooldownUntil = now + (ULONGLONG)(g_cfgSwingCooldownMs < 0 ? 0 : g_cfgSwingCooldownMs);
+    g_pulseBegin = now + (ULONGLONG)(g_cfg.swingDelayMs < 0 ? 0 : g_cfg.swingDelayMs);
+    g_pulseEnd = g_pulseBegin + (ULONGLONG)(g_cfg.swingPulseMs < 20 ? 20 : g_cfg.swingPulseMs);
+    g_cooldownUntil = now + (ULONGLONG)(g_cfg.swingCooldownMs < 0 ? 0 : g_cfg.swingCooldownMs);
 
     if (!g_loggedFirst)
     {
         g_loggedFirst = true;
         Log(">>> SWING: first swing detected at %.2f m/s -- synthetic RT pulse for %d ms.",
-            speed, g_cfgSwingPulseMs);
+            speed, g_cfg.swingPulseMs);
         Log(">>> SWING: too sensitive? raise SwingThreshold. Missing swings? lower it.");
     }
-    else if (g_cfgSwingLog)
+    else if (g_cfg.swingLog)
     {
         Log("  SWING: %.2f m/s -> RT pulse", speed);
     }
@@ -226,7 +218,7 @@ void Swing_Update()
 
 bool Swing_RightTriggerActive()
 {
-    if (!g_cfgSwingEnabled || !g_pulseEnd) return false;
+    if (!g_cfg.swingEnabled || !g_pulseEnd) return false;
     const ULONGLONG now = GetTickCount64();
     return now >= g_pulseBegin && now < g_pulseEnd;
 }

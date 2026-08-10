@@ -1,41 +1,39 @@
 # Configuration
 
-`dllmain.cpp` (909) — entry point, logging, and the config system.
+`Config.h` (206) and `Config.cpp` (494).
 
-## How it works today
+## How it works
 
-Roughly **130 settings**. Each one exists in three places:
+**138 settings**, one struct. Each exists in three places, all now in two files:
 
-1. A non-static global in `dllmain.cpp`, with its compiled default
-   (`bool g_cfgHudRedirect = true;`).
-2. A read in the load block
-   (`g_cfgHudRedirect = CfgInt("HudRedirect", 1);`).
+1. A field in `struct VrConfig` (`Config.h`), carrying its compiled default:
+   `bool hudRedirect = true;`
+2. A read in `Config_Load()`: `g_cfg.hudRedirect = CfgBool("HudRedirect", true);`
 3. A line in the grouped startup echo.
 
-Consumers then re-declare each global as a loose `extern` at the top of their own
-`.cpp`:
+Consumers `#include "Config.h"` and say `g_cfg.hudRedirect`.
 
-| File | `extern` declarations |
-|---|---:|
-| `CameraHook.cpp` | 35 |
-| `InputHook.cpp` | 23 |
-| `DrawHook.cpp` | 23 |
-| `HandsProbe.cpp` | 22 |
-| `XRSession.cpp` | 19 |
-| `Swing.cpp` | 15 |
-| `Hooks.cpp` | 14 |
+**Field names are mechanical**: `g_cfgHudRedirect` → `g_cfg.hudRedirect`. Strip
+the prefix, lowercase the first letter, change nothing else. One exception,
+`g_cfg6DofHands` → `g_cfg.sixDofHands`, because an identifier cannot start with a
+digit.
 
-Adding a setting means editing three or four files, and nothing verifies the
-`extern` matches the definition across translation units.
+## What this replaced
 
-**This has already produced a live bug**: `ControllerLayout` is defined as `1`
-(`dllmain.cpp:130`) but read with a default of `0` (line 613). Two different
-answers to "what is the default". The shipped INI sets it explicitly, so only
-users whose INI lacks the key are affected — which is precisely the kind of
-defect that survives for a long time.
+138 loose globals in `dllmain.cpp`, re-declared as **161 `extern` lines** across
+the consumers — 35 in `CameraHook.cpp`, 23 each in `InputHook.cpp` and
+`DrawHook.cpp`, 22 in `HandsProbe.cpp`, 19 in `XRSession.cpp`. Adding a setting
+meant editing three or four files, and nothing checked that a consumer's `extern`
+matched the definition across translation units.
 
-`CameraHook.cpp` also carries a duplicate `extern int g_cfgModYaw;`. Legal C++,
-and harmless, but symptomatic.
+**It had produced a live bug.** `ControllerLayout` was defined as `1` while its
+INI read defaulted to `0` — two different answers to "what is the default",
+affecting any user whose INI lacked the key. Consolidating the declarations is
+what made it visible. It is now `1` in both places, and is the only intentional
+behaviour change in the refactor (`.planning/DECISIONS.md`).
+
+`dllmain.cpp` went from 909 lines to 297 and is now just the entry point, the
+log-path search, and the init thread.
 
 ## Readers
 
@@ -58,17 +56,26 @@ This echo is also the verification tool for the config refactor: capture it
 before and after, and diff. Identical output proves all ~130 settings resolve to
 the same values through the new structure.
 
-## Planned shape
+## How the refactor was verified
 
-- `Config.h` — `struct VrConfig { … };` grouped by subsystem, plus
-  `extern VrConfig g_cfg;`
-- `Config.cpp` — the `Cfg*` readers, `Config_Load()`, `Config_Echo()`
-- consumers — delete the `extern` block, `#include "Config.h"`,
-  `g_cfgHudRedirect` → `g_cfg.hudRedirect`
+Not by reading it. Three checks, all mechanical:
 
-Mechanical and type-checked by the compiler. It is also the project's first
-shared contract between modules, and the natural place to hang a later
-subsystem-lifecycle layer.
+1. **The key/default/range table.** Every `Cfg*("Key", default, lo, hi)` call was
+   extracted before and after and diffed with the rename normalised away. Across
+   all 114 reads, exactly **one line** differed — the intentional
+   `ControllerLayout` fix.
+2. **The echo.** All 72 `CfgEcho` lines byte-identical.
+3. **The count.** 138 struct fields, 138 original globals. Nothing lost or added.
+
+Plus a clean rebuild of the pre-refactor tree in a throwaway worktree to confirm
+the two pre-existing `C4244` warnings in `CameraHook.cpp` were not introduced by
+the change. **Zero new warnings.**
+
+The remaining runtime check is the startup echo from a real run — capture the
+`=== BioshockVR config ===` block and compare against the pre-refactor baseline.
+
+This struct is the project's first shared contract between modules, and the
+natural place to hang a later subsystem-lifecycle layer.
 
 ## Settings worth knowing
 

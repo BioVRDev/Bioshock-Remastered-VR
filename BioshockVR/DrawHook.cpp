@@ -53,27 +53,9 @@
 #include <cstdint>
 
 #include <MinHook.h>
+#include "Config.h"
 
 extern void  LogFile(const char* msg);
-extern bool  g_cfgDrawHook;
-extern char  g_cfgSuppressList[256];
-extern char  g_cfgMenuList[256];
-extern char  g_cfgAnchorList[256];
-extern char  g_cfgIsolateList[256];
-extern char  g_cfgWeaponList[256];
-extern float g_cfgWeaponScale;
-extern char  g_cfgHudList[256];
-extern float g_cfgHudScale;
-extern int   g_cfgMenuMaxIndexed;
-extern int   g_cfgMenuMaxDraw;
-extern bool  g_cfgHookInstanced;
-extern bool  g_cfgHudRedirect;
-extern char  g_cfgArrowList[256];
-extern float g_cfgArrowScale;
-extern float g_cfgArrowX;
-extern float g_cfgArrowY;
-extern bool g_cfgHudAlphaFix;
-extern int g_cfgHudDsvMode;
 
 static void Log(const char* fmt, ...)
 {
@@ -917,8 +899,6 @@ static unsigned long long g_drawSum = 0, g_idxSum = 0, g_statFrames = 0;
 static bool     g_gameplayConfirmed = false;
 static int      g_gameplayRun = 0;
 
-extern int g_cfgHideCutsceneBars;
-extern int g_cfgCutsceneBarVerts;
 bool DrawHook_MenuUp() { return g_menuUp; }
 
 // ---- ANCHOR list ----------------------------------------------------------
@@ -980,7 +960,6 @@ static void SortByPersistence(int* order)
 // listed weapon slots is held, so guns hide the arms while the wrench and the
 // plasmids keep them. Numpad 1 still works -- either source can arm the list,
 // and neither overrides the other.
-extern int g_cfgHideArmsSlot[9];   // dllmain.cpp
 int HandsProbe_WeaponSlot();       // HandsProbe.cpp
 bool GameState_MenuUp();           // GameState.cpp
 bool GameState_Paused();           // GameState.cpp
@@ -988,7 +967,7 @@ bool GameState_Paused();           // GameState.cpp
 static bool ArmsAutoHidden()
 {
     const int s = HandsProbe_WeaponSlot();
-    return (s >= 0 && s <= 8) && g_cfgHideArmsSlot[s] != 0;
+    return (s >= 0 && s <= 8) && g_cfg.hideArmsSlot[s] != 0;
 }
 
 static bool IsSuppressed(unsigned count, int kind, ID3D11DeviceContext* ctx)
@@ -1026,19 +1005,19 @@ static float ViewportScaleFor(unsigned count, int kind, ID3D11DeviceContext* ctx
     for (int i = 0; i < g_arrowN; ++i)
         if (RefMatches(g_arrow[i], count, kind, ctx))
         {
-            g_vpDX = g_cfgArrowX;
-            g_vpDY = g_cfgArrowY;
-            return (g_cfgArrowScale > 0.0f && g_cfgArrowScale <= 4.0f)
-                ? g_cfgArrowScale : 1.0f;
+            g_vpDX = g_cfg.arrowX;
+            g_vpDY = g_cfg.arrowY;
+            return (g_cfg.arrowScale > 0.0f && g_cfg.arrowScale <= 4.0f)
+                ? g_cfg.arrowScale : 1.0f;
         }
 
-    if (g_cfgWeaponScale > 0.0f && g_cfgWeaponScale <= 4.0f)
+    if (g_cfg.weaponScale > 0.0f && g_cfg.weaponScale <= 4.0f)
         for (int i = 0; i < g_weaponN; ++i)
-            if (RefMatches(g_weapon[i], count, kind, ctx)) return g_cfgWeaponScale;
+            if (RefMatches(g_weapon[i], count, kind, ctx)) return g_cfg.weaponScale;
 
-    if (g_cfgHudScale > 0.0f && g_cfgHudScale <= 4.0f)
+    if (g_cfg.hudScale > 0.0f && g_cfg.hudScale <= 4.0f)
         for (int i = 0; i < g_hudN; ++i)
-            if (RefMatches(g_hud[i], count, kind, ctx)) return g_cfgHudScale;
+            if (RefMatches(g_hud[i], count, kind, ctx)) return g_cfg.hudScale;
 
     return 0.0f;
 }
@@ -1393,7 +1372,7 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                 // CUTSCENE BARS. The 29 matters: health/EVE fills are also
                 // textureless GameSWF draws, at 5 vertices.
                 if (kind == KIND_DRAW &&
-                    count == (unsigned)g_cfgCutsceneBarVerts &&
+                    count == (unsigned)g_cfg.cutsceneBarVerts &&
                     PSSrv0Res(ctx) == nullptr)
                 {
                     g_cutsceneBarsUntil = GetTickCount() + 250;
@@ -1404,10 +1383,10 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                     {
                         lastBarLog = nowMs;
                         Log(">>> CUTSCENE BARS: textureless %u-vertex GameSWF draw%s",
-                            count, g_cfgHideCutsceneBars ? " -- SKIPPED" : "");
+                            count, g_cfg.hideCutsceneBars ? " -- SKIPPED" : "");
                     }
 
-                    if (g_cfgHideCutsceneBars) return true;
+                    if (g_cfg.hideCutsceneBars) return true;
                 }
 
                 if (kind >= 0 && kind <= 4) ++g_postByKind[kind];
@@ -1431,15 +1410,15 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                     // things the redirect changes. If their mask is built before
                     // the composite it lives in the GAME's stencil, not ours.
                     ID3D11DepthStencilView* useDsv =
-                        (g_cfgHudDsvMode == 0) ? nullptr :
-                        (g_cfgHudDsvMode == 2) ? g_curDSV : g_hudDSV;
+                        (g_cfg.hudDsvMode == 0) ? nullptr :
+                        (g_cfg.hudDsvMode == 2) ? g_curDSV : g_hudDSV;
                     g_origOMSetRT(ctx, 1, &g_hudRTV, useDsv);
 
                     ID3D11BlendState* bs = nullptr;
                     FLOAT factor[4] = {}; UINT sampleMask = 0xFFFFFFFF;
                     ctx->OMGetBlendState(&bs, factor, &sampleMask);
                     ID3D11BlendState* fixedBs = CorrectedBlend(ctx, bs);
-                    if (g_cfgHudAlphaFix && fixedBs && fixedBs != bs)
+                    if (g_cfg.hudAlphaFix && fixedBs && fixedBs != bs)
                         ctx->OMSetBlendState(fixedBs, factor, sampleMask);
                     if (bs) bs->Release();
 
@@ -1803,19 +1782,19 @@ void DrawHook_EndFrame()
     }
 
     // Structural test: a frame with almost no indexed geometry is a menu.
-    if (g_cfgMenuMaxIndexed > 0 &&
-        g_indexedThisFrame <= (unsigned)g_cfgMenuMaxIndexed)
+    if (g_cfg.menuMaxIndexed > 0 &&
+        g_indexedThisFrame <= (unsigned)g_cfg.menuMaxIndexed)
     {
         all = true;
         if (!whyBuf[0])
             _snprintf_s(whyBuf, sizeof(whyBuf), _TRUNCATE,
                 "MenuMaxIndexed (%u indexed <= %d)",
-                g_indexedThisFrame, g_cfgMenuMaxIndexed);
+                g_indexedThisFrame, g_cfg.menuMaxIndexed);
     }
 
     // ...and menus drawn over a live world are the low-Draw-call frames.
-    if (g_cfgMenuMaxDraw > 0 &&
-        g_drawThisFrame <= (unsigned)g_cfgMenuMaxDraw) all = true;
+    if (g_cfg.menuMaxDraw > 0 &&
+        g_drawThisFrame <= (unsigned)g_cfg.menuMaxDraw) all = true;
 
     // Positive confirmation of gameplay, needed before anything is rescaled.
     // Both counts must be comfortably ABOVE the menu thresholds, sustained for
@@ -1823,8 +1802,8 @@ void DrawHook_EndFrame()
     // flickering across a threshold can therefore never enable scaling.
     {
         const bool looksLikePlay =
-            (g_cfgMenuMaxIndexed <= 0 || g_indexedThisFrame > (unsigned)g_cfgMenuMaxIndexed * 2) &&
-            (g_cfgMenuMaxDraw <= 0 || g_drawThisFrame > (unsigned)g_cfgMenuMaxDraw * 2);
+            (g_cfg.menuMaxIndexed <= 0 || g_indexedThisFrame > (unsigned)g_cfg.menuMaxIndexed * 2) &&
+            (g_cfg.menuMaxDraw <= 0 || g_drawThisFrame > (unsigned)g_cfg.menuMaxDraw * 2);
 
         if (looksLikePlay && !all) { if (g_gameplayRun < 30) ++g_gameplayRun; }
         else { g_gameplayRun = 0; }
@@ -1948,7 +1927,7 @@ static int ParseCounts(const char* s, CountRef* out, int maxOut)
 
 static void ParseConfigLists()
 {
-    g_suppressCount = ParseCounts(g_cfgSuppressList, g_suppress, 32);
+    g_suppressCount = ParseCounts(g_cfg.suppressList, g_suppress, 32);
     if (g_suppressCount)
     {
         Log("drawhook: %d suppress counts loaded (Numpad 1 to enable):",
@@ -1963,7 +1942,7 @@ static void ParseConfigLists()
         Log("drawhook: suppress list EMPTY. Observing only, nothing hidden.");
     }
 
-    g_isoN = ParseCounts(g_cfgIsolateList, g_isoList, 32);
+    g_isoN = ParseCounts(g_cfg.isolateList, g_isoList, 32);
     if (g_isoN)
     {
         Log("drawhook: %d ISOLATE candidates (Numpad - to step, Numpad / off):", g_isoN);
@@ -1976,36 +1955,36 @@ static void ParseConfigLists()
         Log("drawhook: isolate list empty -- will auto-build from the live table.");
     }
 
-    g_weaponN = ParseCounts(g_cfgWeaponList, g_weapon, 8);
-    if (g_weaponN && g_cfgWeaponScale > 0.0f)
+    g_weaponN = ParseCounts(g_cfg.weaponList, g_weapon, 8);
+    if (g_weaponN && g_cfg.weaponScale > 0.0f)
     {
         Log("drawhook: %d weapon draw(s), viewport scale %.3f",
-            g_weaponN, g_cfgWeaponScale);
+            g_weaponN, g_cfg.weaponScale);
         for (int i = 0; i < g_weaponN; ++i)
             Log("   weapon count %u %s", g_weapon[i].count, KindName(g_weapon[i].kind));
     }
     else Log("drawhook: weapon FOV correction OFF.");
 
-    g_hudN = ParseCounts(g_cfgHudList, g_hud, 8);
-    if (g_hudN && g_cfgHudScale > 0.0f)
+    g_hudN = ParseCounts(g_cfg.hudList, g_hud, 8);
+    if (g_hudN && g_cfg.hudScale > 0.0f)
     {
         Log("drawhook: %d HUD draw(s), viewport scale %.3f (pulls corners inward)",
-            g_hudN, g_cfgHudScale);
+            g_hudN, g_cfg.hudScale);
         for (int i = 0; i < g_hudN; ++i)
             Log("   hud count %u %s", g_hud[i].count, KindName(g_hud[i].kind));
     }
     else Log("drawhook: HUD recentring OFF.");
 
-    Log("drawhook: MenuMaxIndexed = %d %s", g_cfgMenuMaxIndexed,
-        g_cfgMenuMaxIndexed > 0 ? "(low-geometry frames == menu)" : "(off)");
-    Log("drawhook: MenuMaxDraw    = %d %s", g_cfgMenuMaxDraw,
-        g_cfgMenuMaxDraw > 0 ? "(few Draw calls == in-game menu)" : "(off)");
-    g_arrowN = ParseCounts(g_cfgArrowList, g_arrow, 8);
+    Log("drawhook: MenuMaxIndexed = %d %s", g_cfg.menuMaxIndexed,
+        g_cfg.menuMaxIndexed > 0 ? "(low-geometry frames == menu)" : "(off)");
+    Log("drawhook: MenuMaxDraw    = %d %s", g_cfg.menuMaxDraw,
+        g_cfg.menuMaxDraw > 0 ? "(few Draw calls == in-game menu)" : "(off)");
+    g_arrowN = ParseCounts(g_cfg.arrowList, g_arrow, 8);
 
     // Split MenuIndexCounts on ';' into OR-groups, each with AND semantics.
     g_menuGroupN = 0;
     {
-        const char* s = g_cfgMenuList;
+        const char* s = g_cfg.menuList;
         while (*s && g_menuGroupN < kMaxMenuGroups)
         {
             char part[128];
@@ -2042,7 +2021,7 @@ static void ParseConfigLists()
     // that off-by-one cost real debugging time.
     g_anchorGroupN = 0;
     {
-        const char* s = g_cfgAnchorList;
+        const char* s = g_cfg.anchorList;
         while (*s && g_anchorGroupN < kMaxMenuGroups)
         {
             char part[128];
@@ -2077,7 +2056,7 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
     void* pDrawIndexedInstanced, void* pDrawInstanced,
     void* pOMSetRenderTargets)
 {
-    if (!g_cfgDrawHook)
+    if (!g_cfg.drawHook)
     {
         Log("drawhook: DISABLED by ini (EnableDrawHook=0).");
         return false;
@@ -2091,9 +2070,9 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
     ParseConfigLists();
 
     // Home still toggles it live; the ini only decides where it starts.
-    g_hudRedirect = g_cfgHudRedirect;
+    g_hudRedirect = g_cfg.hudRedirect;
     Log("drawhook: HUD redirect starts %s (HudRedirect=%d)",
-        g_hudRedirect ? "ON" : "off", (int)g_cfgHudRedirect);
+        g_hudRedirect ? "ON" : "off", (int)g_cfg.hudRedirect);
 
     MH_STATUS s = MH_CreateHook(pDrawIndexed, &hkDrawIndexed,
         (LPVOID*)&g_origDrawIndexed);
@@ -2126,7 +2105,7 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
     // The instanced pair is NOT fatal if it fails -- we still fingerprint the
     // other two. But something on screen every frame that appears in no bucket
     // is most likely coming through here, so log loudly either way.
-    if (!g_cfgHookInstanced)
+    if (!g_cfg.hookInstanced)
     {
         Log("drawhook: instanced entry points NOT hooked (HookInstanced=0).");
         Log("drawhook: not needed -- the cursor turned out to be 5 Draw.");
@@ -2139,9 +2118,9 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
         g_addrDrawIndexedInstanced = pDrawIndexedInstanced;
         Log("drawhook: DrawIndexedInstanced hooked.");
     }
-    else if (g_cfgHookInstanced) Log("!!! drawhook: DrawIndexedInstanced NOT hooked.");
+    else if (g_cfg.hookInstanced) Log("!!! drawhook: DrawIndexedInstanced NOT hooked.");
 
-    if (g_cfgHookInstanced && pDrawInstanced &&
+    if (g_cfg.hookInstanced && pDrawInstanced &&
         MH_CreateHook(pDrawInstanced, &hkDrawInstanced,
             (LPVOID*)&g_origDrawInstanced) == MH_OK &&
         MH_EnableHook(pDrawInstanced) == MH_OK)
@@ -2149,7 +2128,7 @@ bool DrawHook_Install(void* pDrawIndexed, void* pDraw,
         g_addrDrawInstanced = pDrawInstanced;
         Log("drawhook: DrawInstanced hooked.");
     }
-    else if (g_cfgHookInstanced) Log("!!! drawhook: DrawInstanced NOT hooked.");
+    else if (g_cfg.hookInstanced) Log("!!! drawhook: DrawInstanced NOT hooked.");
 
     Log(">>> DRAW HOOK ARMED. Numpad 3 = dump, Numpad * = clear, Numpad 1 = suppress,");
     Log(">>> Numpad - = isolate next candidate, Numpad / = isolate off.");
