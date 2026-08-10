@@ -98,6 +98,23 @@ static bool ScriptedQol()
     return g_cfg.scriptedQol && GameState_ScriptedAnim();
 }
 
+// M7-S6: A WIDER WINDOW, AND ONLY FOR THE AIM.
+//
+// The aim write must also stand down while the game is FORCE-MOVING the player,
+// which happens BEFORE the scripted animation starts and for the whole of a
+// bathysphere boarding. Writing Controller.Rotation through that window fights
+// the interpolation -- the measured entry stall.
+//
+// DELIBERATELY SEPARATE FROM ScriptedQol(). A forced move is not an animation,
+// so the arms and hands must keep using the motion signal; making them follow
+// this would show them during boarding, when nothing is animating. Two
+// questions, two predicates, and they must not be merged.
+static bool ScriptedAimReleased()
+{
+    return g_cfg.scriptedQol &&
+        (GameState_ScriptedAnim() || GameState_ForcedMove());
+}
+
 // One predicate, four call sites. Cheap: a cached pointer and two strcmps.
 bool DrawHook_NoWorldRender();   // DrawHook.cpp
 
@@ -951,7 +968,7 @@ void CameraHook_LateHandsWrite()
     // so without invalidating it we would keep re-applying the last pre-cutscene
     // wrist angle every frame, pinning the hands at a stale rotation for the
     // whole sequence. Clearing the cache is what hands the rig back to the game.
-    if (ScriptedQol()) { g_hwValid = false; return; }
+    if (ScriptedAimReleased()) { g_hwValid = false; return; }
 
     if (GameState_Paused()) return;   // render-thread half of the same freeze
 
@@ -1926,7 +1943,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             //
             // So we still enter the block and still follow the game's rotation.
             // Only the write back into Controller.Rotation is suppressed.
-            const bool scriptedAim = ScriptedQol();
+            const bool scriptedAim = ScriptedAimReleased();
 
             // Re-arm on the way out, or the base is stale by however far the
             // sequence turned you and the view snaps. Same reason the cutscene

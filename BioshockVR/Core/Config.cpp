@@ -288,7 +288,7 @@ void Config_Load(const char* iniPath)
     g_cfg.snapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
     g_cfg.snapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
     g_cfg.freezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
-    g_cfg.freezeGameplayRot = CfgIntRange("FreezeGameplayRotation", 0, 0, 1);
+    g_cfg.freezeGameplayRot = CfgIntRange("FreezeGameplayRotation", 1, 0, 1);
     g_cfg.scriptedRotFollow = CfgIntRange("ScriptedRotationFollow", 1, 0, 1);
     g_cfg.scriptedHandsMotion =
         CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
@@ -398,7 +398,8 @@ void Config_Load(const char* iniPath)
     CfgEcho("ScriptedEventQol", "%d  %s", (int)g_cfg.scriptedQol,
         g_cfg.scriptedQol ? "(arms shown, hands and aim released)" : "(off)");
     CfgEcho("FreezeGameplayRotation", "%d  %s", g_cfg.freezeGameplayRot,
-        g_cfg.freezeGameplayRot ? "(bathyspheres excluded via bCannotFall)"
+        g_cfg.freezeGameplayRot
+        ? "(no shake/kick/auto-pan; scripted, forced-move and bathysphere free)"
         : "(off)");
     CfgEcho("ScriptedRotationFollow", "%d  %s", g_cfg.scriptedRotFollow,
         g_cfg.scriptedRotFollow ? "(cutscenes turn you)"

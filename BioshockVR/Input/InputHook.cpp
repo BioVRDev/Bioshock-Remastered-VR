@@ -55,11 +55,15 @@ bool DrawHook_MenuUp();              // DrawHook.cpp
 bool GameState_Paused();             // GameState.cpp
 bool GameState_Theater();            // GameState.cpp
 bool GameState_ScriptedAnim();       // GameState.cpp
+bool GameState_ForcedMove();         // GameState.cpp
 
-// M7-S2. See CameraHook's ScriptedQol() for the measurement behind this.
+// M7-S2/S6. Mirrors CameraHook's ScriptedAimReleased(): the turn path must be
+// handed back for the whole window in which the mod is not writing the aim
+// field, which includes the forced move BEFORE a sequence starts.
 static bool ScriptedQol()
 {
-    return g_cfg.scriptedQol && GameState_ScriptedAnim();
+    return g_cfg.scriptedQol &&
+        (GameState_ScriptedAnim() || GameState_ForcedMove());
 }
 
 static void Log(const char* fmt, ...)

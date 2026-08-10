@@ -191,12 +191,12 @@ struct VrConfig
     int   snapTurn = 0;
     float snapTurnDeg = 45.0f;
     int   freezeGameRot = 0;   // discard the game's pitch and roll (shake/kick)
-    // M7-S3, TEMPORARY: discards the game's rotation during ordinary play only
-    // (shake, kick, auto-pan), gated on the stick being centred so your own
-    // turning survives without ModYaw. KNOWN GAP: a bathysphere ride is not a
-    // scripted animation, so it freezes there too. Default 0 for that reason;
-    // see the banner in CameraHook.cpp and the probe queued in ROADMAP.md.
-    int   freezeGameplayRot = 0;
+    // M7-S6: discards the game's rotation during ordinary play only -- shake,
+    // weapon kick, the auto-pan toward enemies. Gated on the stick being centred
+    // so your own turning survives without ModYaw, and excluded during scripted
+    // animations, FORCED MOVES and BATHYSPHERE RIDES, all three measured. Now on
+    // by default; the exclusions it was waiting for exist.
+    int   freezeGameplayRot = 1;
     // COMFORT. 1 = the scripted camera turns you to face the action (default,
     // and what makes cutscenes read correctly). 0 = the view holds still and you
     // turn yourself with the right stick, for people the automatic motion makes

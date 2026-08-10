@@ -99,6 +99,19 @@ bool GameState_ScriptedAnim();
 // along with ordinary play and the camera would stop following the sphere.
 bool GameState_Bathysphere();
 
+// The game is interpolating the player into position and heading --
+// StartForcePlayerMove, which runs BEFORE a scripted animation begins and for
+// the whole of a bathysphere boarding. MEASURED at controller+0x9E0.
+//
+// Anything that writes Controller.Rotation must stand down while this is true,
+// or it fights the interpolation: that was the reported entry stall, where the
+// controller dragged the view for 1-6 seconds and the move timed out short of
+// its target.
+//
+// NOT an animation. Arms and hands must NOT follow this -- they use the motion
+// signal, which is a different question.
+bool GameState_ForcedMove();
+
 void GameState_Reset();
 bool GameState_Cutscene();
 bool GameState_InGame();

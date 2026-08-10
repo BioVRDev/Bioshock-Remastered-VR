@@ -472,6 +472,7 @@ static void ForcedMoveTick(const uint8_t* controller);
 static void ForcedMoveReset();
 static void ScriptedAnimTick();
 static void BathysphereTick();
+static void ForcedMoveFlagTick(const uint8_t* controller);
 
 // ---- WORLD FOV CEILING ---------------------------------------------------
 // MEASURED: a vita chamber respawn drives controller+0x45C from 75 to 139.9,
@@ -956,6 +957,9 @@ void GameState_Observe(void* playerController)
 
     // M7-S4. Bathysphere mode, so the gameplay rotation freeze can exclude it.
     BathysphereTick();
+
+    // M7-S6. The forced-move window -- the entry stall.
+    ForcedMoveFlagTick((const uint8_t*)playerController);
 
     // M7-S1. Differential probe for a scripted-event flag. Read-only, gates
     // nothing, and default-off -- it is the only periodic diff in the mod.
@@ -2078,6 +2082,66 @@ bool GameState_ScriptedAnim() { return g_scriptedAnim != 0; }
 // this has been seen to work in a log.
 // ============================================================================
 
+// ============================================================================
+// M7-S6: THE FORCED-MOVE WINDOW -- the entry stall, measured
+//
+// ShockPlayerController pushes NullInput and then calls StartForcePlayerMove,
+// which INTERPOLATES the player into position and heading BEFORE the scripted
+// animation begins. Through that whole window the hands flag is still false, so
+// the mod kept writing Controller.Rotation and fought the interpolation. That
+// is the reported stall: cannot move, weapon still up, the controller dragging
+// the view, audio desyncing by the same amount, and a bathysphere leaving you
+// off-centre because the move timed out before reaching its target.
+//
+// controller+0x9E0, MEASURED M7-S5 by differential probe. It could not be
+// computed: ShockPlayerController's fields begin at the end of PlayerController
+// and that size is unknown. Correlated across three events whose durations
+// differ by 24x, each matching the tester's independent report -- 1.0s
+// ("went straight in"), 0.24s (instant), 5.75s ("the slewing"). The flag drops
+// 0.09s after the scripted animation begins.
+//
+// VERIFIED BY SHAPE every read: a lone bool is exactly 0 or 1. Anything else
+// means a stale pointer or a wrong offset -- which is not hypothetical, the
+// bathysphere read above was caught doing exactly that.
+// ============================================================================
+
+static const size_t kForcedMoveOff = 0x9E0;
+static long g_forcedMove = 0;
+
+bool GameState_ForcedMove() { return g_forcedMove != 0; }
+
+static void ForcedMoveFlagTick(const uint8_t* controller)
+{
+    if (!controller || !Readable(controller + kForcedMoveOff, 4))
+    {
+        if (g_forcedMove) _InterlockedExchange(&g_forcedMove, 0);
+        return;
+    }
+
+    const uint32_t v = *(const uint32_t*)(controller + kForcedMoveOff);
+    if (v > 1)
+    {
+        static bool s_warned = false;
+        if (!s_warned)
+        {
+            s_warned = true;
+            Log(">>> FORCEDMOVE: +0x%03X reads %08X -- not a bool. Refusing to "
+                "trust it.", (unsigned)kForcedMoveOff, v);
+        }
+        if (g_forcedMove) _InterlockedExchange(&g_forcedMove, 0);
+        return;
+    }
+
+    const long want = (long)v;
+    if (want != g_forcedMove)
+    {
+        _InterlockedExchange(&g_forcedMove, want);
+        Log(">>> FORCEDMOVE: %s", want
+            ? "*** the game is moving the player -- aim released ***"
+            : "--- forced move done ---");
+    }
+}
+
 static const size_t kPawnFlagsB = 0x464;
 static const uint32_t kCannotFallBit = 1u << 1;
 static const uint32_t kHavokCapsuleBit = 1u << 2;
@@ -2096,7 +2160,33 @@ static void BathysphereTick()
     }
 
     const uint32_t b = *(const uint32_t*)(pawn + kPawnFlagsB);
-    const long want = (b & kCannotFallBit) ? 1 : 0;
+
+    // ---- M7-S6: GATE ON THE ORACLE, DO NOT JUST PRINT IT ------------------
+    // MEASURED: this fired a false positive. g_pawn briefly pointed at
+    // something that was not a pawn, the DWORD read 0x32313936 (ASCII), bit 1
+    // of that garbage happened to be set, and BATHYSPHERE MODE ON was reported
+    // 26 seconds before the real one.
+    //
+    // The evidence to reject it was ALREADY ON THE LINE: capsule=1. The same
+    // engine call that sets bCannotFall CLEARS the capsule bit, so a genuine
+    // ride can never show both. The check was being logged and gated on
+    // nothing. Requiring both halves makes the oracle load-bearing, which is
+    // the whole point of having one.
+    const bool cannotFall = (b & kCannotFallBit) != 0;
+    const bool capsuleOn = (b & kHavokCapsuleBit) != 0;
+    const long want = (cannotFall && !capsuleOn) ? 1 : 0;
+
+    if (cannotFall && capsuleOn)
+    {
+        static DWORD s_lastRej = 0;
+        const DWORD nowRej = GetTickCount();
+        if (nowRej - s_lastRej >= 5000)
+        {
+            s_lastRej = nowRej;
+            Log(">>> BATHY: rejected -- bCannotFall set but capsule ALSO set "
+                "(%08X). Not a ride; the pawn pointer or offset is off.", b);
+        }
+    }
 
     // Sanity, once per pawn: in ordinary play the capsule bit should be SET and
     // bCannotFall clear. If that does not hold the walk is shifted and this
