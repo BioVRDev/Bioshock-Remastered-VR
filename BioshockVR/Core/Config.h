@@ -50,6 +50,10 @@ struct VrConfig
     bool  pairLock = true;      // render both eyes from the same instant
     float heightOffset = 0.0f;  // CameraHeightOffset, cm, +up
     bool  cutsceneTheater = false;  // show cutscenes on the flat quad
+    bool  scriptedQol = false;  // M7-S2: during a scripted hand animation,
+                                // unhide the arms, stop driving the hands from
+                                // the controllers, and stop writing the aim
+                                // field. Head look is untouched.
     int   deltaClamp = 0;           // 0 off, 1 player world, 2 BOTH worlds
 
     // weapon & arm rendering -----------------------------------------------------
@@ -150,6 +154,10 @@ struct VrConfig
     // debug / probe --------------------------------------------------------------
     bool  drawHook = true;
     bool  gameState = true;     // read the game's own input context
+    bool  nativeScan = true;    // M3-S1: locate the native property accessors
+    bool  forcedMoveProbe = false;  // M7-S1: diff the controller/pawn for a
+                                    // scripted-event flag. A periodic diff, so
+                                    // unlike nativeScan this ships OFF.
     bool  hookInstanced = false;
     char  suppressList[256] = {};
     char  isolateList[256] = {};
@@ -182,6 +190,20 @@ struct VrConfig
     int   snapTurn = 0;
     float snapTurnDeg = 45.0f;
     int   freezeGameRot = 0;   // discard the game's pitch and roll (shake/kick)
+    // M7-S3, TEMPORARY: discards the game's rotation during ordinary play only
+    // (shake, kick, auto-pan), gated on the stick being centred so your own
+    // turning survives without ModYaw. KNOWN GAP: a bathysphere ride is not a
+    // scripted animation, so it freezes there too. Default 0 for that reason;
+    // see the banner in CameraHook.cpp and the probe queued in ROADMAP.md.
+    int   freezeGameplayRot = 0;
+    // COMFORT. 1 = the scripted camera turns you to face the action (default,
+    // and what makes cutscenes read correctly). 0 = the view holds still and you
+    // turn yourself with the right stick, for people the automatic motion makes
+    // sick.
+    int   scriptedRotFollow = 1;
+    // How much rig motion counts as "animating" for the scripted arm gate.
+    // Calibrated from the logged raw/smoothed values -- see ScriptedHandsMoving.
+    float scriptedHandsMotion = 0.02f;
     int   modYaw = 0;          // mod owns yaw: stick turns g_aimBase directly
     float modYawSpeed = 90.0f; // deg/sec at full deflection
     int   forceFocus = 1;   // ForceWindowFocus

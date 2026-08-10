@@ -18,7 +18,7 @@ outcome is decided, not when the idea feels done. Cards are in
 | ✅ | **M1-S1** pin `PlayerController.myHUD` | diagnostic | **`+0x71C`**, back-reference `+0x470`, stable. Layout in `ENGINE-MAP.md` |
 | ✅ | **M1-S2** read `bHideHUD`, prove it tracks cinematic mode | diagnostic | **NO** — flat across 8 marked boundaries. Grave 1 |
 | ⛔ | **M1-S3** harden into `EngineBridge` | — | **skipped**: S2 returned no, nothing to harden |
-| ☐ | **M3-S1** locate `GetPropertyTextByName` | diagnostic | an address, logged; **call nothing** |
+| ✅ | **M3-S1** locate `GetPropertyTextByName` | diagnostic | **YES** — rva `0x7346E0` (Steam), all four accessors, stable across two launches. `enginebridge.md` |
 | ☐ | **M3-S2** call it on `Health` | diagnostic | the value **tracks damage** — bridge proven, or not |
 | ☐ | **M3-S3** read the controller's `LastPlayerInputContext` | diagnostic | `kContexts` finally gets an input |
 | ☐ | **M2-S1** StateBus | refactor | `GameState_Cutscene()` returns the real signal; no behaviour change |
@@ -33,13 +33,17 @@ there is not one yet. M3 is the card set in flight; its S2 is the new pivotal
 test, and it is the one session in this arc whose failure mode is a **crash**
 rather than a wrong number, so it ships default-off behind an INI switch.
 
+**M3-S1 passed on 2026-08-10.** The addresses are measured and stable, so the
+question is no longer *can we find live engine state* but *can we invoke it
+without crashing*. S2 inherits one correction: the symbol is `exec`-style and
+takes an `FFrame`, not a string — there is no direct call to make. Read the ⚠ box
+on its card before starting.
+
 **The lesson M1 bought, and it applies to every remaining card:** the corpus
 tells you what the script *can* do, not what the shipped game *does*. Findings 2
 and 3 are still predictions that owe a live read.
 
 ### Later milestones — stubs, promoted to cards when they open
-
-**M4 — QOL the signal unlocks.** S1: arms/sleeves visible only during cutscenes.
 
 **M4 — QOL the signal unlocks.** S1: arms/sleeves visible only during cutscenes.
 S2: right-stick look during scripted sequences. S3: settle the aim/movement
@@ -48,6 +52,24 @@ weapon socket? **Either answer is worth having.**
 
 **M5 — metadata walk (Tier 2).** `docs/proposals/ue2-reflection-bridge.md`,
 unchanged. Opens only if M3 fails.
+
+**M6 — the hand rig.** Roomscale, left-handed mode, detached hands and
+two-handed grip — researched 2026-08-10 in
+**`docs/proposals/vr-features-research.md`**. The finding that shapes the
+milestone: those four asks need only **two** enablers, not four.
+
+- Three of them (handedness, detached hands, two-handed grip) are one mechanism
+  — a **rigid bone-cluster transform**, applied late, on the bone array
+  `ArmHide` already writes to. `docs/modules/hands.md` § *Future direction*
+  predicted this before the features were asked for.
+- **Roomscale is downstream of M3-S2.** It needs `AActor::Move` — swept and
+  collision-checked — and the symbol is confirmed present in the exe. So S2
+  should be built with a second caller in mind; that raises its value well
+  above cutscene detection.
+- Two lottery tickets worth buying first, one console command each:
+  `set Pistol AttachBone L_Grip` (may collapse left-handed mode to nothing) and
+  confirming `Exec` reaches `PlayerController` exec functions (gates a free QOL
+  pass — quick save/load on a controller chord).
 
 ---
 
@@ -73,10 +95,51 @@ this project's most expensively-learned rule.
 
 ---
 
+## Next — the bathysphere probe, requested 2026-08-10
+
+**`FreezeGameplayRotation` ships with a known gap and the tester wants it closed
+properly.** It discards the game's rotation during ordinary play — shake, kick,
+the auto-pan toward enemies — but **a bathysphere ride is not a scripted
+animation**, so it freezes those too and the ride's camera stops following the
+sphere. It is default 0 for that reason and is marked `TEMPORARY` at the freeze
+site in `Camera/CameraHook.cpp`.
+
+**Excluding it by level name is not possible today** and was considered and
+rejected: the mod does not know what map it is on. `g_level` is used only for
+`Level.Pauser`, so this would be a fresh offset hunt on `LevelInfo` — the same
+cost as the real fix, with none of the reuse.
+
+**The real fix, already identified in the corpus.**
+`Scripting`'s `ActionEnableBathysphereModeForPlayer` sets three fields on
+`ShockPlayer` for the duration of a ride:
+
+```unrealscript
+Player.bUseHavokRigidBodyCapsuleCollisions = false;
+Player.bUseHavokPhantomCollisions          = false;
+Player.bCannotFall                         = true;
+```
+
+**`bCannotFall` is the signal** — a plain bool, set on entry and cleared on exit,
+Tier 0, no native call. Find its offset the way `hands+0x594` was found: predict
+by declaration order from a *proven* anchor, then validate live. Then AND it into
+the freeze condition and the switch can default on.
+
+Worth doing in the same session: the Little Sister **rescue** and the **EVE
+injection** are still undetected — both are Hands *states*
+(`ExorcisingGatherer`, `InjectingEve`) rather than scripted sequences, measured
+in M7-S1. Reading the Hands state would close both plus the bathysphere in one
+mechanism, but it needs either the native call (M3-S2) or a state-frame walk.
+
 ## Next — cheap wins with real user impact
 
 These are small, independent, and none depends on cutscene detection.
 
+0. **Two one-command probes**, both from `docs/proposals/vr-features-research.md`,
+   both worth doing in the first minute of any play session:
+   `set Pistol AttachBone L_Grip` (does the rig have a left grip bone?) and any
+   `PlayerController` exec — e.g. `ForcePause` — to confirm `UGameEngine::Exec`
+   reaches them. The second gates quick-save-on-a-chord, which is the single
+   highest-value QOL item found.
 1. **Fill `AnchorIndexCounts`.** The "What is this?" screen does not resize with
    the HUD because the list is empty. Bring the screen up, Numpad `*`, Numpad `3`,
    take the signature that only appears while it is up. One play session, no code.

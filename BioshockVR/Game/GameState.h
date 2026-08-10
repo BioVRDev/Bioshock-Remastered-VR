@@ -78,6 +78,27 @@ bool GameState_RadialOpen();
 // FORCEDCAM statistical probe was going to approximate.
 bool GameState_ScriptedSequence();
 
+// A scripted hand-animation sequence is running -- the game is deliberately
+// animating the player's hands as part of a scripted moment.
+//
+// MEASURED (M7-S1): hands+0x594 bit 2, exact on both edges, and it fired ONCE
+// in six minutes of mixed play. This is the first real scripted-event signal
+// this project has ever had.
+//
+// IT DOES NOT COVER the Little Sister rescue or the EVE injection -- both are
+// Hands *states*, a different mechanism, and both were measured leaving this
+// bit clear. Do not treat it as "in a cutscene" generally.
+bool GameState_ScriptedAnim();
+
+// The player is riding a bathysphere. MEASURED-BY-ORACLE: pawn+0x464 bit 1 is
+// Pawn.bCannotFall, which ActionEnableBathysphereModeForPlayer sets for the
+// whole ride while clearing bit 2 in the same call.
+//
+// It exists so the gameplay rotation freeze can leave the ride alone -- a
+// bathysphere is not a scripted animation, so without this it would be frozen
+// along with ordinary play and the camera would stop following the sphere.
+bool GameState_Bathysphere();
+
 void GameState_Reset();
 bool GameState_Cutscene();
 bool GameState_InGame();

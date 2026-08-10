@@ -144,7 +144,7 @@ rescue, and that is expected rather than a failure.
 | Finding | Status |
 |---|---|
 | 1 — `bHideHUD` written only by cinematic enter/exit | **Corpus claim verified. Live behaviour FALSIFIED (M1-S2).** Offsets measured and confirmed (`controller+0x71C`, bool DWORD `+0x490`), and the bit never moves — not even while the HUD visibly hides. The script really does write it; the retail sequences do not run through those actions. See `docs/INVARIANTS.md`. |
-| 2 — natives exist, script calls them on instances | **Verified** in the corpus. Addresses unlocated, calling untried. |
+| 2 — natives exist, script calls them on instances | **Verified in the corpus, and the addresses are now MEASURED LIVE (M3-S1, 2026-08-10).** Natives are registered by an `int<Class>exec<Func>` symbol string, one per 12-byte row of a table in `.data`; `GetPropertyTextByName` is at rva `0x7346E0` on Steam. **Calling is still untried**, and the signature is `exec`-style — it takes an `FFrame`, not a string. `docs/modules/enginebridge.md`. |
 | 3 — the controller's copy was never scanned | **Verified** it is declared and unexamined. That it holds live data is **inference**. |
 
 **Nothing here is confirmed in a headset.** All three are predictions from script
@@ -207,10 +207,11 @@ it gives live reads of any named property without a metadata walk.
 
 Two hard constraints, because this tier can crash:
 
-- **Locate by pattern, never by RVA.** Reuse the staged FName/string scan in
-  `Camera/CameraHook.cpp` (anchor `module scan`, `FindCalcView`) — it is the
-  pattern that works on Steam, Epic *and* GOG where every hardcoded address has
-  failed.
+- **Locate by pattern, never by RVA.** M3-S1 found a better anchor than
+  `FindCalcView`'s FName scan — the `int<Class>exec<Func>` registration symbol,
+  which points directly at the function's own row in the engine's native table.
+  Three stages instead of six; `docs/modules/enginebridge.md`. The row's RVA
+  differs between Steam and Epic, so the rule stands unchanged.
 - **Validate on a property you can check by eye before anything trusts it.**
   Read `Health` and confirm it tracks damage. This is the discriminator between
   "the bridge is broken" and "the property is empty", and skipping it is how this

@@ -27,6 +27,7 @@
 
 #include "Game/GameState.h"
 #include "Game/EngineExec.h"
+#include "Game/EngineBridge.h"
 #include "Core/Keybinds.h"
 
 #include <windows.h>
@@ -87,6 +88,23 @@ static const ContextEntry kContexts[] = {
     // divergence the way the FORCEDCAM probe was going to.
     { "NullInput",                         CTX_SCRIPTED },
     { "NullAllInputExceptHarvestRelease",  CTX_SCRIPTED },
+
+    // ⚠ THE GAME MISSPELLS THIS. "Excorcising", not "Exorcising". Copied
+    // verbatim from the Contexts list in User.ini, which is the authority --
+    // the script corpus spells the ANIMATION name correctly
+    // (ExorcisingGathererAnimationName), so anyone adding this from memory or
+    // from ShockPlayer.uc will spell it right and it will never match.
+    //
+    // This table was diffed against User.ini on 2026-08-10 and this was the
+    // ONLY context of the game's 30 that was missing -- and it is the Little
+    // Sister rescue, which is exactly the sequence M3-S3 exists to detect.
+    //
+    // CTX_SCRIPTED is INFERRED, not measured: nothing in the corpus pushes it
+    // (PUSHINPUTCONTEXT is a native Exec handler), so the classification comes
+    // from the name and from its sibling above. Confirm it against a real
+    // logged value the first time the context read actually works.
+    { "ExcorcisingGatherer",               CTX_SCRIPTED },
+
     { "BathysphereUIActive",               CTX_SCRIPTED },
 
     { "PauseUIActive",                     CTX_MENU },
@@ -450,6 +468,10 @@ static void MyHudTick(const uint8_t* controller);
 static void MyHudReset();
 static void CineTick(const uint8_t* controller);
 static void CineReset();
+static void ForcedMoveTick(const uint8_t* controller);
+static void ForcedMoveReset();
+static void ScriptedAnimTick();
+static void BathysphereTick();
 
 // ---- WORLD FOV CEILING ---------------------------------------------------
 // MEASURED: a vita chamber respawn drives controller+0x45C from 75 to 139.9,
@@ -845,6 +867,7 @@ void GameState_PitchSample(double degThisSecond)
 // controller every call and reset everything downstream the moment it changes.
 // ============================================================================
 void HandsProbe_Reset();          // HandsProbe.cpp
+void* HandsProbe_Get();           // HandsProbe.cpp -- the Hands actor, or null
 
 static const size_t kPawnSlot = 0x450;
 
@@ -862,6 +885,11 @@ static void RefreshPawn(const void* controller)
     _InterlockedExchange(&g_cutscene, 0);
     g_fovRest = 0.0f;
     HandsProbe_Reset();                     // re-lock hands/gun on the new pawn
+
+    // THE BUG THAT RUINED THE LAST EXORCISM PROBE. Its snapshot was not reset
+    // here, so the pawn-lock burst reported 18 transitions in a run that
+    // contained no rescue at all. Drop the baselines and retake them.
+    ForcedMoveReset();
 }
 
 // ---- reticle upkeep --------------------------------------------------------
@@ -920,6 +948,25 @@ void GameState_Observe(void* playerController)
 
     // M1-S2. Reads the flag MyHudTick just located. Gates nothing.
     CineTick((const uint8_t*)playerController);
+
+    // M7-S2. Publishes the measured scripted-animation signal. Runs
+    // unconditionally for the same reason MyHudTick does: one DWORD read,
+    // read-only, and it gates nothing by itself.
+    ScriptedAnimTick();
+
+    // M7-S4. Bathysphere mode, so the gameplay rotation freeze can exclude it.
+    BathysphereTick();
+
+    // M7-S1. Differential probe for a scripted-event flag. Read-only, gates
+    // nothing, and default-off -- it is the only periodic diff in the mod.
+    ForcedMoveTick((const uint8_t*)playerController);
+
+    // M3-S1. Locates the native property accessors. Same reasoning as the two
+    // probes above: read-only, one-shot, gates nothing, and a different feature
+    // from the (dead) context scan -- so it does not belong behind
+    // EnableGameState. It takes no argument because the engine's native table
+    // is process-static; it has no pawn or controller lifetime to track.
+    EngineBridge_Tick();
 
     // Before the EnableGameState early-return: the reticle should still go away
     // when the context scan is switched off. Different feature, different switch.
@@ -1667,6 +1714,507 @@ static void PollProbeKeys(const uint8_t* obj)
     if (dMark && !kMark)
         Log(">>> ===== MARK %d =====  (t=%.1f)", ++g_markN, CineTime());
     kMark = dMark;
+}
+
+// ============================================================================
+// M7-S1: SCRIPTED-EVENT PROBE -- what brackets a scripted hand animation?
+//
+// ---- THE HANDS ACTOR IS THE TARGET (added after the corpus research) -------
+// Hands.uc:82 declares
+//
+//     var private bool CurrentlyExecutingScriptedHandAnimationSequence;
+//
+// set by StartScriptedHandAnimationSequence() and cleared by Stop...(), and
+// driven from LEVEL SCRIPTS (ActionStart/StopScriptedHandAnimationSequence) and
+// from ANIMATION NOTIFIES (AnimNotify_Start/StopScriptedHandSequence). That is
+// precisely "the game is deliberately animating the player's hands as part of a
+// scripted moment" -- the condition for unhiding the arms and stopping the
+// controller from driving them.
+//
+// PREDICTED hands+0x594, BIT 2. UE2 packs consecutive bools into one DWORD and
+// Hands.uc lines 80-82 are three in a row:
+//     bit 0  bFinishedStateAnimations
+//     bit 1  AbilityHasBeenReleased
+//     bit 2  CurrentlyExecutingScriptedHandAnimationSequence   <-- target
+//
+// The walk starts from an anchor that WORKING SHIPPING CODE already proves:
+// docs/ENGINE-MAP.md records hands+0x494 as the bool DWORD holding
+// bIsInWeaponMode (lines 35-38) and hands+0x498 as HandsOffscreenAnimationName
+// (line 39) -- and HandsProbe's IdleAnimMode=2 reads +0x498 successfully.
+// Lines 39..79 are all name/pointer/int/float, no interfaces and no ambiguity,
+// which lands the bool DWORD at +0x594.
+//
+// A PREDICTION IS NEVER ENOUGH TO TRUST. HandsAnchorOk() below checks the
+// computed FName slots read as plausible names before any computed offset is
+// believed, and says so in the log when they do not. Same discipline as the
+// myHUD back-reference: prove identity, never assume it.
+//
+// ANIMATION GRANULARITY COMES FREE. CurrentScriptedAnimationName (line 66) and
+// the per-animation config names -- InjectingEveAnimationName (line 43, the
+// plasmid injection) and ExorcisingGathererAnimationName (line 47, the rescue)
+// -- are ALL FNames ON THE SAME OBJECT. So "which animation is playing" is an
+// index comparison and never needs the engine name table or a string at all.
+// HandsProbe already reads raw FName {Index, Number} pairs; this is that same
+// established pattern, not a new mechanism.
+//
+// ---- the original question, kept ------------------------------------------
+// What brackets a Little Sister rescue?
+//
+// DIAGNOSTIC ONLY. Read-only, default-off, gates nothing. It exists to find ONE
+// boolean, because everything downstream of a scripted-event signal is already
+// written and already wired -- ArmHide_Update() takes a `hide` flag and restores
+// the engine pose when it is false, DriveHands() already early-returns on
+// GameState_Cutscene(), InputHook already drops head-relative movement on
+// GameState_Theater(). All of it is inert because the signal is always false.
+//
+// THE NAMED CANDIDATE is ShockPlayerController.bIsForcingPlayerMove -- a lone
+// bool, so it gets its own DWORD with no packing ambiguity. ShockPlayerController
+// sets it on the line IMMEDIATELY AFTER ConsoleCommand("PUSHINPUTCONTEXT
+// NullInput"), which makes it a proxy for the exact state nine graves have
+// chased. docs/ARCHITECTURE.md already flagged it as the obvious Tier 0 target.
+//
+// WHY A DIFFERENTIAL SCAN AND NOT A COMPUTED OFFSET. Two reasons, either alone
+// sufficient:
+//
+//   1. The offset cannot be computed reliably. SIX interface-typed fields
+//      (ICanBeUsed, ICanBeFocused, ICanBeHacked) plus a TArray sit between the
+//      class base and the flag, and interface size in this fork is UNKNOWN.
+//      That unknown compounds six times.
+//   2. The rescue may not set it at all. The StartForcePlayerMove callers in the
+//      corpus are object-use placement and the Atlas Adam drain -- the rescue is
+//      NOT among them. Reading one predicted field could return a flat line and
+//      spend the cycle proving nothing.
+//
+// A differential is immune to both: it needs no offset, and if the named flag
+// never moves it still reports whatever did.
+//
+// IT ALSO TESTS A SECOND OPEN LEAD FOR FREE. ShockPlayer.CurrentExorcismTarget
+// is a POINTER set at the start of a rescue and cleared at the end
+// (docs/modules/gamestate.md), unresolved with +0xEA4 and +0xB58 surviving. The
+// pawn window below covers both, so one run with an actual rescue in it tests
+// them too.
+//
+// THE BUG THAT RUINED THE LAST PROBE: the previous exorcism probe produced 18
+// transitions from a run containing no rescue, because its snapshot was not
+// reset when the pawn changed and the pawn-lock burst polluted everything.
+// ForcedMoveReset() is called from RefreshPawn for exactly that reason, and the
+// owner pointers below are re-checked every sample.
+// ============================================================================
+
+// ShockPlayerController's own fields begin after PlayerController's, and
+// PlayerController's myHUD is measured at +0x71C (M1-S1). The pawn window
+// brackets both surviving CurrentExorcismTarget candidates.
+static const size_t kFmCtlLo = 0x700, kFmCtlHi = 0xB00;    // 256 dwords
+static const size_t kFmPawnLo = 0xA80, kFmPawnHi = 0xF00;   // 288 dwords
+static const size_t kFmHndLo = 0x480, kFmHndHi = 0x600;    // 96 dwords
+
+// Computed from the +0x494/+0x498 anchor, all on the Hands actor.
+static const size_t kHndOffscreenName = 0x498;   // line 39, the proven anchor
+static const size_t kHndInjectEveName = 0x4B8;   // line 43, plasmid injection
+static const size_t kHndExorcName = 0x4D8;   // line 47, the rescue
+static const size_t kHndCurScriptName = 0x558;   // line 66, what is playing NOW
+static const size_t kHndScriptedBits = 0x594;   // lines 80-82, bit 2 is ours
+static const uint32_t kScriptedBit = 1u << 2;
+
+static const int kFmCtlN = (int)((kFmCtlHi - kFmCtlLo) / 4);
+static const int kFmPawnN = (int)((kFmPawnHi - kFmPawnLo) / 4);
+static const int kFmHndN = (int)((kFmHndHi - kFmHndLo) / 4);
+static const int kFmMaxLog = 200;    // one noisy field must not hide the real one
+
+static uint32_t g_fmCtlSnap[kFmCtlN] = {};
+static uint32_t g_fmPawnSnap[kFmPawnN] = {};
+static uint32_t g_fmHndSnap[kFmHndN] = {};
+static const void* g_fmCtlOwner = nullptr;
+static const void* g_fmPawnOwner = nullptr;
+static const void* g_fmHndOwner = nullptr;
+static uint32_t    g_fmScriptedPrev = 0;
+static bool        g_fmAnchorOk = false;
+static bool        g_fmAnchorLogged = false;
+static int    g_fmSettle = 0;
+static int    g_fmLogged = 0;
+static DWORD  g_fmLastSample = 0;
+static DWORD  g_fmLastBeat = 0;
+static bool   g_fmWarnedCtl = false;
+static bool   g_fmWarnedPawn = false;
+static bool   g_fmWarnedHnd = false;
+
+static void ForcedMoveReset()
+{
+    g_fmCtlOwner = nullptr;
+    g_fmPawnOwner = nullptr;
+    // The Hands actor is DESTROYED on level and save load -- ArmHide already
+    // carries that scar (ArmHide_Reset deliberately does not restore first,
+    // because the old actor may already be freed and its address reused).
+    g_fmHndOwner = nullptr;
+    g_fmScriptedPrev = 0;
+    g_fmAnchorOk = false;
+    g_fmAnchorLogged = false;
+    g_fmSettle = 0;
+    g_fmWarnedCtl = false;
+    g_fmWarnedPawn = false;
+    g_fmWarnedHnd = false;
+    // g_fmLogged deliberately NOT reset -- the cap is per RUN, not per pawn, so
+    // a level load cannot buy another 200 lines of noise.
+}
+
+// A bool DWORD is exactly 0 or exactly 1. Anything else is a float, a counter or
+// a pointer, and is ranked below.
+static bool FmBoolish(uint32_t v) { return v == 0 || v == 1; }
+
+static const char* FmKind(uint32_t prev, uint32_t cur)
+{
+    if (FmBoolish(prev) && FmBoolish(cur)) return "BOOL";
+
+    const bool pPtr = prev && GsLooksLikeObject((void*)(uintptr_t)prev);
+    const bool cPtr = cur && GsLooksLikeObject((void*)(uintptr_t)cur);
+    if ((prev == 0 && cPtr) || (pPtr && cur == 0)) return "PTR ";
+
+    return "othr";
+}
+
+// Diff one window. Returns how many fields are currently non-zero, for the beat.
+static int FmScanWindow(const uint8_t* base, size_t lo, size_t hi,
+    uint32_t* snap, int n, const void** owner, bool* warned,
+    const char* tag)
+{
+    if (!base) { *owner = nullptr; return -1; }
+
+    if (!Readable(base + lo, hi - lo))
+    {
+        if (!*warned)
+        {
+            *warned = true;
+            Log(">>> SCRIPTED: %s window +0x%03X..+0x%03X not readable on "
+                "0x%08X. Skipping it.",
+                tag, (unsigned)lo, (unsigned)hi, (unsigned)(uintptr_t)base);
+        }
+        *owner = nullptr;
+        return -1;
+    }
+
+    const uint32_t* live = (const uint32_t*)(base + lo);
+
+    // First sight of this object: take the baseline, report nothing. A fresh
+    // object's every field would otherwise read as a transition.
+    if (*owner != (const void*)base)
+    {
+        for (int i = 0; i < n; ++i) snap[i] = live[i];
+        *owner = (const void*)base;
+        Log(">>> SCRIPTED: %s baseline taken on 0x%08X (+0x%03X..+0x%03X)",
+            tag, (unsigned)(uintptr_t)base, (unsigned)lo, (unsigned)hi);
+        return -1;
+    }
+
+    int nonZero = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const uint32_t cur = live[i];
+        if (cur) ++nonZero;
+
+        const uint32_t prev = snap[i];
+        if (cur == prev) continue;
+        snap[i] = cur;
+
+        if (g_fmLogged >= kFmMaxLog) continue;
+        ++g_fmLogged;
+
+        Log(">>> SCRIPTED: %s %s +0x%03X  %08X -> %08X",
+            FmKind(prev, cur), tag, (unsigned)(lo + (size_t)i * 4), prev, cur);
+    }
+    return nonZero;
+}
+
+// An FName is {Index, Number}. A real one has a non-zero index inside the name
+// table and, for the plain authored names these config slots hold, Number == 0.
+// Index 0 is 'None' -- and writing it is what hangs the game thread, per the
+// IDLE guard in HandsProbe, so treating it as "not a name" is consistent.
+static bool FmPlausibleName(const uint8_t* hands, size_t off)
+{
+    if (!Readable(hands + off, 8)) return false;
+    const uint32_t idx = *(const uint32_t*)(hands + off);
+    const uint32_t num = *(const uint32_t*)(hands + off + 4);
+    return idx != 0 && idx < 0x00100000 && num == 0;
+}
+
+// PROVE THE WALK BEFORE BELIEVING ANY COMPUTED OFFSET. Every slot below is a
+// config'd FName that the shipped game fills in, so on a correct walk they all
+// read as plausible names. If they do not, the declaration walk is shifted and
+// hands+0x594 is pointing at something else entirely -- say so loudly and fall
+// back to the raw differential, which needs no offsets to be right.
+static void HandsAnchorCheck(const uint8_t* hands)
+{
+    if (g_fmAnchorLogged) return;
+    g_fmAnchorLogged = true;
+
+    const size_t slots[4] = { kHndOffscreenName, kHndInjectEveName,
+                              kHndExorcName, kHndCurScriptName };
+    const char* names[4] = { "HandsOffscreen(+0x498, the anchor)",
+                              "InjectingEve(+0x4B8)",
+                              "ExorcisingGatherer(+0x4D8)",
+                              "CurrentScripted(+0x558)" };
+    int ok = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        const bool good = FmPlausibleName(hands, slots[i]);
+        uint32_t idx = 0, num = 0;
+        if (Readable(hands + slots[i], 8))
+        {
+            idx = *(const uint32_t*)(hands + slots[i]);
+            num = *(const uint32_t*)(hands + slots[i] + 4);
+        }
+        Log(">>> SCRIPTED: anchor %-38s idx %u num %u  %s",
+            names[i], idx, num, good ? "ok" : "IMPLAUSIBLE");
+        if (good) ++ok;
+    }
+
+    // CurrentScripted is legitimately 'None' when nothing is playing, so it is
+    // not required. The three config'd names are.
+    g_fmAnchorOk = FmPlausibleName(hands, kHndOffscreenName) &&
+        FmPlausibleName(hands, kHndInjectEveName) &&
+        FmPlausibleName(hands, kHndExorcName);
+
+    if (g_fmAnchorOk)
+    {
+        Log(">>> SCRIPTED: anchor PASSED (%d/4). Watching hands+0x%03X bit 2 "
+            "for CurrentlyExecutingScriptedHandAnimationSequence.",
+            ok, (unsigned)kHndScriptedBits);
+    }
+    else
+    {
+        Log(">>> SCRIPTED: anchor FAILED (%d/4). The declaration walk is "
+            "SHIFTED -- ignoring every computed offset. The raw differential "
+            "below still stands; it needs no offset to be right.", ok);
+    }
+}
+
+// The M7-S1 bit watch lived here. It has been promoted into ScriptedAnimTick
+// below, which runs unconditionally and publishes the result -- the signal is
+// production now rather than a probe finding. Its per-transition dump of bits 0
+// and 1 was what confirmed the bit layout; that job is done.
+//
+// MEASURED and NOT kept: CurrentScriptedAnimationName (+0x558) read 'None'
+// (index 0) for the entire run, including throughout the scripted sequence. So
+// animation-level naming does NOT come from that field, and the index-comparison
+// idea it was going to enable is unproven. Do not re-add it without new evidence.
+
+// ============================================================================
+// M7-S2: THE PUBLISHED SCRIPTED-ANIMATION SIGNAL
+//
+// MEASURED M7-S1, 2026-08-10: hands+0x594 bit 2 set 0.8s after the tester
+// marked a scripted scene starting and cleared 0.75s before they marked it
+// ending -- both inside reaction time on the marker key -- and fired EXACTLY
+// ONCE in six minutes covering weapon fire, plasmid fire, four gene-machine
+// opens, a Little Sister rescue and walking. Zero false positives.
+//
+// WHAT IT DOES NOT COVER, measured in the same run: the Little Sister RESCUE
+// and the EVE INJECTION both left this bit clear. They are Hands *states*
+// (ExorcisingGatherer, InjectingEve), not scripted sequences -- which is why
+// ShockPlayer.uc:2091 tests two separate conditions. Widening to those needs
+// the Hands state, not this bit. Do not assume this covers them.
+//
+// THIS RUNS UNCONDITIONALLY, like MyHudTick/CineTick: it is one DWORD read
+// after a one-time anchor check, it is read-only, and it gates nothing by
+// itself. Consumers gate on g_cfg.scriptedQol.
+//
+// THREADING: written here on the GAME thread, read from the RENDER thread by
+// CameraHook_LateHandsWrite. One aligned long through _InterlockedExchange, the
+// same channel g_paused and g_cutscene use.
+// ============================================================================
+
+static long g_scriptedAnim = 0;
+
+bool GameState_ScriptedAnim() { return g_scriptedAnim != 0; }
+
+// ============================================================================
+// M7-S4: BATHYSPHERE MODE -- computed, with a two-bit oracle
+//
+// ActionEnableBathysphereModeForPlayer sets THREE fields on ShockPlayer for the
+// duration of a ride, and two of them land in the same DWORD:
+//
+//     Player.bUseHavokRigidBodyCapsuleCollisions = false;
+//     Player.bUseHavokPhantomCollisions          = false;
+//     Player.bCannotFall                         = true;
+//
+// bCannotFall is Engine/Classes/Pawn.uc:46, and Pawn's own fields start at the
+// AActor base 0x450. UE2 packs consecutive bools, and lines 13..44 are EXACTLY
+// 32 of them -- one full DWORD -- so the next three start a fresh one:
+//
+//   +0x450 Controller   +0x458 LastRealViewer
+//   +0x454 NetRelevancy +0x45C LastViewer
+//   +0x460 lines 13..44, thirty-two bools, one DWORD exactly
+//   +0x464 bit 0 ShouldNotTakeDamageOnNextLanding
+//          bit 1 bCannotFall                            <-- the target
+//          bit 2 bUseHavokRigidBodyCapsuleCollisions
+//   +0x468 HavokRigidBodyCapsuleCollisionExtraRadius (float, ends the run)
+//
+// THE ORACLE: ShockPlayer defaults bUseHavokRigidBodyCapsuleCollisions to TRUE
+// (ShockPlayer.uc:7094), and bathysphere mode clears it in the same call that
+// sets bCannotFall. So entering a ride must flip BIT 1 UP AND BIT 2 DOWN IN THE
+// SAME WRITE. Two bits moving in opposite directions at once is not something a
+// wrong offset produces by chance.
+//
+// Read-only, and it gates only FreezeGameplayRotation -- which ships at 0 until
+// this has been seen to work in a log.
+// ============================================================================
+
+static const size_t kPawnFlagsB = 0x464;
+static const uint32_t kCannotFallBit = 1u << 1;
+static const uint32_t kHavokCapsuleBit = 1u << 2;
+
+static long g_bathysphere = 0;
+
+bool GameState_Bathysphere() { return g_bathysphere != 0; }
+
+static void BathysphereTick()
+{
+    const uint8_t* pawn = (const uint8_t*)g_pawn;
+    if (!pawn || !Readable(pawn + kPawnFlagsB, 4))
+    {
+        if (g_bathysphere) _InterlockedExchange(&g_bathysphere, 0);
+        return;
+    }
+
+    const uint32_t b = *(const uint32_t*)(pawn + kPawnFlagsB);
+    const long want = (b & kCannotFallBit) ? 1 : 0;
+
+    // Sanity, once per pawn: in ordinary play the capsule bit should be SET and
+    // bCannotFall clear. If that does not hold the walk is shifted and this
+    // offset is pointing at something else -- say so rather than quietly
+    // gating behaviour on nonsense.
+    static const void* s_checked = nullptr;
+    if (s_checked != (const void*)pawn)
+    {
+        s_checked = (const void*)pawn;
+        Log(">>> BATHY: pawn+0x%03X = %08X  bCannotFall=%d capsule=%d  %s",
+            (unsigned)kPawnFlagsB, b,
+            (b & kCannotFallBit) ? 1 : 0, (b & kHavokCapsuleBit) ? 1 : 0,
+            (b & kHavokCapsuleBit) ? "(capsule set, as expected on foot)"
+            : "!!! capsule CLEAR on foot -- offset may be wrong");
+    }
+
+    if (want != g_bathysphere)
+    {
+        _InterlockedExchange(&g_bathysphere, want);
+        Log(">>> BATHY: %s  (pawn+0x%03X = %08X, capsule=%d)",
+            want ? "*** BATHYSPHERE MODE ON ***" : "--- bathysphere mode off ---",
+            (unsigned)kPawnFlagsB, b, (b & kHavokCapsuleBit) ? 1 : 0);
+    }
+}
+
+static void ScriptedAnimTick()
+{
+    const uint8_t* hands = (const uint8_t*)HandsProbe_Get();
+    if (!hands)
+    {
+        // Hands actor gone (level load, save reload). Fail closed: a stale
+        // "scripted" would leave the arms unhidden and the hands frozen with
+        // nothing on screen to explain why.
+        if (g_scriptedAnim) _InterlockedExchange(&g_scriptedAnim, 0);
+        return;
+    }
+
+    // ITS OWN owner tracker, deliberately NOT g_fmHndOwner. That one is only
+    // written by the probe's window scan, so with the probe off it would stay
+    // null, the actor would compare "changed" every single tick, and the anchor
+    // block would re-log four lines four times a second forever.
+    static const void* s_owner = nullptr;
+    if (hands != s_owner)
+    {
+        s_owner = hands;
+        g_fmAnchorLogged = false;
+        g_fmAnchorOk = false;
+    }
+    HandsAnchorCheck(hands);
+    if (!g_fmAnchorOk)
+    {
+        if (g_scriptedAnim) _InterlockedExchange(&g_scriptedAnim, 0);
+        return;
+    }
+
+    if (!Readable(hands + kHndScriptedBits, 4)) return;
+    const uint32_t bits = *(const uint32_t*)(hands + kHndScriptedBits);
+    const long want = (bits & kScriptedBit) ? 1 : 0;
+
+    if (want != g_scriptedAnim)
+    {
+        _InterlockedExchange(&g_scriptedAnim, want);
+        Log(">>> SCRIPTED: %s  (hands+0x%03X = %08X)",
+            want ? "*** SCRIPTED ANIMATION BEGAN ***"
+            : "--- scripted animation ended ---",
+            (unsigned)kHndScriptedBits, bits);
+    }
+
+    // ============================================================================
+    //  FALSIFIED, M7-S3: bit 0 IS NOT "an animation is playing".
+    //
+    // It is bFinishedStateAnimations, and it looked perfect: Hands.uc sets it
+    // false immediately before PlayAnimation... and true right after
+    // FinishAnimation returns. Gating the arms on it produced the OPPOSITE
+    // failure in two different scenes, which is what gave it away:
+    //
+    //   Little Sister crawl  arms hidden the WHOLE time, bottle catch included
+    //   Plasmid balcony      arms visible, then stuck visible and frozen
+    //
+    // The corpus explains both. `state PlayingScriptedHandAnimation` has an
+    // EMPTY BODY -- it never touches the flag -- so during the crawl scene the
+    // flag kept the `true` left over from the last weapon state. `state
+    // InjectingEve` DOES set it false, so the balcony scene showed arms and then
+    // held them once the flag was left low.
+    //
+    // So bit 0 tracks the Hands STATE MACHINE's own animations and says nothing
+    // about scripted ones. There is no script-side flag for those either:
+    // ScriptedHandsAnimationHandle is only ever assigned (Hands.uc:1002), never
+    // cleared or validity-tested.
+    //
+    // REPLACED BY ArmHide_HandMotion() -- measuring whether the rig is actually
+    // moving, which answers the real question regardless of mechanism.
+    // DO NOT re-add a gate on this bit.
+    // ============================================================================
+}
+
+static void ForcedMoveTick(const uint8_t* controller)
+{
+    if (!g_cfg.forcedMoveProbe) return;
+    if (!controller) return;
+
+    // Let the level settle before taking a baseline, the same way MyHudTick
+    // does. A baseline captured mid-load is a baseline of a half-built object.
+    if (g_fmSettle < 600) { ++g_fmSettle; return; }
+
+    // 4 Hz. This is a 2KB read of two bounded windows, not a memory scan, and it
+    // is default-off -- but it is still the only periodic diff in the mod, so it
+    // is throttled hard and says so.
+    const DWORD now = GetTickCount();
+    if (now - g_fmLastSample < 250) return;
+    g_fmLastSample = now;
+
+    const int ctlNz = FmScanWindow(controller, kFmCtlLo, kFmCtlHi,
+        g_fmCtlSnap, kFmCtlN, &g_fmCtlOwner, &g_fmWarnedCtl, "ctl");
+    const int pawnNz = FmScanWindow((const uint8_t*)g_pawn, kFmPawnLo, kFmPawnHi,
+        g_fmPawnSnap, kFmPawnN, &g_fmPawnOwner, &g_fmWarnedPawn, "pwn");
+
+    // THE HANDS ACTOR -- the target this probe was refocused onto. Ordinary
+    // weapon handling moves fields here, so this window proves the probe is
+    // alive and looking at the right object before any cutscene is involved.
+    // The anchor check and the bit watch moved to ScriptedAnimTick, which runs
+    // unconditionally -- the signal is production now, not a probe finding.
+    const uint8_t* hands = (const uint8_t*)HandsProbe_Get();
+    int hndNz = -1;
+    if (hands)
+        hndNz = FmScanWindow(hands, kFmHndLo, kFmHndHi,
+            g_fmHndSnap, kFmHndN, &g_fmHndOwner, &g_fmWarnedHnd, "hnd");
+
+    // A run with no transitions must be distinguishable from a probe that never
+    // armed. Once a second, say we are alive and what we are watching.
+    if (now - g_fmLastBeat >= 1000)
+    {
+        g_fmLastBeat = now;
+        Log(">>> SCRIPTED: beat  ctl %d/%d  pawn %d/%d  hands %d/%d  "
+            "anchor %s  transitions %d%s",
+            ctlNz, kFmCtlN, pawnNz, kFmPawnN, hndNz, kFmHndN,
+            hands ? (g_fmAnchorOk ? "ok" : "FAILED") : "no-hands",
+            g_fmLogged, g_fmLogged >= kFmMaxLog ? "  [CAP REACHED]" : "");
+    }
 }
 
 void GameState_Reset()

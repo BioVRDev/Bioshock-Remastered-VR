@@ -29,3 +29,34 @@ bool ArmHide_Update(void* handsActor, bool hide);
 void ArmHide_Reset();
 bool ArmHide_UpdateInactiveHand(void* handsActor, int activeHand);
 void ArmHide_ReleaseInactiveHand();
+
+// ---- M7-S4: IS THE RIG ACTUALLY ANIMATING RIGHT NOW? --------------------
+// Model-space motion of the right wrist since the previous call, peak-held with
+// a decay. Model space matters: the whole actor tracks the camera every frame,
+// so a world-space measurement would read "moving" constantly. Only animation
+// registers here.
+//
+// WHY MEASURE AT ALL. The script has no usable "a scripted animation is
+// playing" flag. bFinishedStateAnimations was tried and FALSIFIED --
+// Hands.uc's PlayingScriptedHandAnimation state has an empty body and never
+// touches it -- and ScriptedHandsAnimationHandle is only ever assigned, never
+// cleared. Motion answers the question the flags cannot.
+//
+// Returns false until the skeleton is locked. `outRaw` is the un-smoothed
+// per-call value, logged for threshold calibration.
+bool ArmHide_HandMotion(float* outSmoothed, float* outRaw);
+
+// ---- M7-S4: HIDE THE WHOLE ACTOR ----------------------------------------
+// Arms, hands AND weapon, via the actor's DrawScale3D.
+//
+// DELIBERATELY NOT A BONE WRITE, and this is the load-bearing reason: hiding by
+// collapsing bone clusters would LATCH UP. This file clears the skeleton's
+// dirty byte so the engine does not re-evaluate over its writes -- so the
+// instant the hands were hidden, the bone ArmHide_HandMotion samples would stop
+// moving BECAUSE WE FROZE IT, motion would read zero forever, and the hands
+// would never come back. DrawScale3D leaves the bone array untouched, so the
+// motion signal stays honest whether the hands are visible or not.
+//
+// Never writes exact zero -- the attachment path inverse-decomposes scale,
+// which is the same division that makes bone 43 untouchable.
+void ArmHide_SetActorHidden(void* handsActor, bool hidden);

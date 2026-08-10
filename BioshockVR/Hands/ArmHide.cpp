@@ -31,7 +31,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cmath>            // M7-S4 motion sampling
 #include "Core/Config.h"
+
+static void MotionReset();  // defined with the M7-S4 block below
 
 extern void LogFile(const char* msg);
 
@@ -263,11 +266,118 @@ static bool LocateSkeleton(void* hands)
         g_actor = hands; g_skeleton = skel; g_bones = bones; g_boneCount = count;
         ClearSaved();
         ClearHandSaved();
+        MotionReset();      // the previous sample described a different rig
         Log(">>> ARMHIDE: skeleton locked: actor=0x%08X skel=0x%08X bones=0x%08X count=%d",
             (unsigned)(uintptr_t)hands, (unsigned)(uintptr_t)skel,
             (unsigned)(uintptr_t)bones, count);
     }
     return true;
+}
+
+// ===========================================================================
+//  M7-S4: MOTION SAMPLING AND WHOLE-ACTOR HIDING
+//
+// Both exist to answer one question the script cannot: is the rig ACTUALLY
+// animating right now? See ArmHide.h for why the flags were falsified.
+// ===========================================================================
+
+static const int      kMotionBone = kRightWrist;   // 27
+static const unsigned kDrawScale3DOff = 0x2B0;     // X/Y/Z floats, measured
+static const float    kHiddenScale = 0.0001f;      // NEVER exactly zero
+
+static float g_motPrevPos[3] = {};
+static float g_motPrevRot[4] = {};
+static bool  g_motHave = false;
+static float g_motSmoothed = 0.0f;
+
+static void MotionReset()
+{
+    g_motHave = false;
+    g_motSmoothed = 0.0f;
+}
+
+bool ArmHide_HandMotion(float* outSmoothed, float* outRaw)
+{
+    if (!g_bones || kMotionBone >= g_boneCount) return false;
+
+    BoneTransform cur = {};
+    if (!SafeRead(&g_bones[kMotionBone], &cur, sizeof(cur))) return false;
+
+    float raw = 0.0f;
+    if (g_motHave)
+    {
+        const float dx = cur.position[0] - g_motPrevPos[0];
+        const float dy = cur.position[1] - g_motPrevPos[1];
+        const float dz = cur.position[2] - g_motPrevPos[2];
+        const float dPos = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        // Quaternion difference: 1 - |dot| is 0 for an identical orientation and
+        // grows with the angle between them. A wrist can rotate in place without
+        // its position moving at all, so position alone would miss it.
+        float dot = 0.0f;
+        for (int i = 0; i < 4; ++i) dot += cur.rotation[i] * g_motPrevRot[i];
+        if (dot < 0.0f) dot = -dot;
+        const float dRot = 1.0f - ((dot > 1.0f) ? 1.0f : dot);
+
+        // Scaled so a small rotation is comparable to a small translation. The
+        // constant is arbitrary; the LOGGED components are what calibrate it.
+        raw = dPos + dRot * 50.0f;
+    }
+
+    memcpy(g_motPrevPos, cur.position, sizeof(g_motPrevPos));
+    memcpy(g_motPrevRot, cur.rotation, sizeof(g_motPrevRot));
+    g_motHave = true;
+
+    // Peak-hold with decay. A single frame of motion should not be lost between
+    // samples, and an animation that eases in and out should not chatter.
+    g_motSmoothed *= 0.90f;
+    if (raw > g_motSmoothed) g_motSmoothed = raw;
+
+    if (outSmoothed) *outSmoothed = g_motSmoothed;
+    if (outRaw)      *outRaw = raw;
+    return true;
+}
+
+static void*  g_scaleActor = nullptr;
+static float  g_savedScale3D[3] = {};
+static bool   g_scaleSaved = false;
+static bool   g_actorHidden = false;
+
+void ArmHide_SetActorHidden(void* handsActor, bool hidden)
+{
+    // Actor changed: the saved scale belonged to an object that may already be
+    // destroyed and its address reused. Drop it WITHOUT restoring, the same
+    // reasoning ArmHide_Reset documents.
+    if (handsActor != g_scaleActor)
+    {
+        g_scaleActor = handsActor;
+        g_scaleSaved = false;
+        g_actorHidden = false;
+    }
+    if (!handsActor) return;
+
+    uint8_t* const p = (uint8_t*)handsActor + kDrawScale3DOff;
+
+    if (hidden && !g_actorHidden)
+    {
+        float cur[3] = {};
+        if (!SafeRead(p, cur, sizeof(cur))) return;
+
+        // Refuse to save a scale that is already collapsed -- restoring THAT
+        // would leave the hands invisible permanently.
+        if (cur[0] <= kHiddenScale * 10.0f) return;
+
+        memcpy(g_savedScale3D, cur, sizeof(g_savedScale3D));
+        g_scaleSaved = true;
+
+        const float tiny[3] = { kHiddenScale, kHiddenScale, kHiddenScale };
+        if (SafeWrite(p, tiny, sizeof(tiny))) g_actorHidden = true;
+    }
+    else if (!hidden && g_actorHidden)
+    {
+        if (g_scaleSaved) SafeWrite(p, g_savedScale3D, sizeof(g_savedScale3D));
+        g_actorHidden = false;
+    }
 }
 
 static void SetDirty(uint8_t v)

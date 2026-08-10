@@ -109,6 +109,20 @@ identify the active hand bone cluster, preserve a reference pose, and apply a
 rigid cluster transform around a reference anchor after skeleton evaluation.
 Larger and riskier than the current slot system.
 
+> **This is now the critical path for three requested features.**
+> `docs/proposals/vr-features-research.md` (2026-08-10) found that left-handed
+> mode, detached hands and two-handed grip are all the *same* mechanism — this
+> one — and that the `hkQsTransform` rotation lane needed to build it is already
+> sitting untouched in the bone array `ArmHide` writes to.
+>
+> Two things it must inherit rather than rediscover: the **dirty byte is not
+> optional**, and the write must be **late** (the S59/S60 measurement — the game
+> tick erases hand roll every frame, which is why `CameraHook_LateHandsWrite`
+> re-applies from Present). One thing it must verify first: that the render bone
+> array is in a **common model space** and not parent-relative. That is inferred
+> from `CollapseBone` pinning sleeve bones at the wrist's position, which is
+> strong but is not a measurement.
+
 ## A split was considered and rejected
 
 See `.planning/DECISIONS.md`. `g_hands`, `g_pawn` and `g_gun` are used across the

@@ -54,6 +54,13 @@ bool CameraHook_GetHeadYawOffset(float* outDeg);
 bool DrawHook_MenuUp();              // DrawHook.cpp
 bool GameState_Paused();             // GameState.cpp
 bool GameState_Theater();            // GameState.cpp
+bool GameState_ScriptedAnim();       // GameState.cpp
+
+// M7-S2. See CameraHook's ScriptedQol() for the measurement behind this.
+static bool ScriptedQol()
+{
+    return g_cfg.scriptedQol && GameState_ScriptedAnim();
+}
 
 static void Log(const char* fmt, ...)
 {
@@ -771,10 +778,29 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // Flipped mode owns the right stick while the modifier is held, so the
     // d-pad direction must not ALSO snap-turn you.
     if (!(mod && g_cfg.dpadFlip))
+    {
         // Snap turn and mod-yaw both rotate g_aimBase directly. Sending the axis
         // as well would turn you twice, at two different rates.
-        out->Gamepad.sThumbRX =
-        ((g_cfg.snapTurn || g_cfg.modYaw) ? 0 : ToAxis(s.turnX));
+        //
+        // ---- M7-S2: HAND THE TURN PATH BACK DURING SCRIPTED SEQUENCES -------
+        // THIS IS GRAVE 12'S MECHANISM. With ModYaw on, this line zeroes the
+        // axis permanently, so the game's own turn path never runs -- and
+        // CameraHook simultaneously overwrites Controller.Rotation from
+        // g_aimBase every frame. A forced-move sequence steers by that field, so
+        // it could not turn the player: the opening bathysphere walked into the
+        // back wall. Releasing the axis here, and the aim write in CameraHook,
+        // is what makes mod-side yaw safe to leave on during ordinary play.
+        //
+        // ⚠ THE BATHYSPHERE IS THE ONE CASE THIS IS NOT MEASURED ON. M7-S1
+        // proved the signal on a scripted scene and proved it does NOT cover
+        // the rescue or the EVE injection. If the bathysphere likewise does not
+        // set hands+0x594 bit 2, this release never fires there and grave 12
+        // comes straight back. Test the opening bathysphere FIRST.
+        const bool modOwnsTurn =
+            (g_cfg.snapTurn || g_cfg.modYaw) && !ScriptedQol();
+
+        out->Gamepad.sThumbRX = modOwnsTurn ? 0 : ToAxis(s.turnX);
+    }
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).
     // But [RadialActive] rebinds this same axis to yRadialRight, so while a

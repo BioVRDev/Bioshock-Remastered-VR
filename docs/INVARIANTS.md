@@ -50,6 +50,12 @@ handoff disagree, this file wins.
 - Find functions by **pattern**, never by hardcoded RVA. The FName/string chain
   for `CalcView` works on Steam, Epic *and* GOG; every hardcoded address has
   failed across storefronts.
+- **Natives are reachable by their `int<Class>exec<Func>` registration symbol**
+  — measured M3-S1, 2026-08-10. The exe holds that wide string once in `.rdata`,
+  and exactly one 12-byte row in `.data` points at it; the row's second DWORD is
+  the function pointer, written at runtime (it is **zero on disk**). This is
+  general: any registered native can be found this way. The row's RVA differs
+  between Steam and Epic, so locate by the string, never by the row.
 - Any address you did not derive must be INI-overridable and verified before use
   (`EngineExec`, `ArmHide` both do this). Fail closed on mismatch.
 - **`AActor::Location = +0x1D8`**, one unit = 1 cm. `+0x1A0` was a bad early scan.
@@ -58,6 +64,17 @@ handoff disagree, this file wins.
 - Hand rotation offsets **compose as quaternions**. Adding Euler trims shears
   near vertical wrist orientations.
 - Never add a per-frame memory scan. One-shot, lock, stop.
+- **A scripted-sequence signal exists and is measured** — `hands+0x594` bit 2,
+  `CurrentlyExecutingScriptedHandAnimationSequence` (M7-S1, 2026-08-10). Exact
+  bracket, zero false positives in six minutes of mixed play. **It does not cover
+  the Little Sister rescue or the EVE injection** — those are Hands *states*, a
+  different mechanism. `docs/ENGINE-MAP.md` § *Hands actor*.
+- **When a differential probe shares a log budget with noisy windows, the noisy
+  windows eat it.** M7-S1's 200-transition cap was consumed in six seconds by the
+  controller and pawn windows (117/256 and 206/288 fields non-zero and churning),
+  so the differential was dead before the event it was built to catch. The run was
+  saved only because the *named* watch was deliberately logged outside the cap.
+  **Cap per window, and always log the named prediction separately.**
 
 ### Input
 - **`ControllerMode = 1`** (replace XInput with VR input) is the default. Mode 0

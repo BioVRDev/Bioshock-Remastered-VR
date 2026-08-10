@@ -238,7 +238,7 @@ static DWORD WINAPI InitThread(LPVOID)
     // stranger sends you -- "which build is this?" has already cost one round
     // trip in this project, and __DATE__/__TIME__ alone cannot answer it.
     Log("BioshockVR version: 1.0.3");
-    Log("dllmain build: M1-S2 marker fix, F1 direct  (%s %s)",
+    Log("dllmain build: M7-S4 motion arms + bathysphere  (%s %s)",
         __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};

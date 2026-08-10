@@ -91,6 +91,30 @@ field declared after `FixedRotation` therefore shifts `+0xC` from a naive walk:
 including both bool packs — 17 bools sharing one DWORD at `controller+0x468`,
 38 sharing two at `+0x594`.
 
+## Pawn bool block — computed M7-S4, oracle-checked
+
+`Pawn`'s own fields start at the `AActor` base `0x450`. `Pawn.uc` lines 13–44 are
+**exactly 32 consecutive bools**, which fills one DWORD precisely and starts a
+fresh one for the next three:
+
+| Offset | Contents |
+|---:|---|
+| `+0x450` | `Controller` |
+| `+0x454` | `NetRelevancyTime` |
+| `+0x458` | `LastRealViewer` |
+| `+0x45C` | `LastViewer` |
+| `+0x460` | lines 13–44 — thirty-two bools, one full DWORD |
+| **`+0x464`** | bit 0 `ShouldNotTakeDamageOnNextLanding` · **bit 1 `bCannotFall`** · bit 2 `bUseHavokRigidBodyCapsuleCollisions` |
+| `+0x468` | `HavokRigidBodyCapsuleCollisionExtraRadius` (float — ends the bool run) |
+
+**`bCannotFall` is the bathysphere signal.**
+`ActionEnableBathysphereModeForPlayer` sets it `true` and clears
+`bUseHavokRigidBodyCapsuleCollisions` **in the same call**, and `ShockPlayer`
+defaults that one to `true` — so entering a ride flips **bit 1 up and bit 2 down
+together**. Two bits moving in opposite directions in one write is the oracle;
+a wrong offset does not produce it by chance. The probe also logs a once-per-pawn
+sanity line asserting bit 2 is set while on foot.
+
 ## HUD actor — predicted and confirmed M1-S1
 
 The whole head of the object was confirmed field-by-field against a live dump;
@@ -137,8 +161,60 @@ flag; see `docs/ARCHITECTURE.md` finding 1.
 | `+0x468` | `BioAmmoClass` |
 | `+0x46C` | `PlayerViewOffset` (observed zero) |
 | `+0x484` | `WeaponBobDamping` (0.5, behaviourally inert) |
-| `+0x494` | bitfield including weapon-mode state |
-| `+0x498` | `HandsOffscreenAnimationName` (`HandsDown`) |
+| `+0x494` | bitfield including weapon-mode state (`Hands.uc` lines 35–38) |
+| `+0x498` | `HandsOffscreenAnimationName` (`HandsDown`) — **the anchor** |
+| `+0x4B8` | `InjectingEveAnimationName` (FName, measured idx `22336`) |
+| `+0x4D8` | `ExorcisingGathererAnimationName` (FName, measured idx `22330`) |
+| `+0x558` | `CurrentScriptedAnimationName` — **reads `None` even mid-sequence** |
+| `+0x580` | `HandsAnimationHandle` — increments once per animation played |
+| **`+0x594`** | **three-bool DWORD — see below** |
+
+### `+0x594` — the scripted-animation flag, measured M7-S1, 2026-08-10
+
+```
+bit 0  bFinishedStateAnimations                      toggles with every anim cycle
+bit 1  AbilityHasBeenReleased                        changes on ability use
+bit 2  CurrentlyExecutingScriptedHandAnimationSequence
+```
+
+**Bit 2 is an exact scripted-sequence bracket.** Measured live: set `0.8 s` after
+the tester marked the start of a scripted scene and cleared `0.75 s` before they
+marked the end — both inside human reaction time on the marker key — and it
+**fired exactly once in six minutes** covering weapon fire, plasmid fire, four
+gene-machine opens, a Little Sister rescue and walking. Zero false positives.
+
+**How the offset was derived, and why it is trusted.** Predicted by
+declaration-order arithmetic (`Hands.uc` lines 39→82) from the `+0x494`/`+0x498`
+anchor, which working shipping code already relies on (`IdleAnimMode=2`). UE2
+packs consecutive bools, and lines 80–82 are three in a row, so bit 2 is the
+target. **Four independent live confirmations**, which is what makes this a
+measurement rather than a prediction:
+
+1. `+0x498`, `+0x4B8`, `+0x4D8` all read as plausible FNames (non-zero index,
+   `Number == 0`), and the two animation names sit 6 apart in the name table —
+   consistent with being declared adjacently in one class.
+2. `+0x580` increments like the animation handle it is predicted to be.
+3. Bits 0 and 1 behave exactly as their names say — bit 0 toggles with animation
+   cycles, bit 1 with ability use.
+4. Bit 2 brackets a marked scripted scene and nothing else.
+
+> **Bit 0 is NOT "an animation is playing" — falsified M7-S3.** It is
+> `bFinishedStateAnimations`, and gating the arms on it failed in **opposite
+> directions in two scenes**: the Little Sister crawl hid the arms throughout
+> (including the bottle catch), while the plasmid balcony showed them and then
+> left them frozen. `Hands.uc` `state PlayingScriptedHandAnimation` has an
+> **empty body** and never touches the flag, so it keeps whatever the last
+> weapon state left; `state InjectingEve` does set it. It tracks the Hands state
+> machine's own animations only. `ScriptedHandsAnimationHandle` is no better —
+> only ever assigned, never cleared. Use rig **motion** instead
+> (`ArmHide_HandMotion`).
+
+**What it does NOT cover.** The Little Sister *rescue* and the EVE *injection*
+left bit 2 clear. Both are Hands **states** (`ExorcisingGatherer`, `InjectingEve`)
+rather than scripted sequences — which is exactly why `ShockPlayer.uc:2091` tests
+two separate conditions, `GetStateName() == 'ExorcisingGatherer' ||
+GetStateName() == 'PlayingScriptedHandAnimation'`. Covering those needs the Hands
+state, not this bit.
 
 Ability mode tests `CurrentAbility != null && CurrentHoldable == null`, which
 avoids flapping mid-equip.
@@ -182,6 +258,24 @@ modified** — telekinesis release walks the attachment path through it.
 | Delta function | `0x53D850` | `0x53F7B0` | signature finds 0 matches |
 | AHands vtable | `0xD8A28C` | `0xD8959C` | unknown |
 | SkeletonInstance vtable | `0xE19ACC` | `0xE190EC` | unknown |
+| `execGetPropertyTextByName` symbol | `0xE33F78` | `0xE33370` † | unchecked |
+| its native-table row | `0x11BE684` | `0x11BD6B4` † | unchecked |
+| `execGetPropertyTextByName` | `0x7346E0` | unchecked | unchecked |
+| `execGetPropertyText` | `0x734640` | unchecked | unchecked |
+| `execSetPropertyText` | `0x734840` | unchecked | unchecked |
+| `execSetPropertyTextByName` | `0x734940` | unchecked | unchecked |
+
+**Steam values measured live, M3-S1, 2026-08-10**, identical across two launches
+and agreeing exactly with what static analysis predicted from the file. The
+image is relocated at load — it ran at base `0x0FBA0000` against a preferred
+`0x10900000` — so these RVAs were resolved in a moved image, not at the
+link-time base.
+
+† Epic is **file-derived only**: read out of the shipped executable, never seen
+in a running process. GOG is not installed on the development machine. **Do not
+paste any of these into code** — `docs/modules/enginebridge.md` explains the
+scan that derives them, and the whole point of it is that the row moves between
+storefronts.
 
 Steam and Epic look similar but the data-section shift is **not constant**
 (`0xCF0` for one vtable, `0x9E0` for the other) — no single value serves both.
@@ -191,6 +285,32 @@ function on all three; every hardcoded address did not.
 Open on alternate builds: the GOG delta signature (needs shortening or
 rederiving) and Steam-specific `EnginePtrRva`/`EngineVtableRva`, which is why the
 engine-Exec reticle disable fails on Epic and GOG.
+
+## The native lookup table
+
+How UE2 registers its native functions on this build, and the anchor M3-S1 uses.
+Full treatment in `docs/modules/enginebridge.md`.
+
+`.rdata` holds a run of wide strings of the form `int<Class>exec<Func>` —
+UE2's `IMPLEMENT_FUNCTION` registration symbol. `.data` holds a table of
+**12-byte rows**; the first DWORD of a row points at one of those strings, and
+the two trailing DWORDs are **zero in the file on disk**, so whatever the row
+carries beyond the name is written at runtime.
+
+```
+.rdata   L"intUObjectexecGetPropertyTextByName"   <- exactly one copy
+.data    [ nameptr | dw1 | dw2 ]                  <- exactly one row points at it
+```
+
+Rows observed adjacent to the property accessors, in order: `execGotoState`,
+`execEnable`, `execDisable`, `execGetPropertyText`,
+**`execGetPropertyTextByName`**, `execSetPropertyText`,
+`execSetPropertyTextByName`, `execSaveConfig`, `execStaticSaveConfig`,
+`execAssertScriptAndNativeBuildConfigsMatchNative`.
+
+This is a **general** mechanism, not a one-off: any native the engine registers
+can be reached the same way, by its `int<Class>exec<Func>` name. Locate by that
+string, never by the row's RVA — the row moves between storefronts (table above).
 
 ## CalcView call sites
 

@@ -1,6 +1,6 @@
 # Current state
 
-**Updated:** 2026-08-09 · **Baseline:** `002a81a` "Pre refactor commit" ·
+**Updated:** 2026-08-10 · **Baseline:** `002a81a` "Pre refactor commit" ·
 **Version string:** `1.0.3` (unreleased; `1.0.2` is public)
 
 This file replaces the handoff documents that used to be written by hand between
@@ -14,8 +14,37 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**Run `.planning/sessions/M3.md` § M3-S1** — locate `Object::GetPropertyTextByName`
-by pattern. Read the card, not this section.
+**Find `ShockPlayer.bCannotFall` and close the `FreezeGameplayRotation` gap** —
+the tester asked for this explicitly on 2026-08-10. Full reasoning and the
+corpus evidence are in `.planning/ROADMAP.md` § *Next — the bathysphere probe*.
+Short version: bathysphere rides are not scripted animations, so the gameplay
+rotation freeze wrongly applies to them; `ActionEnableBathysphereModeForPlayer`
+sets `bCannotFall = true` for the ride, which is a Tier 0 bool. Level-name
+gating was considered and rejected — **the mod does not know what map it is on**.
+
+
+
+**Run `.planning/sessions/M3.md` § M3-S2 — and read the ⚠ box on that card
+first**, because the signature is not the one S2 was written against. Read the
+card, not this section.
+
+**M3-S1 passed on 2026-08-10, in one cycle.** `GetPropertyTextByName` is at rva
+`0x7346E0` on Steam, identical across two launches, and all four property
+accessors were located. The address is live in the mod today via
+`EngineBridge_GetPropertyTextByName()` and **nothing calls it** —
+`docs/modules/enginebridge.md`.
+
+So for the first time in this arc the blocker is not *"can we read live engine
+state"* but *"can we invoke this correctly without crashing"*. That is a
+genuinely different question and it is the one S2 asks.
+
+**What S2 inherits, and the trap in it.** The located symbol is
+`exec`GetPropertyTextByName —
+`void UObject::execGetPropertyTextByName(FFrame&, RESULT_DECL)`, a `__thiscall`
+member taking a **bytecode frame**. There is no
+`obj->GetPropertyTextByName('Health')` entry point anywhere. S2's card was
+written assuming one, so its "do not tune the calling convention more than
+twice" budget means *build the frame differently*, not *try another convention*.
 
 **Why M3 and not M2:** M1-S2 was the pivotal test of the whole arc and it came
 back **no**. M2 (StateBus, HUD gate, cutscene anchor, comfort) is all downstream
@@ -55,6 +84,49 @@ ViewActor divergence as a shortcut. All four are falsified with evidence in
 ---
 
 ## Recently closed
+
+**M3-S1 — the native accessors are LOCATED. Passed in one cycle, 2026-08-10.**
+
+```
+>>> NATIVE: GetPropertyTextByName @ 0x102D46E0 (rva 0x7346E0)
+            prologue 55 8B EC 83 E4 F8 83 EC  [slot 1]
+>>> NATIVE: S3 stride 12 measured, 8 of 8 neighbours are rows
+>>> NATIVE: 4 of 4 accessors located, 4 distinct addresses
+```
+
+Two launches, byte-identical offsets. All four accessors landed within `0x300`
+bytes of each other (one translation unit), each with an MSVC prologue and `CC`
+padding, each on an executable page. Health normal both runs.
+
+**The mechanism generalises and that is the real result.** Natives are registered
+by an `int<Class>exec<Func>` wide string in `.rdata`; exactly one 12-byte row in
+`.data` points at it, and the row's second DWORD is the function pointer. Now an
+invariant in `docs/INVARIANTS.md` § *Engine access* — **any** registered native
+is reachable this way. The scan was found by static analysis of the shipped
+executables before any code was written, which also proved the row sits at a
+**different RVA on Steam (`0x11BE684`) than on Epic (`0x11BD6B4`)**.
+
+**The one real risk resolved yes:** the row's function slots are zero on disk and
+are written at runtime. No backoff retry was needed.
+
+**Not yet proven:** that it can be *called*. That is S2, and the signature is not
+what S2's card assumed — see *Next step*.
+
+**Research: roomscale, handedness, detached hands, QOL — 2026-08-10.**
+Desk research only, nothing headset-tested. `docs/proposals/vr-features-research.md`.
+The finding that shapes it: four requested features need **two** enablers, not
+four. Handedness, detached hands and two-handed grip are all one mechanism (a
+rigid bone-cluster transform on the array `ArmHide` already writes to), and
+**roomscale is downstream of M3-S2** — it needs `AActor::Move`, whose symbol is
+confirmed present in the exe.
+
+**`ExcorcisingGatherer` was missing from `kContexts` — fixed.** Diffed the mod's
+table against the game's own 30-entry `Contexts=` list in `User.ini`. Exactly one
+gap, and it was the **Little Sister rescue** — the sequence M3-S3 exists to
+detect. The game misspells it (`Excorcising`), so adding it from memory or from
+the corpus would silently never match. Classified `CTX_SCRIPTED` by inference;
+confirm against a logged value once the context read works. **Compiled, not
+deployed, never run.**
 
 **The duplicate-world square — FIXED.** A textured full-screen quad was landing
 in the HUD capture's one-draw-per-frame slot, and the alpha repair forced it
@@ -127,8 +199,10 @@ view-target scans · console `get` · the input-ignored detector. **Nine now.**
 Live leads, best first:
 1. **The native property call (Tier 1)** — `Object::GetPropertyTextByName`, which
    retail script calls on live instances. **This is M3 and it is the main line.**
-   It can crash, so it must be located by pattern and validated on `Health`
-   before anything trusts it.
+   **Located as of M3-S1** (rva `0x7346E0` on Steam, stable). What remains is
+   invoking it: it is an `exec` native taking an `FFrame`, so it must be called
+   through a constructed bytecode frame and validated on `Health` before anything
+   trusts it. It can crash. That is M3-S2.
 2. **`ShockPlayerController.LastPlayerInputContext`** — the *controller* copy,
    never examined; every scan so far was on the pawn. M3-S3. It is also the only
    lead that covers the Little Sister rescue, which pushes `NullInput` and never
@@ -213,6 +287,23 @@ are inert. Keep them; do not delete.
 
 ## In flight
 
+**M3 — the native call bridge.** `.planning/sessions/M3.md`.
+
+- [x] **M3-S1** locate — passed 2026-08-10, one cycle. `Game/EngineBridge.cpp`.
+- [ ] **M3-S2** call it on `Health`. The pivotal test of the milestone and the
+      first session in the arc that can crash the game. **Its card is stale in
+      one respect and now carries a ⚠ box saying so** — there is no direct
+      `obj->GetPropertyTextByName('Health')` to call.
+- [ ] **M3-S3** the controller's `LastPlayerInputContext`. Skip entirely if S2
+      returns no.
+
+**Uncommitted.** Everything from 2026-08-10 is in the working tree — 20 modified
+files plus three new ones (`Game/EngineBridge.{cpp,h}`,
+`docs/modules/enginebridge.md`, `docs/proposals/vr-features-research.md`).
+Nothing was committed because it was not asked for.
+
+---
+
 Repo repair and refactor prep — plan at
 `~/.claude/plans/c-users-raywi-downloads-downloads-biosh-virtual-flamingo.md`.
 
@@ -266,6 +357,26 @@ settled; the rollback copy is no longer needed.
 ---
 
 ## Last verified in a headset
+
+**2026-08-10, build `M3-S1 native locate` (Aug 10 2026 00:31:20).** Two runs,
+load a save and stand still. Purpose was the `>>> NATIVE:` block and nothing
+else; **no presentation route was walked**, so this session says nothing about
+HUD, hands or comfort.
+
+Health correct in both: `EYEQ: depth min=1 max=1` · `hud: host found 2738` ·
+`POLL: getState 105/s synth 105/s realpad 0/s hook=ON xr=ON`. No errors, no
+crash. The scan cost 0–15 ms and ran exactly once per run.
+
+**Noticed and not chased:** the module loaded at the same base (`0x0FBA0000`)
+both runs, so relaunching did not stress relocation — Windows randomizes an
+EXE's base per boot, not per launch. It *is* relocated from its preferred
+`0x10900000`, so the scan did resolve in a moved image; a reboot would be the
+cleaner test and is not worth a cycle.
+
+> **The DLL in the game folder is the M3-S1 build and is the one that was
+> verified.** `Release/BioshockVR.dll` is one commit ahead of it — it also
+> carries the `ExcorcisingGatherer` context entry, which compiles but has never
+> run. **The next session must build and deploy before testing anything.**
 
 **2026-08-09, build `M1-S2 cinematic flag` (23:19:49).** New game → intro
 bathysphere → level load → out of the bathysphere → plasmid injection → combat

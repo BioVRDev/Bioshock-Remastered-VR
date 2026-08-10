@@ -46,6 +46,57 @@ void* GameState_Pawn();
 int HandsProbe_WeaponSlot();
 bool GameState_Cutscene();   // GameState.cpp
 bool GameState_Theater();    // GameState.cpp
+bool GameState_ScriptedAnim();          // GameState.cpp
+bool GameState_Bathysphere();           // GameState.cpp
+bool Input_GetTurnX(float* out);        // InputHook.cpp
+
+static void Log(const char* fmt, ...);   // defined just below
+
+// M7-S4: is the rig actually animating? The script has no usable flag for this
+// -- see ArmHide.h. Peak-held, then held a further 300 ms so a pause inside a
+// chained animation does not flicker the hands out.
+static bool ScriptedHandsMoving()
+{
+    float smoothed = 0.0f, raw = 0.0f;
+    if (!ArmHide_HandMotion(&smoothed, &raw)) return false;
+
+    const bool moving = smoothed > g_cfg.scriptedHandsMotion;
+
+    static DWORD s_lastMoving = 0;
+    const DWORD now = GetTickCount();
+    if (moving) s_lastMoving = now;
+
+    // The raw and smoothed values are what calibrate the threshold, so print
+    // them while a sequence is running rather than shipping a guessed constant
+    // forever. Throttled; silent outside scripted sequences.
+    static DWORD s_lastLog = 0;
+    if (GameState_ScriptedAnim() && now - s_lastLog >= 500)
+    {
+        s_lastLog = now;
+        Log(">>> SCRIPTED: motion raw %.4f smoothed %.4f  thresh %.4f  -> %s",
+            raw, smoothed, g_cfg.scriptedHandsMotion, moving ? "MOVING" : "still");
+    }
+
+    return moving || (s_lastMoving && (now - s_lastMoving) < 300);
+}
+
+// M7-S2. THE FIRST REAL SCRIPTED-EVENT SIGNAL THIS PROJECT HAS HAD.
+// hands+0x594 bit 2, measured exact on both edges and zero false positives over
+// six minutes of mixed play (docs/ENGINE-MAP.md § Hands actor).
+//
+// DELIBERATELY NOT ROUTED THROUGH TheaterMode(). That predicate is ANDed with
+// g_cfg.cutsceneTheater, which docs/INVARIANTS.md records as falsified because
+// it forces every cutscene onto the flat quad -- so gating the arms on it meant
+// they could only ever unhide as a side effect of a setting nobody should use.
+// Different question, different switch.
+//
+// SCOPE, and do not widen it by assumption: this is scripted hand ANIMATION
+// SEQUENCES. The Little Sister rescue and the EVE injection were both MEASURED
+// leaving this bit clear -- they are Hands states, a different mechanism.
+static bool ScriptedQol()
+{
+    return g_cfg.scriptedQol && GameState_ScriptedAnim();
+}
 
 // One predicate, four call sites. Cheap: a cached pointer and two strcmps.
 bool DrawHook_NoWorldRender();   // DrawHook.cpp
@@ -894,6 +945,14 @@ void CameraHook_LateHandsWrite()
 {
     if (!g_cfg.sixDofHands || !g_hwValid || !g_hwObj) return;
     if (GameState_Theater()) { g_hwValid = false; return; }
+
+    // M7-S2, and this one is NOT optional. DriveHands stops publishing during a
+    // scripted animation, but this runs from Present off a CACHED rotation --
+    // so without invalidating it we would keep re-applying the last pre-cutscene
+    // wrist angle every frame, pinning the hands at a stale rotation for the
+    // whole sequence. Clearing the cache is what hands the rig back to the game.
+    if (ScriptedQol()) { g_hwValid = false; return; }
+
     if (GameState_Paused()) return;   // render-thread half of the same freeze
 
     // The hands actor is destroyed on level/save load. This runs on the RENDER
@@ -1164,6 +1223,11 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     if (GameState_Cutscene()) return;
     if (GameState_Paused()) return;   // hands hold still behind a menu
 
+    // M7-S2: the game is animating the hands on purpose. Let it. Moving the
+    // controllers during a scripted moment dragged the hand models wherever you
+    // pointed, which is the immersion break this exists to fix.
+    if (ScriptedQol()) return;
+
     void* obj = nullptr; unsigned locOff = 0, rotOff = 0;
     if (!HandsProbe_GetTargets(&obj, &locOff, &rotOff)) return;
 
@@ -1415,8 +1479,27 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
         if (haveHands)
         {
+            // M7-S2: show the arms during a scripted animation. They are hidden
+            // in normal play because the game animates them from a shoulder that
+            // is not where yours is -- but during a scripted moment the game is
+            // animating them ON PURPOSE and the stretch does not happen, so the
+            // reason to hide them is gone. ArmHide_Update(actor, false) restores
+            // the engine's own pose; it does not have to be told how.
+            // M7-S4: only while the rig is ACTUALLY MOVING. The first attempt
+            // gated on bFinishedStateAnimations and failed in opposite
+            // directions in two scenes -- see the falsification banner in
+            // GameState.cpp. Motion answers the question the flags cannot.
+            const bool inScripted = ScriptedQol();
+            const bool animating = inScripted && ScriptedHandsMoving();
+
+            // Still, mid-sequence: hide the WHOLE actor -- arms, hands and
+            // weapon. Those are the frozen poses the tester reported as goofy:
+            // hands pointing straight down through the crawl scene, and parked
+            // in your face after the balcony fall.
+            ArmHide_SetActorHidden(handsActor, inScripted && !animating);
+
             const bool hide = g_cfg.hideArmSleeves && g_cfg.sixDofHands &&
-                !theater && !GameState_Paused();
+                !theater && !animating && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
 
             // Per-weapon: the shotgun and Tommy gun read better two-handed, so
@@ -1425,7 +1508,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             const bool hideHand = (wslot >= 0 && wslot <= 8)
                 ? (g_cfg.hideHandSlot[wslot] != 0) : (g_cfg.hideInactiveHand != 0);
 
-            if (hideHand && g_cfg.sixDofHands && !theater && !GameState_Paused())
+            // Gated on the SEQUENCE, not on motion: the whole-actor hide above
+            // already covers the still stretches, and letting this follow the
+            // motion signal too would have the two paths fighting each other
+            // over the same bones.
+            if (hideHand && g_cfg.sixDofHands && !theater && !inScripted &&
+                !GameState_Paused())
                 ArmHide_UpdateInactiveHand(handsActor,
                     HandsProbe_AbilityMode() ? 0 : 1);
             else
@@ -1793,6 +1881,49 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // only believe the heuristic when we are NOT in gameplay.
             const bool uiUp = GameState_Paused() ||
                 (DrawHook_MenuUp() && !GameState_InGame());
+
+            // ---- M7-S2: GIVE THE SEQUENCE ITS DIRECTION BACK ----------------
+            // Controller.Rotation (+0x1E4) drives the view, the weapon trace AND
+            // THE WALK DIRECTION -- see the warning in docs/ENGINE-MAP.md. With
+            // head-aim on, the mod writes the head's heading into that field, so
+            // during a forced-walk sequence turning your head steered where the
+            // game walked you. That is the reported bug.
+            //
+            // The fix is to not WRITE the field while a scripted animation runs.
+            // Controller.Rotation then stays exactly as the game set it.
+            //
+            // HEAD LOOK IS UNAFFECTED, which is the whole point. The view is
+            // composed into *CameraRotation on a separate path that never
+            // touches this field, so you keep full freedom to look around while
+            // the game keeps full control of where you go.
+            //
+            // ---- M7-S3: READING AND WRITING ARE TWO DIFFERENT DECISIONS -----
+            // FIXED HERE: the first cut suppressed the write by leaving aimField
+            // null, which skipped the WHOLE block -- including the part that
+            // advances g_aimBase by the game's own rotation delta. The view is
+            // composed from g_aimBase, so the scripted camera stopped turning
+            // the player at all: the crawl scene never rotated and the balcony
+            // landing faced away from the action.
+            //
+            // So we still enter the block and still follow the game's rotation.
+            // Only the write back into Controller.Rotation is suppressed.
+            const bool scriptedAim = ScriptedQol();
+
+            // Re-arm on the way out, or the base is stale by however far the
+            // sequence turned you and the view snaps. Same reason the cutscene
+            // path below clears g_aimInit.
+            static bool s_wasScriptedAim = false;
+            if (s_wasScriptedAim && !scriptedAim)
+            {
+                g_aimInit = false;
+                Log(">>> SCRIPTED: aim released back to the player");
+            }
+            else if (!s_wasScriptedAim && scriptedAim)
+            {
+                Log(">>> SCRIPTED: aim handed to the game (head look kept)");
+            }
+            s_wasScriptedAim = scriptedAim;
+
             if (g_cfg.headAim && g_cfg.headTracking &&
                 !uiUp && !CameraHook_Starved())
             {
@@ -1849,7 +1980,61 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         // mean you could not turn at all.
                         const bool freeze = (g_cfg.freezeGameRot && g_cfg.modYaw);
 
-                        if (!aimNowCut && !freeze)
+                        // ==========================================================
+                        //  TEMPORARY -- M7-S3, and it has a KNOWN GAP. Read this.
+                        // ==========================================================
+                        // FreezeGameplayRotation discards the game's own rotation
+                        // during ordinary play: screenshake, recoil kick and the
+                        // subtle auto-pan toward enemies all arrive as these three
+                        // deltas and nowhere else.
+                        //
+                        // Gated on the stick being CENTRED, which is what lets it
+                        // work without ModYaw: your own turning still arrives as dY
+                        // and must survive. That deliberately keeps grave 12's
+                        // stick-zeroing out of this entirely.
+                        //
+                        // ⚠ THE GAP: A BATHYSPHERE RIDE IS NOT A SCRIPTED ANIMATION,
+                        // so this freezes there too and the ride's camera stops
+                        // following the sphere. Excluding it by level name was
+                        // considered and is NOT possible today -- the mod does not
+                        // know what map it is on; g_level is used only for
+                        // Level.Pauser.
+                        //
+                        // THE REAL FIX IS ALREADY IDENTIFIED, and this block should
+                        // be revisited the moment it lands:
+                        // ActionEnableBathysphereModeForPlayer sets
+                        // ShockPlayer.bCannotFall = true for the whole ride. One
+                        // Tier 0 bool. Find its offset and AND it in here.
+                        // See .planning/ROADMAP.md.
+                        //
+                        // Ships default 0 for that reason.
+                        // M7-S4: THE GAP IS CLOSED. A bathysphere ride is not a
+                        // scripted animation, so the freeze used to apply there
+                        // and stop the camera following the sphere. It is now
+                        // excluded by its own signal -- Pawn.bCannotFall, which
+                        // the ride sets for its whole duration. The level-name
+                        // gate that was considered instead was impossible: the
+                        // mod does not know what map it is on.
+                        bool gameplayFreeze = false;
+                        if (g_cfg.freezeGameplayRot && !scriptedAim &&
+                            !GameState_Bathysphere())
+                        {
+                            float tx = 0.0f;
+                            const bool haveStick = Input_GetTurnX(&tx);
+                            gameplayFreeze = !haveStick || fabsf(tx) <= 0.02f;
+                        }
+
+                        // M7-S4 comfort: following the game's rotation through a
+                        // scripted sequence is what turns you to face the action
+                        // -- and it is also exactly the kind of unrequested
+                        // motion that makes some people sick. At 0 the view
+                        // holds still and the player turns themselves with the
+                        // right stick, which already works during sequences.
+                        const bool scriptedRotBlocked =
+                            scriptedAim && !g_cfg.scriptedRotFollow;
+
+                        if (!aimNowCut && !freeze && !gameplayFreeze &&
+                            !scriptedRotBlocked)
                         {
                             g_aimBase.pitch += dP;
                             g_aimBase.yaw += dY;
@@ -1868,7 +2053,19 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Rotating the heading ourselves is what gives turning authority:
             // it works even in states where the game ignores the pad entirely,
             // which is how you get stick look during a scripted sequence.
-            if (g_cfg.modYaw)
+            // M7-S3: ALSO run this while a scripted animation is playing, even
+            // with ModYaw off. It rotates g_aimBase, which the VIEW is composed
+            // from, and never touches Controller.Rotation -- so it gives stick
+            // look during a sequence WITHOUT influencing where the sequence
+            // walks you. That is exactly the ask, and it is why the aim write
+            // above must stay suppressed for this to be safe.
+            //
+            // No double-turn: during these sequences the game has pushed
+            // NullInput and is discarding the pad, which is the case
+            // Input_GetTurnX was written for. If a sequence ever turns out NOT
+            // to suppress the pad, turning there will feel doubled -- that is
+            // the symptom to report.
+            if (g_cfg.modYaw || scriptedAim)
             {
                 static LARGE_INTEGER s_freq = {};
                 static LARGE_INTEGER s_prev = {};
@@ -2190,7 +2387,21 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // --- HEAD-AIM WRITE ---
             // g_aimBase was advanced at the top of this block, from the same
             // value the view was composed from. Only the write remains here.
-            if (aimField)
+            // M7-S3: THE SUPPRESSION LIVES HERE NOW, not on the block above.
+            // Controller.Rotation (+0x1E4) drives the walk direction as well as
+            // the view, so writing our heading during a scripted sequence steers
+            // it. Skipping just this write is what makes sequences land where
+            // they intend -- do not move this condition back up to the read.
+            if (aimField && scriptedAim)
+            {
+                // The delta above is measured against g_aimLastWrote ("only the
+                // game's own change since our last write"). With the write
+                // suppressed that reference goes stale and next frame's delta
+                // would compound the same rotation again, spinning the view.
+                // Re-baseline every frame we decline to write.
+                g_aimLastWrote = *aimField;
+            }
+            else if (aimField)
             {
                 FRotator want;
                 if (g_cfg.headAimMode <= 0)

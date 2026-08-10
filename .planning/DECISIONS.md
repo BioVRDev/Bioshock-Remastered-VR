@@ -239,3 +239,113 @@ plainly that rebinding needs a code fix.
 **Do not treat a source comment about the tester's hardware as fact.** Two
 comments claim `PGUP`/`PGDN` "never register". The tester uses both routinely.
 Acting on the stale comment produced a keybinding detour that was never needed.
+
+---
+
+## 2026-08-10 — M3-S1 located the natives by symbol name, not by FName scan
+
+> **RESULT: PASSED in one cycle.** `GetPropertyTextByName` @ rva `0x7346E0` on
+> Steam, identical across two launches, all four accessors located, stride 12
+> with 8 of 8 neighbours agreeing. The row's function slots **are** written at
+> runtime — the one real risk, resolved on the first attempt. Numbers in
+> `docs/modules/enginebridge.md`; the mechanism is now an invariant in
+> `docs/INVARIANTS.md` § *Engine access*.
+
+The card specified reusing `FindCalcView`'s six-stage FName/string scan.
+**Static analysis of the two shipped executables — read-only, offline, no
+headset — found a strictly better anchor**, and the implementation deviates
+accordingly. Recorded here so the deviation is not mistaken for drift.
+
+`BioshockHD.exe` contains `L"intUObjectexecGetPropertyTextByName"` exactly once
+in `.rdata`. That is UE2's `IMPLEMENT_FUNCTION` registration symbol, and exactly
+one DWORD in the image points at it, from a 12-byte row of the engine's native
+table in `.data`. `FindCalcView` needs six stages because an FName literal only
+reaches a cached-index global; this anchor lands on the function's own row. So
+the scan is three stages, validated against the table's own stride regularity.
+
+Every principle of the card survives: locate by pattern never by RVA, staged,
+fail closed, log the near misses, one-shot with backoff.
+
+**Two things the card did not anticipate.** All four property accessors are
+located rather than one — four adjacent rows down the same code path, free, and
+four distinct executable addresses is far stronger evidence than one. And the
+row's function slots are **zero on disk**, so the runtime read is the whole
+question; the tick retries with backoff and dumps the raw rows if they never
+fill, which makes a NO cost one cycle instead of two.
+
+**The value of going one rung past the card.** The static pass cost no headset
+cycle and settled three things the session would otherwise have spent one on:
+that the anchor exists at all, that it is unique, and that its row sits at a
+**different RVA on Steam (`0x11BE684`) than on Epic (`0x11BD6B4`)** — which is
+`docs/ENGINE-MAP.md` § *Storefront divergence* made concrete, and proof that a
+hardcoded address would already have been wrong on one of the two builds we can
+check.
+
+**A trap worth keeping.** `intUObjectexecGetPropertyText` is a prefix of
+`intUObjectexecGetPropertyTextByName`. Matching without the null terminator makes
+the shorter name hit inside the longer one and returns the wrong function. This
+happened during the static pass; the terminator is now part of the needle.
+
+**A correction owed to M3-S2.** The symbol is `exec`GetPropertyTextByName, i.e.
+`void UObject::execGetPropertyTextByName(FFrame&, RESULT_DECL)` — a `__thiscall`
+member taking a bytecode frame. There is no `obj->GetPropertyTextByName('Health')`
+entry point. S2 was written assuming one; its card now carries a ⚠ box saying so.
+
+`EnableNativeScan` ships **default 1**, a deliberate exception to
+"new behaviour ships default-off": the scan writes nothing, hooks nothing and
+gates nothing, and its entire product is the log line, so shipping it off would
+waste the cycle it exists to spend. Same reasoning as the M1 `MyHudTick` probes.
+
+---
+
+## 2026-08-10 — four VR features collapse onto two enablers, not four
+
+Research only, no headset time — `docs/proposals/vr-features-research.md`.
+Recorded here because the *shape* of the answer is the decision, and someone
+scoping these four features separately would spend far more than they need to.
+
+**Roomscale, left-handed mode, detached hands and two-handed grip were scoped
+together and came back as two projects.**
+
+1. **Handedness, detached hands and two-handed grip are one mechanism** — a rigid
+   bone-cluster transform on the `hkQsTransform` render bone array `ArmHide`
+   already writes to. The rotation lane is sitting there untouched; the rig is
+   mapped (left cluster 6–21, right 27–44, bone 43 the weapon attachment).
+   `docs/modules/hands.md` § *Future direction* had already described this
+   mechanism before the features were requested. Build it once; the three
+   features are configuration on top.
+2. **Roomscale is downstream of M3-S2.** It needs a swept, collision-checked
+   move, which is `AActor::Move` — and `intAActorexecMove` is **confirmed present
+   in the shipped exe** by the same scan M3-S1 shipped. So S2's `FFrame`
+   machinery should be built with a second caller (a vector parameter) in mind.
+   **This raises M3-S2's value well above cutscene detection** and is the single
+   most useful thing the research produced.
+
+**Rejected as the roomscale primitive: writing `Location` (`+0x1D8`) directly.**
+The offset is known, it is tempting, and it is `SetLocation(bNoTest=true)`
+semantics — no collision at all. You would walk through walls. Velocity injection
+is kept as a fallback: collision comes free but it is a push, not an exact
+displacement, so it will not track 1:1.
+
+**Two lottery tickets worth buying before building anything**, one console
+command each through the *existing* Exec channel:
+
+- `set Pistol AttachBone L_Grip`. `Holdable.AttachBone` is a `config name`
+  defaulting to `"R_Grip"`, so if the rig has a left counterpart the weapon moves
+  hands using the game's own attachment system and left-handed mode collapses to
+  almost nothing. **Caveat: `R_Grip` is the only such name anywhere in the
+  corpus**, so there is no positive evidence `L_Grip` exists.
+- Any `PlayerController` exec (e.g. `ForcePause`) to confirm `UGameEngine::Exec`
+  reaches them. This gates a **free QOL pass**: `User.ini` binds exec functions
+  straight to gamepad buttons — with `onHold`, `onRelease` and `MODIFIER` chords,
+  per input context — so **quick save/load on a controller chord** needs no
+  engine work at all. Highest-value QOL item found.
+
+**One real bug fixed on the way.** `kContexts` was diffed against the game's own
+30-entry `Contexts=` list in `User.ini`. Exactly one was missing:
+**`ExcorcisingGatherer`** — the Little Sister rescue, i.e. the one sequence M3-S3
+exists to detect. **The game misspells it** (`Excorcising`, while the corpus
+spells the *animation* name correctly), so adding it from memory or from
+`ShockPlayer.uc` would silently never match. Added, classified `CTX_SCRIPTED` by
+inference, compiled, **not deployed and never run**. Re-run that diff against
+`User.ini` rather than trusting the corpus or the table.

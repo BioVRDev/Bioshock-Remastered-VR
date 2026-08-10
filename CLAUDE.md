@@ -38,8 +38,8 @@ to and why.
 search across many files would actually help. A cold subagent re-derives context
 you already hold; it is the most expensive move available here.
 
-Avoid whole-file reads over ~400 lines — `CameraHook.cpp` (2583) and
-`DrawHook.cpp` (2153) are ~55k tokens together. Grep the banner anchor and read a
+Avoid whole-file reads over ~400 lines — `CameraHook.cpp` (2263) and
+`DrawHook.cpp` (1893) are ~45k tokens together. Grep the banner anchor and read a
 window. If the window genuinely isn't enough, read more; under-reading is worse.
 
 **Current arc:** live state → cutscene detection → QOL. Findings and design in

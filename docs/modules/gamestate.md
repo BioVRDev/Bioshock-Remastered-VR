@@ -1,6 +1,8 @@
 # Game state and cutscene detection
 
-`Game/GameState.cpp` (1166) and `Game/EngineExec.cpp` (273).
+`Game/GameState.cpp` (1502) and `Game/EngineExec.cpp` (242).
+The Tier 1 native-call work lives next door in `Game/EngineBridge.cpp` —
+`docs/modules/enginebridge.md`.
 
 **This is the project's longest-standing unsolved problem.** Everything
 downstream of a cutscene signal is already built and waiting for an input.
@@ -155,3 +157,13 @@ answer and it is a project, not a session.
 - The `ContainerUIActive` context is deliberately mapped to `CTX_GAMEPLAY` — it
   was previously classified as a menu, which closed the HUD redirect merely on
   *approaching* a lootable crate.
+- **`kContexts` was diffed against the game's own list on 2026-08-10** — the
+  `Contexts=` block in `%APPDATA%\BioshockHD\Bioshock\User.ini`, which is the
+  authority. Exactly one of the game's 30 was missing, and it was
+  **`ExcorcisingGatherer`** — the Little Sister rescue, i.e. the one sequence
+  M3-S3 exists to detect. Now added, classified `CTX_SCRIPTED` by **inference**;
+  confirm against a real logged value once the context read works.
+  > **The game misspells it.** `Excorcising`, not `Exorcising` — while the script
+  > corpus spells the *animation* name correctly. Add it from memory and it will
+  > silently never match. Re-run that diff against `User.ini` rather than
+  > trusting either the corpus or this list.

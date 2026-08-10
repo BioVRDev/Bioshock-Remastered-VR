@@ -166,6 +166,7 @@ void Config_Load(const char* iniPath)
     g_cfg.pairLock = CfgBool("PairLockCamera", true);
     g_cfg.heightOffset = CfgFloat("CameraHeightOffset", g_cfg.heightOffset, -100.f, 100.f);
     g_cfg.cutsceneTheater = CfgBool("CutsceneTheater", false);
+    g_cfg.scriptedQol = CfgBool("ScriptedEventQol", false);
     g_cfg.deltaClamp = CfgInt("DeltaClamp", 0);
     g_cfg.hudAlphaFix = CfgBool("HudAlphaFix", true);
     g_cfg.hudDsvMode = CfgIntRange("HudDsvMode", g_cfg.hudDsvMode, 0, 2);
@@ -287,6 +288,10 @@ void Config_Load(const char* iniPath)
     g_cfg.snapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
     g_cfg.snapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
     g_cfg.freezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
+    g_cfg.freezeGameplayRot = CfgIntRange("FreezeGameplayRotation", 0, 0, 1);
+    g_cfg.scriptedRotFollow = CfgIntRange("ScriptedRotationFollow", 1, 0, 1);
+    g_cfg.scriptedHandsMotion =
+        CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
     g_cfg.modYaw = CfgIntRange("ModYaw", 0, 0, 1);
     g_cfg.modYawSpeed = CfgFloat("ModYawSpeed", 90.0f, 15.0f, 360.0f);
     g_cfg.forceFocus = CfgIntRange("ForceWindowFocus", 1, 0, 1);
@@ -323,6 +328,18 @@ void Config_Load(const char* iniPath)
     // debug / probe
     g_cfg.drawHook = CfgBool("EnableDrawHook", true);
     g_cfg.gameState = CfgBool("EnableGameState", true);
+    // DEFAULT ON, and that is a deliberate exception to "new behaviour ships
+    // default-off". The scan is read-only, hooks nothing, writes nothing and
+    // gates nothing -- its entire product IS the log line, so shipping it off
+    // would waste the headset cycle it exists to spend. Same reasoning as the
+    // MyHudTick/CineTick probes. The switch is here to kill it without a
+    // rebuild, not to hide it.
+    g_cfg.nativeScan = CfgBool("EnableNativeScan", true);
+    // DEFAULT OFF, unlike EnableNativeScan above, and the difference is the
+    // point: that one is a one-shot locate, this one samples two windows four
+    // times a second for the whole session. Diagnostic, read-only, gates
+    // nothing -- but it is the only periodic diff in the mod, so it is opt-in.
+    g_cfg.forcedMoveProbe = CfgBool("EnableForcedMoveProbe", false);
     g_cfg.hookInstanced = CfgBool("HookInstanced", false);
     CfgStr("SuppressIndexCounts", "", g_cfg.suppressList, sizeof(g_cfg.suppressList));
     CfgStr("IsolateCounts",
@@ -377,6 +394,15 @@ void Config_Load(const char* iniPath)
     CfgEcho("CameraHeightOffset", "%.1f cm", g_cfg.heightOffset);
     CfgEcho("CutsceneTheater", "%d  %s", (int)g_cfg.cutsceneTheater,
         g_cfg.cutsceneTheater ? "(cutscenes on the flat quad)" : "(cutscenes in 3D)");
+    CfgEcho("ScriptedEventQol", "%d  %s", (int)g_cfg.scriptedQol,
+        g_cfg.scriptedQol ? "(arms shown, hands and aim released)" : "(off)");
+    CfgEcho("FreezeGameplayRotation", "%d  %s", g_cfg.freezeGameplayRot,
+        g_cfg.freezeGameplayRot ? "(bathyspheres excluded via bCannotFall)"
+        : "(off)");
+    CfgEcho("ScriptedRotationFollow", "%d  %s", g_cfg.scriptedRotFollow,
+        g_cfg.scriptedRotFollow ? "(cutscenes turn you)"
+        : "(view holds still; turn yourself)");
+    CfgEcho("ScriptedHandsMotionThreshold", "%.4f", g_cfg.scriptedHandsMotion);
     CfgEcho("DeltaClamp", "%d  %s", g_cfg.deltaClamp,
         (g_cfg.deltaClamp == 2) ? "(BOTH worlds, one advance per eye pair)"
         : (g_cfg.deltaClamp == 1) ? "(player world only)" : "(off, one per eye)");
@@ -470,6 +496,8 @@ void Config_Load(const char* iniPath)
     Log("[debug/probe]");
     CfgEcho("EnableDrawHook", "%d", (int)g_cfg.drawHook);
     CfgEcho("EnableGameState", "%d", (int)g_cfg.gameState);
+    CfgEcho("EnableNativeScan", "%d", (int)g_cfg.nativeScan);
+    CfgEcho("EnableForcedMoveProbe", "%d", (int)g_cfg.forcedMoveProbe);
     CfgEcho("HookInstanced", "%d", (int)g_cfg.hookInstanced);
     CfgEcho("HideInactiveHand", "%d", g_cfg.hideInactiveHand);
     CfgEcho("HideCutsceneBars", "%d  verts %d", g_cfg.hideCutsceneBars, g_cfg.cutsceneBarVerts);

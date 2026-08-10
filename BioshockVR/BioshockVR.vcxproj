@@ -147,6 +147,7 @@
     <ClCompile Include="Core\Config.cpp" />
     <ClCompile Include="Core\dllmain.cpp" />
     <ClCompile Include="Hud\DrawHook.cpp" />
+    <ClCompile Include="Game\EngineBridge.cpp" />
     <ClCompile Include="Game\EngineExec.cpp" />
     <ClCompile Include="Game\GameIni.cpp" />
     <ClCompile Include="Game\GameState.cpp" />
@@ -162,6 +163,7 @@
     <ClInclude Include="Camera\CameraHook.h" />
     <ClInclude Include="Core\Config.h" />
     <ClInclude Include="Hud\DrawHook.h" />
+    <ClInclude Include="Game\EngineBridge.h" />
     <ClInclude Include="Game\EngineExec.h" />
     <ClInclude Include="Game\GameIni.h" />
     <ClInclude Include="Game\GameState.h" />

@@ -63,6 +63,9 @@
     <ClCompile Include="Game\GameState.cpp">
       <Filter>Game</Filter>
     </ClCompile>
+    <ClCompile Include="Game\EngineBridge.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
     <ClCompile Include="Game\EngineExec.cpp">
       <Filter>Game</Filter>
     </ClCompile>
@@ -117,6 +120,9 @@
       <Filter>Hands</Filter>
     </ClInclude>
     <ClInclude Include="Game\GameState.h">
+      <Filter>Game</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\EngineBridge.h">
       <Filter>Game</Filter>
     </ClInclude>
     <ClInclude Include="Game\EngineExec.h">
