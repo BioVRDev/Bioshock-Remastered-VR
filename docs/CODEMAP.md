@@ -77,7 +77,7 @@ thread that loads config, syncs the game ini and arms the hooks.
 will not advance for a change in another file and the log will identify the
 wrong build.
 
-### `Core/Config.h` / `Core/Config.cpp` (192 / 459) — every setting, one struct
+### `Core/Config.h` / `Core/Config.cpp` (214 / 481) — every setting, one struct
 ~139 settings in `struct VrConfig`, one instance `g_cfg`, read from
 `BioshockVR.ini` and echoed at startup. That echo is the authority on what
 actually took effect. Replaced 138 loose globals and 161 duplicated `extern`
@@ -100,7 +100,7 @@ were recoverable after the marker key turned out to be dead. Keep a logging path
 if the sweep is ever optimised.
 → **`docs/modules/render.md`**
 
-### `Camera/CameraHook.cpp` (2263) — the camera seam ⚠️ largest file
+### `Camera/CameraHook.cpp` (2525) — the camera seam ⚠️ largest file
 Finds `APlayerController::eventPlayerCalcView` by an FName/string chain (never a
 hardcoded RVA), hooks it, and writes the camera the engine actually renders.
 Also owns the eye FIFO, the latched-pose channel, motion aim, head aim, snap
@@ -125,19 +125,33 @@ Banners: `the classifier`, `capture surfaces`, `ALPHA REPAIR`,
 `menu detection`, `ANCHOR list`.
 → **`docs/modules/hud.md`** — mandatory before changing anything in the capture path.
 
-### `Input/InputHook.cpp` (1172) — OpenXR actions → synthetic XInput
+### `Input/InputHook.cpp` (1200) — OpenXR actions → synthetic XInput
 Producer on the render thread (one action set, synced per XR frame, published
 through a seqlock); consumer is the `XInputGetState` detour. Owns hand poses,
 the d-pad modifier, pause/help chords, head-relative movement, grip
 threshold/hysteresis.
 → **`docs/modules/input.md`**
 
-### `Game/GameState.cpp` (1501) — the game's own UI/context state
-`Level.Pauser` for pause, plus a one-shot scan of the pawn for the
-`LastPlayerInputContext` FString and a `kContexts` classification table.
-**The scan has never locked** — zero `>>> CONTEXT` lines in any session — so
-`GameState_MenuUp`/`RadialOpen`/`ScriptedSequence`/`Cutscene` are effectively
-inert. Everything downstream of cutscene detection is built and waiting.
+### `Game/GameState.cpp` (2093) — the game's own state, and the signals that work
+**This file now owns the project's working scripted-event detection.** Three
+Tier 0 signals, all measured, all read-only, all published through the same
+interlocked channel as `g_paused`:
+
+| Predicate | Source | Covers |
+|---|---|---|
+| `GameState_ScriptedAnim` | `hands+0x594` bit 2 | a scripted hand-animation sequence |
+| `GameState_ForcedMove` | `controller+0x9E0` | the game interpolating the player into place |
+| `GameState_Bathysphere` | `pawn+0x464` bit 1 | a bathysphere ride |
+
+Both bit reads **fail closed on shape** — the bathysphere needs its oracle bit
+clear, the forced move must read exactly 0 or 1 — after a stale pawn pointer
+holding ASCII raised a false positive. Grep `GATE ON THE ORACLE`.
+
+Also `Level.Pauser` for pause, and the old one-shot pawn scan for
+`LastPlayerInputContext`. **That scan has still never locked** — zero
+`>>> CONTEXT` lines in any session — so `GameState_MenuUp`/`RadialOpen`/
+`ScriptedSequence`/`Cutscene` remain inert. They are a *different* mechanism from
+the three above and must not be confused with them.
 
 Also holds the two M1 probes, both **read-only, one-shot, gating nothing**:
 banners `MYHUD PROBE` (locks `PlayerController.myHUD` at `+0x71C` by searched
@@ -169,11 +183,19 @@ cursor offsets, live numpad tuning that saves back to the INI, weapon-slot and
 plasmid-mode detection.
 → **`docs/modules/hands.md`**
 
-### `Hands/ArmHide.cpp` (437) — sleeve and inactive-hand suppression
+### `Hands/ArmHide.cpp` (527) — sleeve/hand suppression, motion, whole-actor hide
 Collapses ten sleeve bones to zero scale at the skeleton, leaving the 34
 hand/finger bones and the weapon attachment alone. Fail-closed: two vtables
 verified, skeleton ownership checked, bone count must be exactly 47.
 **Bone 43 must never be touched** — telekinesis release uses it and crashes.
+
+Also owns two things M7 depends on: `ArmHide_HandMotion` (model-space motion of
+the right wrist — whether the rig is *actually animating*, which no script flag
+answers) and `ArmHide_SetActorHidden` (arms, hands and weapon together via
+`DrawScale3D`). **The actor hide is deliberately not a bone write:** this file
+clears the dirty byte to make its writes stick, which freezes the whole array —
+so hiding by bone would freeze the very bone the motion sampler reads. That
+combination produced a bistable latch once already.
 → **`docs/modules/hands.md`**
 
 ### `Input/Swing.cpp` (193) — physical wrench gesture

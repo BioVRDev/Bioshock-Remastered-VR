@@ -391,6 +391,37 @@ settled; the rollback copy is no longer needed.
 
 ## Last verified in a headset
 
+**2026-08-10 17:14, build `M7-S6 forced-move gate + freeze on` (15:36:35).**
+Bathysphere ride, two scripted sequences, ordinary play. Tester verdict:
+**"Perfect on every front."**
+
+The log carries the evidence, not just the verdict:
+
+```
+17:16:58.589  FORCEDMOVE: the game is moving the player -- aim released
+17:16:59.545  FORCEDMOVE: done
+17:16:59.559  SCRIPTED ANIMATION BEGAN
+```
+
+**14 ms between the forced move ending and the scripted animation starting** —
+the two windows hand off seamlessly, which is the entry stall closed. The
+bathysphere boarding was bracketed the same way (`17:15:17.6 → 17:15:18.9`,
+immediately followed by `BATHYSPHERE MODE ON`).
+
+Config echo confirms all three switches live: `ScriptedEventQol 1`,
+`FreezeGameplayRotation 1`, `ScriptedRotationFollow 1`. Health normal —
+`EYEQ depth min=1 max=1`, `hud: host found 35887`, `POLL synth 132/s realpad 0`.
+
+**Noticed and not chased:** the bathysphere read hit a **stale pawn pointer**
+twice across two runs, once as `0x32313936` and once as `0x5F333739` — both
+ASCII, both during a level transition, which is exactly when a bathysphere ride
+ends. The oracle gate caught the first (false ON); the second produced a
+harmless early "mode off". **A cheap hardening is available and not yet done:**
+that DWORD holds three bools, so any value `> 7` is garbage by construction.
+Add that shape check next time the file is open.
+
+
+
 **2026-08-10, build `M3-S1 native locate` (Aug 10 2026 00:31:20).** Two runs,
 load a save and stand still. Purpose was the `>>> NATIVE:` block and nothing
 else; **no presentation route was walked**, so this session says nothing about
