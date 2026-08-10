@@ -340,6 +340,7 @@ void Config_Load(const char* iniPath)
     // times a second for the whole session. Diagnostic, read-only, gates
     // nothing -- but it is the only periodic diff in the mod, so it is opt-in.
     g_cfg.forcedMoveProbe = CfgBool("EnableForcedMoveProbe", false);
+    g_cfg.forcedMoveProbeAll = CfgBool("ForcedMoveProbeAll", false);
     g_cfg.hookInstanced = CfgBool("HookInstanced", false);
     CfgStr("SuppressIndexCounts", "", g_cfg.suppressList, sizeof(g_cfg.suppressList));
     CfgStr("IsolateCounts",

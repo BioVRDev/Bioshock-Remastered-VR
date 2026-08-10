@@ -69,6 +69,15 @@ handoff disagree, this file wins.
   bracket, zero false positives in six minutes of mixed play. **It does not cover
   the Little Sister rescue or the EVE injection** — those are Hands *states*, a
   different mechanism. `docs/ENGINE-MAP.md` § *Hands actor*.
+- **You cannot hide by bone and measure by bone at the same time.** `ArmHide`
+  clears the skeleton's dirty byte so its writes stick, which stops the engine
+  re-evaluating **the whole bone array** — so any signal read from that array
+  freezes the instant anything hides through it. M7-S4 hid the arms on a motion
+  signal sampled from the same array and produced a **bistable latch**: a scene
+  entered hidden could never un-hide (motion read a flat `0.0000` while the same
+  metric peaked at 3.77 elsewhere in the run), and a scene entered visible could
+  never hide. Hide through `DrawScale3D` on the actor instead, or measure
+  something the hide does not touch.
 - **When a differential probe shares a log budget with noisy windows, the noisy
   windows eat it.** M7-S1's 200-transition cap was consumed in six seconds by the
   controller and pawn windows (117/256 and 206/288 fields non-zero and churning),

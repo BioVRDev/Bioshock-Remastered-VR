@@ -107,13 +107,21 @@ fresh one for the next three:
 | **`+0x464`** | bit 0 `ShouldNotTakeDamageOnNextLanding` · **bit 1 `bCannotFall`** · bit 2 `bUseHavokRigidBodyCapsuleCollisions` |
 | `+0x468` | `HavokRigidBodyCapsuleCollisionExtraRadius` (float — ends the bool run) |
 
-**`bCannotFall` is the bathysphere signal.**
+**`bCannotFall` is the bathysphere signal — MEASURED LIVE, M7-S4, 2026-08-10.**
 `ActionEnableBathysphereModeForPlayer` sets it `true` and clears
 `bUseHavokRigidBodyCapsuleCollisions` **in the same call**, and `ShockPlayer`
-defaults that one to `true` — so entering a ride flips **bit 1 up and bit 2 down
-together**. Two bits moving in opposite directions in one write is the oracle;
-a wrong offset does not produce it by chance. The probe also logs a once-per-pawn
-sanity line asserting bit 2 is set while on foot.
+defaults that one to `true` — so entering a ride must flip **bit 1 up and bit 2
+down together**. The oracle passed exactly:
+
+```
+on foot       pawn+0x464 = 00000004   bCannotFall=0  capsule=1
+bathysphere   pawn+0x464 = 00000002   bCannotFall=1  capsule=0
+```
+
+Two bits moving in opposite directions in one write is not something a wrong
+offset produces by chance. The prediction came purely from declaration-order
+arithmetic and was right first time — the payoff for anchoring on the `AActor`
+base and counting the 32-bool run exactly.
 
 ## HUD actor — predicted and confirmed M1-S1
 

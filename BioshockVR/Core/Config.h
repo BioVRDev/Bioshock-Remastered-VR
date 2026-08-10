@@ -155,6 +155,7 @@ struct VrConfig
     bool  drawHook = true;
     bool  gameState = true;     // read the game's own input context
     bool  nativeScan = true;    // M3-S1: locate the native property accessors
+    bool  forcedMoveProbeAll = false;  // log non-bool transitions too (noisy)
     bool  forcedMoveProbe = false;  // M7-S1: diff the controller/pawn for a
                                     // scripted-event flag. A periodic diff, so
                                     // unlike nativeScan this ships OFF.

@@ -1804,7 +1804,10 @@ static void PollProbeKeys(const uint8_t* obj)
 // ShockPlayerController's own fields begin after PlayerController's, and
 // PlayerController's myHUD is measured at +0x71C (M1-S1). The pawn window
 // brackets both surviving CurrentExorcismTarget candidates.
-static const size_t kFmCtlLo = 0x700, kFmCtlHi = 0xB00;    // 256 dwords
+// M7-S5: WIDENED. ShockPlayerController's own fields start at the END of
+// PlayerController, and myHUD at +0x71C is NOT the last of those -- so the old
+// +0xB00 ceiling may well have stopped short of the class we care about.
+static const size_t kFmCtlLo = 0x700, kFmCtlHi = 0x1000;   // 320 dwords
 static const size_t kFmPawnLo = 0xA80, kFmPawnHi = 0xF00;   // 288 dwords
 static const size_t kFmHndLo = 0x480, kFmHndHi = 0x600;    // 96 dwords
 
@@ -1819,7 +1822,17 @@ static const uint32_t kScriptedBit = 1u << 2;
 static const int kFmCtlN = (int)((kFmCtlHi - kFmCtlLo) / 4);
 static const int kFmPawnN = (int)((kFmPawnHi - kFmPawnLo) / 4);
 static const int kFmHndN = (int)((kFmHndHi - kFmHndLo) / 4);
-static const int kFmMaxLog = 200;    // one noisy field must not hide the real one
+// ---- M7-S5: PER-WINDOW CAPS, AND BOOLS ONLY ------------------------------
+// MEASURED last run: a single shared 200-line budget was exhausted in SIX
+// SECONDS by the controller and pawn windows (117/256 and 206/288 fields
+// non-zero and churning), so the differential was dead long before the event it
+// was built to catch. One noisy window must not be able to spend another
+// window's budget.
+//
+// And the target is a LONE BOOL, so `othr` transitions are pure noise here.
+// Logging only 0<->1 removes almost all of it at a stroke; set
+// ForcedMoveProbeAll=1 to see everything again.
+static const int kFmMaxLogPerWindow = 120;
 
 static uint32_t g_fmCtlSnap[kFmCtlN] = {};
 static uint32_t g_fmPawnSnap[kFmPawnN] = {};
@@ -1875,7 +1888,7 @@ static const char* FmKind(uint32_t prev, uint32_t cur)
 // Diff one window. Returns how many fields are currently non-zero, for the beat.
 static int FmScanWindow(const uint8_t* base, size_t lo, size_t hi,
     uint32_t* snap, int n, const void** owner, bool* warned,
-    const char* tag)
+    const char* tag, int* logged)
 {
     if (!base) { *owner = nullptr; return -1; }
 
@@ -1915,11 +1928,19 @@ static int FmScanWindow(const uint8_t* base, size_t lo, size_t hi,
         if (cur == prev) continue;
         snap[i] = cur;
 
-        if (g_fmLogged >= kFmMaxLog) continue;
-        ++g_fmLogged;
+        const char* kind = FmKind(prev, cur);
+
+        // The target is a lone bool, so anything else is noise that would eat
+        // this window's budget before the event arrives -- which is exactly
+        // what happened last run.
+        if (!g_cfg.forcedMoveProbeAll && kind[0] != 'B') continue;
+
+        if (*logged >= kFmMaxLogPerWindow) continue;
+        ++(*logged);
+        ++g_fmLogged;                    // total, for the beat line only
 
         Log(">>> SCRIPTED: %s %s +0x%03X  %08X -> %08X",
-            FmKind(prev, cur), tag, (unsigned)(lo + (size_t)i * 4), prev, cur);
+            kind, tag, (unsigned)(lo + (size_t)i * 4), prev, cur);
     }
     return nonZero;
 }
@@ -2188,10 +2209,14 @@ static void ForcedMoveTick(const uint8_t* controller)
     if (now - g_fmLastSample < 250) return;
     g_fmLastSample = now;
 
+    static int s_ctlLogged = 0, s_pawnLogged = 0, s_hndLogged = 0;
+
     const int ctlNz = FmScanWindow(controller, kFmCtlLo, kFmCtlHi,
-        g_fmCtlSnap, kFmCtlN, &g_fmCtlOwner, &g_fmWarnedCtl, "ctl");
+        g_fmCtlSnap, kFmCtlN, &g_fmCtlOwner, &g_fmWarnedCtl, "ctl",
+        &s_ctlLogged);
     const int pawnNz = FmScanWindow((const uint8_t*)g_pawn, kFmPawnLo, kFmPawnHi,
-        g_fmPawnSnap, kFmPawnN, &g_fmPawnOwner, &g_fmWarnedPawn, "pwn");
+        g_fmPawnSnap, kFmPawnN, &g_fmPawnOwner, &g_fmWarnedPawn, "pwn",
+        &s_pawnLogged);
 
     // THE HANDS ACTOR -- the target this probe was refocused onto. Ordinary
     // weapon handling moves fields here, so this window proves the probe is
@@ -2202,18 +2227,19 @@ static void ForcedMoveTick(const uint8_t* controller)
     int hndNz = -1;
     if (hands)
         hndNz = FmScanWindow(hands, kFmHndLo, kFmHndHi,
-            g_fmHndSnap, kFmHndN, &g_fmHndOwner, &g_fmWarnedHnd, "hnd");
+            g_fmHndSnap, kFmHndN, &g_fmHndOwner, &g_fmWarnedHnd, "hnd",
+            &s_hndLogged);
 
     // A run with no transitions must be distinguishable from a probe that never
     // armed. Once a second, say we are alive and what we are watching.
     if (now - g_fmLastBeat >= 1000)
     {
         g_fmLastBeat = now;
-        Log(">>> SCRIPTED: beat  ctl %d/%d  pawn %d/%d  hands %d/%d  "
-            "anchor %s  transitions %d%s",
-            ctlNz, kFmCtlN, pawnNz, kFmPawnN, hndNz, kFmHndN,
-            hands ? (g_fmAnchorOk ? "ok" : "FAILED") : "no-hands",
-            g_fmLogged, g_fmLogged >= kFmMaxLog ? "  [CAP REACHED]" : "");
+        Log(">>> SCRIPTED: beat  ctl %d/%d(%d)  pawn %d/%d(%d)  hands %d/%d(%d)"
+            "  anchor %s  bools %d",
+            ctlNz, kFmCtlN, s_ctlLogged, pawnNz, kFmPawnN, s_pawnLogged,
+            hndNz, kFmHndN, s_hndLogged,
+            hands ? (g_fmAnchorOk ? "ok" : "FAILED") : "no-hands", g_fmLogged);
     }
 }
 

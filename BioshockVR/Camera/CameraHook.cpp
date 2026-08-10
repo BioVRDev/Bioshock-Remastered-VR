@@ -1498,8 +1498,27 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // in your face after the balcony fall.
             ArmHide_SetActorHidden(handsActor, inScripted && !animating);
 
+            // ---- M7-S5: !inScripted, NOT !animating. THIS IS A LATCH FIX ----
+            // MEASURED: motion read exactly 0.0000 for a whole scripted scene
+            // while peaking at 3.77 elsewhere in the same run. Not small --
+            // FROZEN.
+            //
+            // ArmHide_Update(true) clears the skeleton's dirty byte so its
+            // sleeve writes stick, and that stops the engine re-evaluating THE
+            // WHOLE BONE ARRAY, including the bone the motion sampler reads. So
+            // a sequence that started hidden stayed hidden forever (motion could
+            // never rise) and one that started animating stayed visible. A
+            // bistable latch, and it explained both reported scenes at once.
+            //
+            // Releasing the sleeves for the WHOLE sequence sets the dirty byte
+            // back to 1, the engine keeps evaluating, and the motion signal
+            // stays honest. Nothing is lost: ArmHide_SetActorHidden above
+            // already hides arms, hands and weapon together during the still
+            // stretches.
+            //
+            // Hiding by bone and measuring by bone cannot both be true at once.
             const bool hide = g_cfg.hideArmSleeves && g_cfg.sixDofHands &&
-                !theater && !animating && !GameState_Paused();
+                !theater && !inScripted && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
 
             // Per-weapon: the shotgun and Tommy gun read better two-handed, so
@@ -1959,6 +1978,41 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         g_aimGameDPitch += fabs((double)dP);
 
                         g_gameDYaw = dY;        // S77, read by the turn gate below
+
+                        // ---- M7-S5: IS THE GAME SLEWING US RIGHT NOW? -------
+                        // DIAGNOSTIC ONLY, gates nothing.
+                        //
+                        // Testing the entry-stall hypothesis: that
+                        // StartForcePlayerMove interpolates the player into
+                        // position and heading BEFORE the scripted animation
+                        // begins, and that we spend that whole window still
+                        // writing the aim field and fighting the slew. That
+                        // would explain the random 1-6s duration, the weapon
+                        // still being up, the controller dragging the view, the
+                        // audio desync, and ending up off-centre.
+                        //
+                        // A large rotation delta with the stick CENTRED is the
+                        // signature: the player is not asking to turn, so
+                        // anything this big is the game doing it. 182 units is
+                        // one degree.
+                        {
+                            float sx = 0.0f;
+                            const bool haveStick = Input_GetTurnX(&sx);
+                            const bool centred = !haveStick || fabsf(sx) <= 0.02f;
+                            const int mag = (dY < 0 ? -dY : dY) +
+                                (dP < 0 ? -dP : dP);
+
+                            static DWORD s_lastSlew = 0;
+                            const DWORD nowSlew = GetTickCount();
+                            if (centred && mag > 182 && nowSlew - s_lastSlew >= 250)
+                            {
+                                s_lastSlew = nowSlew;
+                                Log(">>> SLEW: game moved aim %.2f deg (p %.2f y %.2f) "
+                                    "stick centred, scripted=%d",
+                                    mag / 182.0444, dP / 182.0444, dY / 182.0444,
+                                    scriptedAim ? 1 : 0);
+                            }
+                        }
 
                         // CUTSCENE HEAD-OVERRIDE: during a scripted camera the
                         // game slews aim to point the view where the script
