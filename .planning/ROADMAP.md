@@ -13,12 +13,15 @@ Behaviour-preserving. See the plan file for detail.
 |---|---|---|
 | ✅ | Git repair, archive old lineage | `main` == `origin/main` == `002a81a` |
 | ✅ | `.gitignore`, `dist/`, doc system | docs are tracked |
-| ☐ | **3a** delete uncompiled shim duplicates, move shim sources | build |
-| ☐ | **3b** `Config.h`/`Config.cpp` | **byte-diff the startup config echo** |
+| ✅ | **3a** delete uncompiled shim duplicates, move shim sources | both projects build clean |
+| ✅ | **3b** `Config.h`/`Config.cpp` | 1 of 114 reads differs (intentional); 72/72 echo lines identical; zero new warnings |
+| ⏳ | **verify 3b in a headset** | config echo vs baseline, then the presentation route |
 | ☐ | **3c** split `CameraHook` / `DrawHook` / `HandsProbe` | build + full headset route |
 
-One headset run at the end of 3c: main menu → load → combat → crate → vending →
-**Little Sister rescue** → pause.
+**3c is held until 3b has run.** 3b touched every file in the mod; stacking
+another structural change on a binary that has never launched would make a failed
+headset test ambiguous across ~2,000 changed lines. One change per test cycle is
+this project's most expensively-learned rule.
 
 ---
 

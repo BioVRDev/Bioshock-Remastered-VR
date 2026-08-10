@@ -121,13 +121,36 @@ Repo repair and refactor prep — plan at
 - [x] `.gitignore` no longer hides every `.md`; `dist/` now tracks the installer
       scripts and the shipping INI.
 - [x] Doc system built.
-- [ ] 3a — delete 1,911 lines of uncompiled shim duplicates; move
-      `BioshockVR/OpenXRShim/*` → `OpenXRShim/src/*`.
-- [ ] 3b — `Config.h`/`Config.cpp`; fix the `ControllerLayout` default mismatch.
-- [ ] 3c — split `CameraHook.cpp`, `DrawHook.cpp`, `HandsProbe.cpp`.
+- [x] **3a** — deleted 1,911 lines of uncompiled shim duplicates (including a
+      stale `shim_main.cpp` still carrying the pre-fix SteamVR warp conversion);
+      moved `BioshockVR/OpenXRShim/*` → `OpenXRShim/src/*`.
+- [x] **3b** — `Config.h`/`Config.cpp`. 138 globals and 161 duplicated `extern`
+      lines became one struct. `dllmain.cpp` 909 → 297 lines.
+- [ ] **3c** — split `CameraHook.cpp`, `DrawHook.cpp`, `HandsProbe.cpp`.
+      **Deliberately held until 3b is verified in a headset** — 3b touched every
+      file, and stacking a second structural change on an unrun binary is exactly
+      the batching this project's history says not to do.
 
-No behaviour changes except the `ControllerLayout` default, which is logged in
+No behaviour changes except the `ControllerLayout` default, logged in
 `DECISIONS.md`.
+
+### ⏳ Waiting on one headset run
+
+Both projects rebuild clean, `Release|Win32`, with only the two pre-existing
+`C4244` warnings in `CameraHook.cpp` (confirmed pre-existing by a clean rebuild
+of the pre-refactor tree in a throwaway worktree).
+
+Static verification of 3b was decisive: across all 114 config reads, exactly one
+line differs from before — the intentional `ControllerLayout` fix — and all 72
+echo lines are byte-identical. What remains is a runtime confirmation.
+
+**To close it:** deploy, launch, and compare the `=== BioshockVR config ===`
+block against the pre-refactor baseline. Everything should match except
+`ControllerLayout`, and only if your INI lacks that key (the shipped INI sets it
+to `0` explicitly, so the echo should be unchanged even there).
+
+Then the presentation route, since the build touched every file:
+main menu → load → combat → crate → vending → **Little Sister rescue** → pause.
 
 ---
 
