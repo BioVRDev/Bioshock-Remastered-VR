@@ -116,3 +116,38 @@ second vocabulary on top of the refactor.
 Taken instead: the persistent `.planning/` state files and the codebase map, hand
 built as plain repo files. `/codemap` is the local equivalent of
 `/gsd-map-codebase`. No dependency, works in the desktop app immediately.
+
+---
+
+## 2026-08-09 — source split abandoned; folders instead
+
+The approved plan called for splitting `CameraHook.cpp`, `DrawHook.cpp` and
+`HandsProbe.cpp` along their section banners. Measurement killed it before any
+code moved.
+
+Each file is **one hook plus the state machine it maintains**, and the state
+spans the whole file because a single function drives it:
+
+| File | Statics | Evidence |
+|---|---:|---|
+| `CameraHook.cpp` | 64 | `g_aimBase` 779..2217 · `g_lpQuat` 152..2380 · `g_eyeQ` 118..2365 |
+| `DrawHook.cpp` | 98 | `g_hudHost` 159..1733 · `g_indexedThisFrame` 180..1823 |
+| `HandsProbe.cpp` | 37 | `g_hands` 227..1705 · `g_pawn` 226..1704 · `g_gun` 769..1706 |
+
+Cutting them by section would convert 30–50 file-level statics into shared
+cross-file globals — precisely the problem `Config.h` had just removed — and
+would split seqlock writes (`g_lpSeq`/`g_lpQuat`/`g_lpValid`) that must happen
+together. Smaller files, worse coupling, and a class of silent breakage that
+only shows up in a headset.
+
+The file sizes reflect a cohesive design, not bloat. Their internal sections are
+already indexed by `docs/modules/*` and kept honest by `/codemap`.
+
+**Done instead**, which is what the size complaint was actually about: source
+organised into subsystem folders mapping 1:1 onto the module docs, with
+folder-qualified includes so a file's dependencies read at a glance.
+
+One genuine seam does exist and was left alone for now — `EnumReadableRegions` +
+`FindCalcView` (~230 lines) touch only `g_modBase`/`g_modSize`, so "find the
+function" is separable from "hook it and drive it". Worth doing as part of the
+deferred layered architecture rather than on its own.

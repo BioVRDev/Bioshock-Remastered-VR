@@ -132,31 +132,34 @@ Repo repair and refactor prep — plan at
       moved `BioshockVR/OpenXRShim/*` → `OpenXRShim/src/*`.
 - [x] **3b** — `Config.h`/`Config.cpp`. 138 globals and 161 duplicated `extern`
       lines became one struct. `dllmain.cpp` 909 → 297 lines.
-- [ ] **3c** — split `CameraHook.cpp`, `DrawHook.cpp`, `HandsProbe.cpp`.
-      **Deliberately held until 3b is verified in a headset** — 3b touched every
-      file, and stacking a second structural change on an unrun binary is exactly
-      the batching this project's history says not to do.
+- [x] **3b verified in a headset** — config echo **byte-identical** to the
+      pre-refactor baseline, all 90 lines.
+- [x] **3c** — reorganised into subsystem folders (`Core/ Render/ Hud/ Camera/
+      Input/ Hands/ Game/`) mapping 1:1 to `docs/modules/*`, with
+      folder-qualified includes. **The planned file SPLIT was abandoned on
+      measurement** — see `DECISIONS.md`. Comment audit: orphaned fragments from
+      3b removed, four stale claims corrected, all 27 path headers uniform.
 
 No behaviour changes except the `ControllerLayout` default, logged in
 `DECISIONS.md`.
 
-### ⏳ Waiting on one headset run
+### Refactor prep is complete
 
 Both projects rebuild clean, `Release|Win32`, with only the two pre-existing
 `C4244` warnings in `CameraHook.cpp` (confirmed pre-existing by a clean rebuild
 of the pre-refactor tree in a throwaway worktree).
 
-Static verification of 3b was decisive: across all 114 config reads, exactly one
+3b was verified two ways. Statically: across all 114 config reads exactly one
 line differs from before — the intentional `ControllerLayout` fix — and all 72
-echo lines are byte-identical. What remains is a runtime confirmation.
+echo lines are byte-identical. At runtime: the `=== BioshockVR config ===` block
+from a real run is **byte-identical to the pre-refactor baseline**, all 90 lines.
 
-**To close it:** deploy, launch, and compare the `=== BioshockVR config ===`
-block against the pre-refactor baseline. Everything should match except
-`ControllerLayout`, and only if your INI lacks that key (the shipped INI sets it
-to `0` explicitly, so the echo should be unchanged even there).
+3c changed no code at all — file moves, include paths and comments — so it
+carries no behavioural risk beyond the build itself, which is clean.
 
-Then the presentation route, since the build touched every file:
-main menu → load → combat → crate → vending → **Little Sister rescue** → pause.
+**Not yet run in a headset:** the post-3c build. It should be indistinguishable;
+if anything differs, the cause is the move, and
+`BioshockVR.dll.pre-refactor-backup` in the game folder is a one-copy rollback.
 
 ---
 
