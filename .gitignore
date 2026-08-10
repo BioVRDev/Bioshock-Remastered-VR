@@ -32,4 +32,15 @@ Local.props
 
 # Machine-local deploy script (contains my game path)
 deploy.bat
-*.md
+
+# Scratch notes and generated handoffs.
+#
+# This used to be a blanket `*.md`, which silently made every document in the
+# repo invisible to git -- README.md only survived because it was already
+# tracked when that rule landed. The project's knowledge now lives in docs/ and
+# .planning/, so the rule has to be specific about what is genuinely scratch.
+HANDOFF*.md
+*_Handoff*.md
+*_HANDOFF*.md
+NOTES.md
+scratch/
