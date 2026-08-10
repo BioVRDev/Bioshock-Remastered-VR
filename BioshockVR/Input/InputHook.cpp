@@ -32,18 +32,18 @@
 //  null return is harmless, a missing static import is fatal.
 // ============================================================================
 
-#include "InputHook.h"
-#include "CameraHook.h"
+#include "Input/InputHook.h"
+#include "Camera/CameraHook.h"
 
 #include <windows.h>
 #include <intrin.h>
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
-#include "Swing.h"
+#include "Input/Swing.h"
 
 #include <MinHook.h>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 

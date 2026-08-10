@@ -6,11 +6,11 @@
 // Present does NOT own the eye phase -- the camera hook tags each frame and
 // Present pops the tag from a FIFO (CameraHook_NextEye).
 
-#include "Hooks.h"
-#include "XRSession.h"
-#include "CameraHook.h"
-#include "DrawHook.h"
-#include "InputHook.h"
+#include "Render/Hooks.h"
+#include "Render/XRSession.h"
+#include "Camera/CameraHook.h"
+#include "Hud/DrawHook.h"
+#include "Input/InputHook.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -22,7 +22,7 @@
 #include <cmath>
 
 #include <MinHook.h>
-#include "Config.h"
+#include "Core/Config.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")

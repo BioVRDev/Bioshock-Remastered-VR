@@ -16,9 +16,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
-#include "Config.h"
-#include "Hooks.h"
-#include "GameIni.h"
+#include "Core/Config.h"
+#include "Render/Hooks.h"
+#include "Game/GameIni.h"
 
 #include <MinHook.h>
 

@@ -1,28 +1,73 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    <Filter Include="Core">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000001}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files">
-      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    <Filter Include="Render">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000002}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Resource Files">
-      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    <Filter Include="Hud">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Camera">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000004}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Input">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000005}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Hands">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000006}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game">
+      <UniqueIdentifier>{a1000000-0000-4000-8000-000000000007}</UniqueIdentifier>
     </Filter>
     <Filter Include="minhook">
       <UniqueIdentifier>{ad3d38d6-9fe8-47dc-ba2c-bec154405a9b}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="XRSession.cpp">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="Core\dllmain.cpp">
+      <Filter>Core</Filter>
     </ClCompile>
-    <ClCompile Include="dllmain.cpp">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="Core\Config.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Core\Keybinds.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Render\Hooks.cpp">
+      <Filter>Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Render\XRSession.cpp">
+      <Filter>Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Hud\DrawHook.cpp">
+      <Filter>Hud</Filter>
+    </ClCompile>
+    <ClCompile Include="Camera\CameraHook.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="Input\InputHook.cpp">
+      <Filter>Input</Filter>
+    </ClCompile>
+    <ClCompile Include="Input\Swing.cpp">
+      <Filter>Input</Filter>
+    </ClCompile>
+    <ClCompile Include="Hands\HandsProbe.cpp">
+      <Filter>Hands</Filter>
+    </ClCompile>
+    <ClCompile Include="Hands\ArmHide.cpp">
+      <Filter>Hands</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\GameState.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\EngineExec.cpp">
+      <Filter>Game</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\GameIni.cpp">
+      <Filter>Game</Filter>
     </ClCompile>
     <ClCompile Include="..\third_party\minhook\src\buffer.c">
       <Filter>minhook</Filter>
@@ -39,82 +84,46 @@
     <ClCompile Include="..\third_party\minhook\src\hde\hde64.c">
       <Filter>minhook</Filter>
     </ClCompile>
-    <ClCompile Include="Hooks.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="CameraHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Config.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="GameIni.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DrawHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="InputHook.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="GameState.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="HandsProbe.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="EngineExec.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ArmHide.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Keybinds.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Swing.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="XRSession.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Core\Config.h">
+      <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="Hooks.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Core\Keybinds.h">
+      <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="CameraHook.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Render\Hooks.h">
+      <Filter>Render</Filter>
     </ClInclude>
-    <ClInclude Include="Config.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Render\XRSession.h">
+      <Filter>Render</Filter>
     </ClInclude>
-    <ClInclude Include="GameIni.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Hud\DrawHook.h">
+      <Filter>Hud</Filter>
     </ClInclude>
-    <ClInclude Include="DrawHook.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Camera\CameraHook.h">
+      <Filter>Camera</Filter>
     </ClInclude>
-    <ClInclude Include="InputHook.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Input\InputHook.h">
+      <Filter>Input</Filter>
     </ClInclude>
-    <ClInclude Include="GameState.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Input\Swing.h">
+      <Filter>Input</Filter>
     </ClInclude>
-    <ClInclude Include="HandsProbe.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Hands\HandsProbe.h">
+      <Filter>Hands</Filter>
     </ClInclude>
-    <ClInclude Include="EngineExec.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Hands\ArmHide.h">
+      <Filter>Hands</Filter>
     </ClInclude>
-    <ClInclude Include="ArmHide.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Game\GameState.h">
+      <Filter>Game</Filter>
     </ClInclude>
-    <ClInclude Include="Keybinds.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Game\EngineExec.h">
+      <Filter>Game</Filter>
     </ClInclude>
-    <ClInclude Include="Swing.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="Game\GameIni.h">
+      <Filter>Game</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

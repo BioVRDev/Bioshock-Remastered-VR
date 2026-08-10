@@ -95,7 +95,7 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -127,7 +127,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)third_party\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -142,35 +142,35 @@
     <ClCompile Include="..\third_party\minhook\src\hde\hde64.c" />
     <ClCompile Include="..\third_party\minhook\src\hook.c" />
     <ClCompile Include="..\third_party\minhook\src\trampoline.c" />
-    <ClCompile Include="ArmHide.cpp" />
-    <ClCompile Include="CameraHook.cpp" />
-    <ClCompile Include="Config.cpp" />
-    <ClCompile Include="dllmain.cpp" />
-    <ClCompile Include="DrawHook.cpp" />
-    <ClCompile Include="EngineExec.cpp" />
-    <ClCompile Include="GameIni.cpp" />
-    <ClCompile Include="GameState.cpp" />
-    <ClCompile Include="HandsProbe.cpp" />
-    <ClCompile Include="Hooks.cpp" />
-    <ClCompile Include="InputHook.cpp" />
-    <ClCompile Include="Keybinds.cpp" />
-    <ClCompile Include="Swing.cpp" />
-    <ClCompile Include="XRSession.cpp" />
+    <ClCompile Include="Hands\ArmHide.cpp" />
+    <ClCompile Include="Camera\CameraHook.cpp" />
+    <ClCompile Include="Core\Config.cpp" />
+    <ClCompile Include="Core\dllmain.cpp" />
+    <ClCompile Include="Hud\DrawHook.cpp" />
+    <ClCompile Include="Game\EngineExec.cpp" />
+    <ClCompile Include="Game\GameIni.cpp" />
+    <ClCompile Include="Game\GameState.cpp" />
+    <ClCompile Include="Hands\HandsProbe.cpp" />
+    <ClCompile Include="Render\Hooks.cpp" />
+    <ClCompile Include="Input\InputHook.cpp" />
+    <ClCompile Include="Core\Keybinds.cpp" />
+    <ClCompile Include="Input\Swing.cpp" />
+    <ClCompile Include="Render\XRSession.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ArmHide.h" />
-    <ClInclude Include="CameraHook.h" />
-    <ClInclude Include="Config.h" />
-    <ClInclude Include="DrawHook.h" />
-    <ClInclude Include="EngineExec.h" />
-    <ClInclude Include="GameIni.h" />
-    <ClInclude Include="GameState.h" />
-    <ClInclude Include="HandsProbe.h" />
-    <ClInclude Include="Hooks.h" />
-    <ClInclude Include="InputHook.h" />
-    <ClInclude Include="Keybinds.h" />
-    <ClInclude Include="Swing.h" />
-    <ClInclude Include="XRSession.h" />
+    <ClInclude Include="Hands\ArmHide.h" />
+    <ClInclude Include="Camera\CameraHook.h" />
+    <ClInclude Include="Core\Config.h" />
+    <ClInclude Include="Hud\DrawHook.h" />
+    <ClInclude Include="Game\EngineExec.h" />
+    <ClInclude Include="Game\GameIni.h" />
+    <ClInclude Include="Game\GameState.h" />
+    <ClInclude Include="Hands\HandsProbe.h" />
+    <ClInclude Include="Render\Hooks.h" />
+    <ClInclude Include="Input\InputHook.h" />
+    <ClInclude Include="Core\Keybinds.h" />
+    <ClInclude Include="Input\Swing.h" />
+    <ClInclude Include="Render\XRSession.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

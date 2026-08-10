@@ -30,9 +30,9 @@
 // triple would be a quarter of a million VirtualQuery calls per scan and would
 // hitch the game thread visibly.
 
-#include "HandsProbe.h"
-#include "ArmHide.h"
-#include "Swing.h"
+#include "Hands/HandsProbe.h"
+#include "Hands/ArmHide.h"
+#include "Input/Swing.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -40,7 +40,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 void Cfg_WriteVec3(const char* key, const float v[3]);   // dllmain.cpp

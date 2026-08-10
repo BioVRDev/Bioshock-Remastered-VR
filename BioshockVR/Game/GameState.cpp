@@ -25,8 +25,8 @@
 // on the RENDER thread. The classification is one aligned long; readers only
 // ever touch our snapshot, never the game's memory.
 
-#include "GameState.h"
-#include "EngineExec.h"
+#include "Game/GameState.h"
+#include "Game/EngineExec.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -34,7 +34,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 

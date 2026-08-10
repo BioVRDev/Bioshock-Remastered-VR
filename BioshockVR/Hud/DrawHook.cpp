@@ -42,7 +42,7 @@
 // NOTHING about what the game renders. It is a pure observer until told
 // otherwise.
 
-#include "DrawHook.h"
+#include "Hud/DrawHook.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -53,7 +53,7 @@
 #include <cstdint>
 
 #include <MinHook.h>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void  LogFile(const char* msg);
 

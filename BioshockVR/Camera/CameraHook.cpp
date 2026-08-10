@@ -15,12 +15,12 @@
 // We do NOT touch *CameraRotation in Phase 6. Head tracking is Phase 8, and
 // `final == clean` means writing it back would be a no-op anyway.
 
-#include "CameraHook.h"
-#include "ArmHide.h"
-#include "GameState.h"
-#include "EngineExec.h"
-#include "InputHook.h"
-#include "HandsProbe.h"
+#include "Camera/CameraHook.h"
+#include "Hands/ArmHide.h"
+#include "Game/GameState.h"
+#include "Game/EngineExec.h"
+#include "Input/InputHook.h"
+#include "Hands/HandsProbe.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -32,7 +32,7 @@
 #include <intrin.h>     // _ReturnAddress, _InterlockedIncrement
 
 #include <MinHook.h>
-#include "Config.h"
+#include "Core/Config.h"
 
 #pragma comment(lib, "psapi.lib")
 

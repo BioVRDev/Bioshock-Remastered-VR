@@ -15,13 +15,13 @@
 // the pointer is adjusted by EngineExecThis (0x40) first. Passing the unadjusted
 // pointer is the classic way to make this fault.
 
-#include "EngineExec.h"
+#include "Game/EngineExec.h"
 
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 

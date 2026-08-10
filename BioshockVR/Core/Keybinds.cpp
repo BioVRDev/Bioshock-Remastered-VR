@@ -3,7 +3,7 @@
 // See Keybinds.h. Names are parsed case-insensitively so "num8", "NUM8" and
 // "Num8" are all the same key -- users type what they type.
 
-#include "Keybinds.h"
+#include "Core/Keybinds.h"
 
 #include <windows.h>
 #include <cstdio>

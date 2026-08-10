@@ -24,8 +24,8 @@
 #include <cstring>
 #include <cstdlib>
 
-#include "GameIni.h"
-#include "Config.h"
+#include "Game/GameIni.h"
+#include "Core/Config.h"
 
 #pragma comment(lib, "shell32.lib")
 

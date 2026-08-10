@@ -1,9 +1,9 @@
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 
-#include "XRSession.h"
-#include "InputHook.h"
-#include "Swing.h"
+#include "Render/XRSession.h"
+#include "Input/InputHook.h"
+#include "Input/Swing.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -15,7 +15,7 @@
 
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
-#include "Config.h"
+#include "Core/Config.h"
 
 #pragma comment(lib, "d3d11.lib")
 

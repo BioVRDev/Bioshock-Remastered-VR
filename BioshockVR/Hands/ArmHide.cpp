@@ -24,14 +24,14 @@
 // straight over the top in the same frame. Clearing it is what makes the write
 // stick. Setting it back to 1 on disable is what gets a clean pose back.
 
-#include "ArmHide.h"
+#include "Hands/ArmHide.h"
 
 #include <windows.h>
 #include <cstdint>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 

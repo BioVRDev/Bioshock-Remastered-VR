@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include "Config.h"
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 

@@ -14,15 +14,15 @@
 // halves and double-hits. The detector disarms on fire and only re-arms once
 // the hand has genuinely slowed, so the return stroke cannot trigger.
 
-#include "Swing.h"
+#include "Input/Swing.h"
 
 #include <windows.h>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 
-#include "InputHook.h"      // HandPose, Input_GetHandPose, HAND_LEFT/RIGHT
-#include "Config.h"
+#include "Input/InputHook.h"      // HandPose, Input_GetHandPose, HAND_LEFT/RIGHT
+#include "Core/Config.h"
 
 extern void LogFile(const char* msg);
 
