@@ -91,11 +91,15 @@ struct VrConfig
     // hidden. Diagnostic only, writes nothing, and it stops on its own.
     bool  handRigProbe = false;
 
-    // M6-S1: THE TRACKED LEFT HAND.
+    // M6-S1: THE TRACKED FREE HAND.
     // 0 off, 1 position, 2 position and rotation, 3 axis sweep (diagnostic).
-    // Applies to exactly the weapons that HIDE the left hand today; the
-    // two-handed ones keep both hands on the gun and are left alone.
-    int   leftHandTracked = 0;
+    // Applies to exactly the slots that HIDE the free hand today; the two-handed
+    // weapons keep both hands on the gun and are left alone.
+    //
+    // Named OffHandTracked in the ini, and LeftHandTracked is still read as a
+    // fallback -- it governed only the left hand until plasmids brought the
+    // right one in, and an ini tuned before that should not stop working.
+    int   offHandTracked = 0;
 
     // Which actor axis feeds each MODEL lane, 1-based and signed:
     // 1 forward, 2 right, 3 up. The default is the identity the M6-S1 rest-pose
@@ -103,8 +107,14 @@ struct VrConfig
     // hanging at -3 / -31 / -82 -- but a prediction is not a measurement, which
     // is why it lives here and not in the source. LeftHandTracked=3 measures it.
     int   leftHandAxis[3] = { 1, 2, 3 };
-    float leftHandOffset[3] = { 0.f, 0.f, 0.f };  // fwd,right,up cm to the wrist
-    float leftHandRot[3] = { 0.f, 0.f, 0.f };  // pitch,yaw,roll deg trim
+
+    // Per hand, because the two are mirror images and a value tuned for one is
+    // wrong for the other. Only one is ever in use at a time -- you are holding
+    // either a weapon or a plasmid.
+    float leftHandOffset[3] = { 0.f, 0.f, 0.f };   // fwd,right,up cm to the wrist
+    float leftHandRot[3] = { 0.f, 0.f, 0.f };   // pitch,yaw,roll deg trim
+    float rightHandOffset[3] = { 0.f, 0.f, 0.f };
+    float rightHandRot[3] = { 0.f, 0.f, 0.f };
 
     bool  handsProbe = false;
     int   handsPtrOff = 0;      // HandsPtrOffset, e.g. 0x724

@@ -1,0 +1,26 @@
+Improved Epic support
+Improved SteamVR runtime support
+Improved Controller support and fixes
+Improved logging and error reporting setup
+Improved setup script to let you manually select runtime
+Improved crosshair logic to be more consistent
+Improved scripted scenes - your arms and hands now appear only while the game is
+  actually animating them, instead of hanging frozen in your view
+Improved scripted scenes - they now go where they are meant to, instead of being
+  steered by where you were looking
+
+Fixed health and plasmid HUD meters
+Fixed multiple bugs in the binding INI configs
+Fixed the crosshair showing when you are not holding anything
+Fixed the camera shaking during normal play
+
+Added uninstall script
+Added support for WMR/Reverb controllers
+Added manual weapon swing(Very Early and doesn't work great yet)
+Added head based movement option
+Added snap turn option
+Added more binding options for swapping dpad layout
+Added a real tracked free hand - the hand that is not holding your weapon now
+  follows your own controller instead of being hidden, and turns with it
+Added the same for your free hand while holding a plasmid
+Added live in-headset tuning for hand position and rotation, saved automatically

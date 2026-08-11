@@ -72,26 +72,30 @@ void ArmHide_SetActorHidden(void* handsActor, bool hidden);
 // sleeves are hidden, because this file's own dirty-byte clear can freeze it.
 void ArmHide_RigProbe(void* handsActor);
 
-// ---- M6-S1: THE TRACKED LEFT HAND ---------------------------------------
-// A rigid transform on bones 6-21: the cluster keeps its own shape while its
-// wrist goes wherever the caller asks. This is the ONE mechanism M6 is built
+// ---- M6-S1: THE TRACKED FREE HAND ---------------------------------------
+// A rigid transform on one hand's bones: the cluster keeps its own shape while
+// its wrist goes wherever the caller asks. This is the ONE mechanism M6 is built
 // on -- left-handed mode and a two-handed grip are the same write with a
 // different target.
+//
+// `hand` is which cluster to drive: HAND_LEFT is bones 6-21, HAND_RIGHT 27-44.
+// With a weapon the free hand is the left one; with a plasmid the left hand
+// holds the plasmid and the free hand is the right.
 //
 // targetPos is MODEL space, the frame M6-S1 measured. targetQuat may be null,
 // which slides the cluster bodily and leaves every bone at its authored angle.
 //
-// LEFT CLUSTER ONLY, and that is structural: bone 43, the weapon attachment, is
-// in the RIGHT cluster and cannot be reached from here. Nothing here writes
-// scale, so the division that makes 43 dangerous is unreachable twice over.
-bool ArmHide_DriveLeftCluster(void* handsActor, const float targetPos[3],
-    const float targetQuat[4]);
+// BONE 43 IS IN THE RIGHT CLUSTER and takes the cluster's POSITION ONLY -- see
+// the banner in the .cpp. Nothing here writes scale for any bone.
+bool ArmHide_DriveFreeHand(void* handsActor, int hand,
+    const float targetPos[3], const float targetQuat[4]);
 
 // Mode 3. Ignores the controller and slides the cluster along one model lane at
 // a time so the axis map can be settled by observation rather than argument.
-bool ArmHide_SweepLeftCluster(void* handsActor);
+bool ArmHide_SweepFreeHand(void* handsActor, int hand);
 
 // Restores the reference pose and re-flags the array. MUST be called whenever
 // the drive stands down -- a scripted sequence needs the array evaluating again
-// before ArmHide_HandMotion is trusted.
-void ArmHide_ReleaseLeftCluster();
+// before ArmHide_HandMotion is trusted. Also called on a hand switch, so the
+// cluster we walk away from is not left holding a pose we forced on it.
+void ArmHide_ReleaseFreeHand();

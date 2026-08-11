@@ -233,12 +233,17 @@ static const size_t kPawnScan = 0x4000;
 void* HandsProbe_Get() { return g_hands; }
 void* HandsProbe_GetPawn() { return g_pawn; }
 
-// Declared here, not further down: PollGripKeys uses both, and in one
+// Declared here, not further down: PollGripKeys uses these, and in one
 // translation unit a static has to be declared before the function that reads it.
-static int   g_editMode = 0;      // 0 position, 1 model rotation, 2 cursor
+static int   g_editMode = 0;      // 0 gun pos, 1 gun rot, 2 cursor, 3/4 free hand
 static float g_cursorBySlot[9][3] = {};
 static int  g_wepSlot = -1;       // active weapon slot, -1 until the first switch
 int HandsProbe_WeaponSlot() { return g_wepSlot; }
+
+// Set by UpdateHandMode, far below, where it is derived and documented. Hoisted
+// for the same reason as the three above: the free-hand tuning modes need to
+// know which hand is free, and that is exactly this question.
+static bool g_abilityMode = false;
 
 // ---------------------------------------------------------------- live tuning
 //
@@ -284,25 +289,35 @@ static void PollGripKeys()
     //   0 POSITION  8/2 fwd   6/4 right  0/5 up     (cm)   -- the hands actor
     //   1 ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the hands MODEL
     //   2 CURSOR    8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the aim ray
-    //   3 LEFT POS  8/2 fwd   6/4 right  0/5 up     (cm)   -- M6-S1
-    //   4 LEFT ROT  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- M6-S1
+    //   3 FREE POS  8/2 fwd   6/4 right  0/5 up     (cm)   -- M6-S1
+    //   4 FREE ROT  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- M6-S1
     //
-    // The two left-hand modes save to LeftHandOffset / LeftHandRot, which are
-    // NOT per-weapon: the left hand is the same hand whatever the right one is
-    // holding. Note the sign runs the opposite way to the gun's GripOffset,
-    // which is SUBTRACTED as a mesh-space correction -- here 8 simply moves the
-    // hand forward, which is what anyone tuning it would expect.
+    // The two free-hand modes edit whichever hand is currently FREE -- the left
+    // one with a weapon, the right one with a plasmid -- and save to
+    // LeftHand*/RightHand* accordingly. They are mirror images, so one set of
+    // numbers cannot serve both; but only one hand is ever free at a time, so
+    // this stays five modes rather than growing to seven. The mode line names
+    // the hand so there is never a doubt about which key is being written.
+    //
+    // NOT per-weapon, unlike the three gun modes above: the free hand is the
+    // same hand whatever the other one is holding.
+    //
+    // Note the sign runs the opposite way to the gun's GripOffset, which is
+    // SUBTRACTED as a mesh-space correction -- here 8 simply moves the hand
+    // forward, which is what anyone tuning it would expect.
     const bool modeDown = ((GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0) ||
         ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0);
     if (modeDown && !prevMode)
     {
         g_editMode = (g_editMode + 1) % 5;
-        Log(">>> GRIP: numpad now edits %s",
+        Log(">>> GRIP: numpad now edits %s%s",
             (g_editMode == 0) ? "GUN POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
             : (g_editMode == 1) ? "GUN ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
             : (g_editMode == 2) ? "CURSOR (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
-            : (g_editMode == 3) ? "LEFT HAND POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
-            : "LEFT HAND ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)");
+            : (g_editMode == 3) ? "FREE HAND POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
+            : "FREE HAND ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)",
+            (g_editMode >= 3) ? (g_abilityMode ? "  -- the RIGHT hand"
+                                              : "  -- the LEFT hand") : "");
     }
     prevMode = modeDown;
 
@@ -333,10 +348,15 @@ static void PollGripKeys()
     }
     prevStep = stepDown;
 
+    // Which hand the two free-hand modes act on, decided the same way the driver
+    // decides it: the plasmid goes in the left hand, so the right one is free.
+    const bool freeIsRight = g_abilityMode;
+
     float* const tgt = (g_editMode == 0) ? g_cfg.handsGrip
         : (g_editMode == 1) ? g_cfg.handsRot
         : (g_editMode == 2) ? g_cfg.cursorRot
-        : (g_editMode == 3) ? g_cfg.leftHandOffset : g_cfg.leftHandRot;
+        : (g_editMode == 3) ? (freeIsRight ? g_cfg.rightHandOffset : g_cfg.leftHandOffset)
+        : (freeIsRight ? g_cfg.rightHandRot : g_cfg.leftHandRot);
     const float amt = posMode ? step : rotStep;
 
     bool changed = false;
@@ -358,7 +378,8 @@ static void PollGripKeys()
         const char* what = (g_editMode == 0) ? "GripOffset"
             : (g_editMode == 1) ? "RotOffset"
             : (g_editMode == 2) ? "CursorOffset"
-            : (g_editMode == 3) ? "LeftHandOffset" : "LeftHandRot";
+            : (g_editMode == 3) ? (freeIsRight ? "RightHandOffset" : "LeftHandOffset")
+            : (freeIsRight ? "RightHandRot" : "LeftHandRot");
         const float* val = tgt;
         const char* units = posMode ? "(fwd, right, up cm)"
             : "(pitch, yaw, roll deg)";
@@ -1259,7 +1280,13 @@ static void PollHandsModeKeys(const void* hands)
 //
 // Requiring BOTH pointers avoids flapping: mid-equip one is briefly null before
 // the other has been written.
-static bool g_abilityMode = false;
+// g_abilityMode is defined near the top of this file -- PollGripKeys reads it.
+
+// TRUE until proven otherwise, deliberately. Read from the RENDER thread by the
+// crosshair, so if the probe never locks -- a different build, an early frame --
+// the crosshair behaves exactly as it always has. A cosmetic gate should fail
+// towards the old behaviour, never towards a permanently missing reticle.
+static bool g_handsArmed = true;
 
 static void UpdateHandMode(const void* hands)
 {
@@ -1274,6 +1301,23 @@ static void UpdateHandMode(const void* hands)
     const void* abil = *(void* const*)((const uint8_t*)hands + abilOff);
     const void* hold = *(void* const*)((const uint8_t*)hands + holdOff);
 
+    // ARE YOUR HANDS EMPTY? Free, from the two pointers already read. Both null
+    // is nothing equipped -- the opening of the game before you find the wrench,
+    // and wherever the game takes your weapon away. The crosshair reads this.
+    //
+    // Set BEFORE the early return below, which fires whenever the ability
+    // verdict has not changed -- which is almost every frame.
+    //
+    // OR, not AND. The ability verdict deliberately requires both pointers to
+    // agree because mid-equip one is briefly null; for "holding something" that
+    // same moment must read ARMED, and either pointer alone says so.
+    const bool armed = (abil != nullptr) || (hold != nullptr);
+    if (armed != g_handsArmed)
+    {
+        g_handsArmed = armed;
+        Log(">>> HANDMODE: hands are now %s", armed ? "HOLDING something" : "EMPTY");
+    }
+
     const bool ability = (abil != nullptr) && (hold == nullptr);
     if (ability == g_abilityMode) return;
 
@@ -1284,6 +1328,7 @@ static void UpdateHandMode(const void* hands)
 }
 
 bool HandsProbe_AbilityMode() { return g_abilityMode; }
+bool HandsProbe_Armed() { return g_handsArmed; }
 
 // ---- WHICH WEAPON IS EQUIPPED --------------------------------------------
 // ShockPawn: var config array< Class<Weapon> > AllPossibleWeaponClasses;

@@ -23,6 +23,7 @@
 extern void LogFile(const char* msg);
 
 bool HandsProbe_AbilityMode();          // HandsProbe.cpp
+bool HandsProbe_Armed();                // HandsProbe.cpp -- holding anything?
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
@@ -823,7 +824,22 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
 
             // ---- crosshair quad: head-locked, aim offset computed HERE on the
             //      render thread from fresh poses so head motion can't drag it --
-            if (g_cfg.crosshair && g_xhReady)
+            //
+            // NO WEAPON, NO CROSSHAIR. A dot floating in front of you before the
+            // game has given you anything to aim -- the whole opening of the
+            // game -- reads as a bug, and it follows you into every scene where
+            // the game takes your weapon away.
+            //
+            // Gated on what is IN YOUR HANDS rather than on a cutscene
+            // predicate, which is both the simpler question and the one with a
+            // measured answer: HandsProbe already reads CurrentAbility and
+            // CurrentHoldable every frame. Both null is empty. A plasmid counts
+            // as armed -- you aim those.
+            //
+            // Skipping the layer is safe by construction: the HUD quad below
+            // indexes by layerCount precisely because this one may or may not
+            // have claimed its slot.
+            if (g_cfg.crosshair && g_xhReady && HandsProbe_Armed())
             {
                 uint32_t xi = 0;
                 XrSwapchainImageAcquireInfo xai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };

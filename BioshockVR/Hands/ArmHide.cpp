@@ -791,32 +791,43 @@ void ArmHide_RigProbe(void* handsActor)
 }
 
 // ===========================================================================
-//  M6-S1: THE LEFT HAND CLUSTER
+//  M6-S1: THE FREE HAND CLUSTER
 //
-// A RIGID TRANSFORM ON SIXTEEN BONES. Capture the cluster's pose once, then
+// A RIGID TRANSFORM ON ONE HAND'S BONES. Capture the cluster's pose once, then
 // each frame rewrite every bone as  target x (ref_wrist^-1 x ref_bone)  so the
 // hand keeps its own shape while the wrist goes where the controller is.
 //
 // WHY THIS IS THE WHOLE OF M6. Left-handed mode, detached hands and a
 // two-handed grip are the same write with a different target. Build it once.
 //
+// EITHER CLUSTER. With a weapon the free hand is the LEFT one; with a plasmid
+// the left hand holds the plasmid and drives the actor, so the free hand is the
+// RIGHT one. Same write, and the caller says which.
+//
 // WHAT M6-S1 MEASURED, and why this code is shaped the way it is:
 //
 //   - The array is in a COMMON MODEL SPACE. Confirmed, not inferred: bones are
 //     spread across a shared frame, tens of units apart.
-//   - The LEFT cluster is STATIC. Bones 6 and 21 read byte-identical across
-//     four dumps spanning eight seconds while the right cluster moved every
-//     time. A rigid transform here fights no animation.
+//   - The idle LEFT cluster is STATIC. Bones 6 and 21 read byte-identical
+//     across four dumps spanning eight seconds while the right cluster moved
+//     every time. A rigid transform on an idle hand fights no animation.
 //   - The array stays LIVE even though this file clears the dirty byte every
 //     CalcView -- bone 27 moved between every pair of dumps. The engine
 //     re-flags and re-evaluates each tick; our writes stick because they land
-//     after evaluation. So this does NOT freeze the gun hand.
+//     after evaluation. So this does NOT freeze the other hand.
 //
-// LEFT CLUSTER ONLY, BONES 6-21, and that is a structural guard rather than a
-// runtime one: bone 43, the weapon attachment, lives in the RIGHT cluster and
-// can never be reached from here. Nothing in this section writes SCALE at all,
-// so the inverse-decomposition that makes 43 dangerous is unreachable twice
-// over.
+// > ### BONE 43 IS IN THE RIGHT CLUSTER
+// > It is the weapon attachment, and telekinesis release walks the attachment
+// > path through it -- telekinesis being a PLASMID, which is exactly when this
+// > code drives the right cluster. The two meet in the same window.
+// >
+// > The rule that keeps it safe is the one HideBone already proved: MOVE it,
+// > never scale it, because the attachment path inverse-decomposes bone scale.
+// > So bone 43 takes the cluster's POSITION and nothing else -- no rotation,
+// > which is untested, and no scale, which is known fatal. Moving it keeps its
+// > vertices with the hand instead of stretching a spike across the screen.
+//
+// Nothing in this section writes SCALE for any bone, on either hand.
 //
 // QUATERNION ORDER is assumed x,y,z,w -- Havok's, and the same order HandPose
 // uses. Position mode does not depend on it; rotation mode is where it gets
@@ -824,7 +835,8 @@ void ArmHide_RigProbe(void* handsActor)
 // suspect this before anything else.
 // ===========================================================================
 
-static const int kLeftCount = kLeftClusterLast - kLeftClusterFirst + 1;   // 16
+// Sized for the larger cluster: left is 6-21 (16), right is 27-44 (18).
+static const int kClusterMax = kRightClusterLast - kRightClusterFirst + 1;   // 18
 
 struct ClusterBone
 {
@@ -832,14 +844,33 @@ struct ClusterBone
     float rotation[4];
 };
 
-static ClusterBone g_leftRef[kLeftCount] = {};
-static bool  g_leftRefValid = false;
-static bool  g_leftDriven = false;
+static ClusterBone g_clRef[kClusterMax] = {};
+static bool  g_clRefValid = false;
+static bool  g_clDriven = false;
+static int   g_clHand = -1;        // which hand the reference above describes
+
+// Everything the cluster it belongs to needs, in one place, so no caller has to
+// remember that the right hand's sleeve is a different five bones.
+struct ClusterSpec
+{
+    int first, last, wrist, count;
+    const int* sleeve;
+};
+
+static ClusterSpec SpecFor(int hand)
+{
+    if (hand == HAND_RIGHT)
+        return { kRightClusterFirst, kRightClusterLast, kRightWrist,
+                 kRightClusterLast - kRightClusterFirst + 1, kRightSleeve };
+    return { kLeftClusterFirst, kLeftClusterLast, kLeftWrist,
+             kLeftClusterLast - kLeftClusterFirst + 1, kLeftSleeve };
+}
 
 static void LeftClusterReset()
 {
-    g_leftRefValid = false;
-    g_leftDriven = false;
+    g_clRefValid = false;
+    g_clDriven = false;
+    g_clHand = -1;
 }
 
 static void QMul(const float a[4], const float b[4], float out[4])
@@ -870,35 +901,42 @@ static void QRotate(const float q[4], const float v[3], float out[3])
 // authored pose changes on a weapon switch, and a reference from the wrong
 // weapon would put the fingers in the wrong shape.
 //
-// ALL SIXTEEN BONES MUST LOOK ENGINE-WRITTEN OR NOTHING IS CAPTURED. A cluster
+// EVERY BONE MUST LOOK ENGINE-WRITTEN OR NOTHING IS CAPTURED. A cluster
 // mid-hide has zero scales, and capturing that would save OUR values as the
 // reference -- the same trap the sleeve and inactive-hand passes avoid with the
 // same test.
-static bool CaptureLeftRef()
+//
+// A reference belongs to ONE HAND. Switching from a weapon to a plasmid moves
+// the free hand to the other side of the body, and replaying the left hand's
+// pose onto the right cluster would be gibberish -- so the hand is part of the
+// validity test, not just the pointer.
+static bool CaptureClusterRef(const ClusterSpec& c, int hand)
 {
-    if (g_leftDriven && g_leftRefValid) return true;
-    if (!g_bones || kLeftClusterLast >= g_boneCount) return false;
+    if (g_clDriven && g_clRefValid && g_clHand == hand) return true;
+    if (!g_bones || c.last >= g_boneCount) return false;
 
-    ClusterBone tmp[kLeftCount] = {};
-    for (int i = 0; i < kLeftCount; ++i)
+    ClusterBone tmp[kClusterMax] = {};
+    for (int i = 0; i < c.count; ++i)
     {
         BoneTransform b = {};
-        if (!SafeRead(&g_bones[kLeftClusterFirst + i], &b, sizeof(b))) return false;
+        if (!SafeRead(&g_bones[c.first + i], &b, sizeof(b))) return false;
         if (!ScaleLooksNormal(b.scale)) return false;
         memcpy(tmp[i].position, b.position, sizeof(tmp[i].position));
         memcpy(tmp[i].rotation, b.rotation, sizeof(tmp[i].rotation));
     }
 
-    memcpy(g_leftRef, tmp, sizeof(g_leftRef));
-    g_leftRefValid = true;
+    memcpy(g_clRef, tmp, sizeof(g_clRef));
+    g_clRefValid = true;
+    g_clHand = hand;
     return true;
 }
 
 // targetPos is model space. targetQuat may be null, which leaves every bone at
 // its authored orientation and slides the cluster bodily -- position mode.
-static bool WriteLeftCluster(const float targetPos[3], const float targetQuat[4])
+static bool WriteCluster(const ClusterSpec& c,
+    const float targetPos[3], const float targetQuat[4])
 {
-    const ClusterBone& wrist = g_leftRef[kLeftWrist - kLeftClusterFirst];
+    const ClusterBone& wrist = g_clRef[c.wrist - c.first];
 
     float qDelta[4] = { 0.f, 0.f, 0.f, 1.f };
     if (targetQuat)
@@ -909,13 +947,13 @@ static bool WriteLeftCluster(const float targetPos[3], const float targetQuat[4]
     }
 
     bool any = false;
-    for (int i = 0; i < kLeftCount; ++i)
+    for (int i = 0; i < c.count; ++i)
     {
-        const int idx = kLeftClusterFirst + i;
+        const int idx = c.first + i;
 
-        float rel[3] = { g_leftRef[i].position[0] - wrist.position[0],
-                         g_leftRef[i].position[1] - wrist.position[1],
-                         g_leftRef[i].position[2] - wrist.position[2] };
+        float rel[3] = { g_clRef[i].position[0] - wrist.position[0],
+                         g_clRef[i].position[1] - wrist.position[1],
+                         g_clRef[i].position[2] - wrist.position[2] };
         if (targetQuat)
         {
             float rot[3];
@@ -928,10 +966,15 @@ static bool WriteLeftCluster(const float targetPos[3], const float targetQuat[4]
                                targetPos[2] + rel[2] };
         if (!SafeWrite(g_bones[idx].position, pos, sizeof(pos))) continue;
 
-        if (targetQuat)
+        // BONE 43 TAKES THE POSITION AND STOPS THERE. See the banner: the
+        // attachment path telekinesis release walks through it decomposes the
+        // bone, and moving it is the one thing HideBone has already proved safe.
+        // Rotation is not proved, and there is no reason to risk a crash for the
+        // orientation of an attachment point.
+        if (targetQuat && idx != kWeaponAttachBone)
         {
             float q[4];
-            QMul(qDelta, g_leftRef[i].rotation, q);
+            QMul(qDelta, g_clRef[i].rotation, q);
             SafeWrite(g_bones[idx].rotation, q, sizeof(q));
         }
         any = true;
@@ -945,7 +988,7 @@ static bool WriteLeftCluster(const float targetPos[3], const float targetQuat[4]
     // rest of the hand followed the left. That is the signature of vertices
     // weighted across a bone we moved and a bone we did not.
     //
-    // The five left sleeve bones are the ones we did not. `CollapseArm` pins
+    // That hand's five sleeve bones are the ones we did not. `CollapseArm` pins
     // them at the wrist every frame -- but it runs in the ARMS block, BEFORE
     // this does, and it reads the wrist the ENGINE just wrote, which is the hand
     // still hanging at your side. So the forearm end stayed behind while the
@@ -957,32 +1000,41 @@ static bool WriteLeftCluster(const float targetPos[3], const float targetQuat[4]
     if (g_hidden)
         for (int i = 0; i < 5; ++i)
         {
-            const int idx = kLeftSleeve[i];
+            const int idx = c.sleeve[i];
             if (idx >= 0 && idx < g_boneCount)
                 SafeWrite(g_bones[idx].position, targetPos, sizeof(float) * 3);
         }
 
     SetDirty(0);          // stop the render pass rebuilding over us this frame
-    g_leftDriven = true;
+    g_clDriven = true;
     return true;
 }
 
-bool ArmHide_DriveLeftCluster(void* handsActor, const float targetPos[3],
-    const float targetQuat[4])
+bool ArmHide_DriveFreeHand(void* handsActor, int hand,
+    const float targetPos[3], const float targetQuat[4])
 {
     if (!handsActor || !targetPos) return false;
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
     if (!LocateSkeleton(handsActor)) return false;
-    if (!CaptureLeftRef()) return false;
 
-    static bool logged = false;
-    if (!logged)
+    const ClusterSpec c = SpecFor(hand);
+
+    // SWITCHED HANDS -- put the old cluster back before adopting the new one.
+    // Otherwise the hand we walk away from keeps the last pose we forced on it
+    // for as long as the engine's own evaluation takes to win it back.
+    if (g_clDriven && g_clHand != hand) ArmHide_ReleaseFreeHand();
+
+    if (!CaptureClusterRef(c, hand)) return false;
+
+    static int loggedHand = -1;
+    if (loggedHand != hand)
     {
-        logged = true;
-        Log(">>> LEFTHAND: cluster reference captured, bones %d-%d. Tracking %s.",
-            kLeftClusterFirst, kLeftClusterLast,
+        loggedHand = hand;
+        Log(">>> FREEHAND: tracking the %s hand, bones %d-%d, %s.",
+            hand == HAND_LEFT ? "LEFT" : "RIGHT", c.first, c.last,
             targetQuat ? "position and rotation" : "position only");
     }
-    return WriteLeftCluster(targetPos, targetQuat);
+    return WriteCluster(c, targetPos, targetQuat);
 }
 
 // ---- MODE 3: WHICH MODEL LANE IS WHICH ----------------------------------
@@ -990,11 +1042,15 @@ bool ArmHide_DriveLeftCluster(void* handsActor, const float targetPos[3],
 // makes a wrong prediction cost an ini edit instead of a build. It ignores the
 // controller entirely and slides the cluster along one model lane at a time, so
 // the tester can simply say which way the hand went.
-bool ArmHide_SweepLeftCluster(void* handsActor)
+bool ArmHide_SweepFreeHand(void* handsActor, int hand)
 {
     if (!handsActor) return false;
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
     if (!LocateSkeleton(handsActor)) return false;
-    if (!CaptureLeftRef()) return false;
+
+    const ClusterSpec c = SpecFor(hand);
+    if (g_clDriven && g_clHand != hand) ArmHide_ReleaseFreeHand();
+    if (!CaptureClusterRef(c, hand)) return false;
 
     static const float kSweepAmp = 25.0f;      // model units, ~20 cm rendered
     static const DWORD kSweepMs = 3000;
@@ -1005,37 +1061,43 @@ bool ArmHide_SweepLeftCluster(void* handsActor)
     if (lane != lastLane)
     {
         lastLane = lane;
-        Log(">>> LEFTHAND SWEEP: now pushing model lane %d by +%.0f. "
+        Log(">>> FREEHAND SWEEP: now pushing model lane %d by +%.0f. "
             "Which way did the hand move?", lane, kSweepAmp);
     }
 
-    const ClusterBone& wrist = g_leftRef[kLeftWrist - kLeftClusterFirst];
+    const ClusterBone& wrist = g_clRef[c.wrist - c.first];
     float target[3] = { wrist.position[0], wrist.position[1], wrist.position[2] };
     target[lane] += kSweepAmp;
 
-    return WriteLeftCluster(target, nullptr);
+    return WriteCluster(c, target, nullptr);
 }
 
-void ArmHide_ReleaseLeftCluster()
+void ArmHide_ReleaseFreeHand()
 {
-    if (!g_leftDriven) return;
-    g_leftDriven = false;
+    if (!g_clDriven) return;
+    g_clDriven = false;
 
     // Only ever restore through a skeleton we still hold. A pointer from the
     // previous level looks valid and writes into reused memory -- the same scar
     // ArmHide_Reset and ArmHide_ReleaseInactiveHand both carry.
-    if (!g_skeleton || !g_bones || !g_leftRefValid) return;
-    if (kLeftClusterLast >= g_boneCount) return;
+    if (!g_skeleton || !g_bones || !g_clRefValid || g_clHand < 0) return;
 
-    for (int i = 0; i < kLeftCount; ++i)
+    const ClusterSpec c = SpecFor(g_clHand);
+    if (c.last >= g_boneCount) return;
+
+    for (int i = 0; i < c.count; ++i)
     {
-        const int idx = kLeftClusterFirst + i;
-        SafeWrite(g_bones[idx].position, g_leftRef[i].position, sizeof(g_leftRef[i].position));
-        SafeWrite(g_bones[idx].rotation, g_leftRef[i].rotation, sizeof(g_leftRef[i].rotation));
+        const int idx = c.first + i;
+        SafeWrite(g_bones[idx].position, g_clRef[i].position, sizeof(g_clRef[i].position));
+
+        // Bone 43's rotation was never ours to write, so it is not ours to put
+        // back either -- and a reference captured minutes ago would be stale.
+        if (idx != kWeaponAttachBone)
+            SafeWrite(g_bones[idx].rotation, g_clRef[i].rotation, sizeof(g_clRef[i].rotation));
     }
 
     SetDirty(1);          // hand the rig back, and keep M7's motion signal honest
-    Log(">>> LEFTHAND: cluster released, engine evaluation requested.");
+    Log(">>> FREEHAND: cluster released, engine evaluation requested.");
 }
 
 void ArmHide_Reset()

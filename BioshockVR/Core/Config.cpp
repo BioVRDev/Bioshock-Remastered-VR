@@ -221,10 +221,16 @@ void Config_Load(const char* iniPath)
     g_cfg.armHideHandsVt = CfgHex("ArmHideHandsVt", g_cfg.armHideHandsVt);
     g_cfg.armHideSkelVt = CfgHex("ArmHideSkelVt", g_cfg.armHideSkelVt);
     g_cfg.handRigProbe = CfgBool("HandRigProbe", false);
-    g_cfg.leftHandTracked = CfgIntRange("LeftHandTracked", 0, 0, 3);
+    // LeftHandTracked first, as the DEFAULT for OffHandTracked -- so an ini
+    // written before the right hand joined keeps working, and a file carrying
+    // both still lets the current name win.
+    g_cfg.offHandTracked = CfgIntRange("LeftHandTracked", 0, 0, 3);
+    g_cfg.offHandTracked = CfgIntRange("OffHandTracked", g_cfg.offHandTracked, 0, 3);
     CfgAxisMap("LeftHandAxisMap", g_cfg.leftHandAxis);
     CfgVec3("LeftHandOffset", g_cfg.leftHandOffset);
     CfgVec3("LeftHandRot", g_cfg.leftHandRot);
+    CfgVec3("RightHandOffset", g_cfg.rightHandOffset);
+    CfgVec3("RightHandRot", g_cfg.rightHandRot);
     g_cfg.handsProbe = CfgBool("EnableHandsProbe", false);
     g_cfg.handsPtrOff = CfgHex("HandsPtrOffset", g_cfg.handsPtrOff);
     g_cfg.handsPosOff = CfgHex("HandsPosOffset", g_cfg.handsPosOff);
@@ -459,16 +465,20 @@ void Config_Load(const char* iniPath)
     CfgEcho("HideArmSleeves", "%d   hands vt 0x%X  skel vt 0x%X",
         (int)g_cfg.hideArmSleeves, g_cfg.armHideHandsVt, g_cfg.armHideSkelVt);
     CfgEcho("HandRigProbe", "%d", (int)g_cfg.handRigProbe);
-    CfgEcho("LeftHandTracked", "%d  %s", g_cfg.leftHandTracked,
-        g_cfg.leftHandTracked == 0 ? "(off)" :
-        g_cfg.leftHandTracked == 1 ? "(position)" :
-        g_cfg.leftHandTracked == 2 ? "(position + rotation)" : "(AXIS SWEEP)");
+    CfgEcho("OffHandTracked", "%d  %s", g_cfg.offHandTracked,
+        g_cfg.offHandTracked == 0 ? "(off)" :
+        g_cfg.offHandTracked == 1 ? "(position)" :
+        g_cfg.offHandTracked == 2 ? "(position + rotation)" : "(AXIS SWEEP)");
     CfgEcho("LeftHandAxisMap", "%d,%d,%d   (1 fwd, 2 right, 3 up; signed)",
         g_cfg.leftHandAxis[0], g_cfg.leftHandAxis[1], g_cfg.leftHandAxis[2]);
     CfgEcho("LeftHandOffset", "%.1f fwd, %.1f right, %.1f up (cm)",
         g_cfg.leftHandOffset[0], g_cfg.leftHandOffset[1], g_cfg.leftHandOffset[2]);
     CfgEcho("LeftHandRot", "%.1f, %.1f, %.1f  (pitch,yaw,roll deg)",
         g_cfg.leftHandRot[0], g_cfg.leftHandRot[1], g_cfg.leftHandRot[2]);
+    CfgEcho("RightHandOffset", "%.1f fwd, %.1f right, %.1f up (cm)",
+        g_cfg.rightHandOffset[0], g_cfg.rightHandOffset[1], g_cfg.rightHandOffset[2]);
+    CfgEcho("RightHandRot", "%.1f, %.1f, %.1f  (pitch,yaw,roll deg)",
+        g_cfg.rightHandRot[0], g_cfg.rightHandRot[1], g_cfg.rightHandRot[2]);
     CfgEcho("EnableHandsProbe", "%d", (int)g_cfg.handsProbe);
     CfgEcho("HandsPtrOffset", "0x%X", g_cfg.handsPtrOff);
     CfgEcho("HandsPosOffset", "0x%X", g_cfg.handsPosOff);

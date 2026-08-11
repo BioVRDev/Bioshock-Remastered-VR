@@ -63,4 +63,13 @@ bool HandsProbe_GetTargets(void** obj, unsigned* locOff, unsigned* rotOff);
 // aims, and which one the hands actor is posed from.
 bool HandsProbe_AbilityMode();
 
+// TRUE when you are holding ANYTHING -- a weapon or a plasmid. False only when
+// both hands are genuinely empty, which is the opening of the game and wherever
+// the game takes your weapon off you.
+//
+// Costs nothing: the same two pointers that decide AbilityMode already say it.
+// Read from the render thread by the crosshair, and it defaults TRUE so a probe
+// that never locks leaves the crosshair exactly as it was.
+bool HandsProbe_Armed();
+
 void HandsProbe_Reset();

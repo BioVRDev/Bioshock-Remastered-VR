@@ -1235,15 +1235,20 @@ static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
 }
 
 // ===========================================================================
-//  M6-S1: THE TRACKED LEFT HAND
+//  M6-S1: THE TRACKED FREE HAND
 //
-// Places the left hand's SIXTEEN BONES where your left controller is, while the
-// actor -- and with it the weapon and the right hand -- carries on exactly as
-// before. That separation is the whole feature: two hands, one actor.
+// Places the free hand's bones where its own controller is, while the actor --
+// and with it the weapon and the working hand -- carries on exactly as before.
+// That separation is the whole feature: two hands, one actor.
 //
-// It applies to precisely the weapons that HIDE the left hand today, because
-// those are the ones where it has nothing to do. The two-handed weapons keep
-// both hands on the gun and are never touched. See the ARMS block for the swap.
+// WHICH HAND IS FREE DEPENDS ON WHAT YOU ARE HOLDING. With a weapon the actor
+// is posed from the right controller and the LEFT hand is free. With a plasmid
+// the game puts it in your left hand and the actor follows the left controller,
+// so the RIGHT hand is the free one. Same write either way.
+//
+// It applies to precisely the slots that HIDE the free hand today, because those
+// are the ones where it has nothing to do. The two-handed weapons keep both
+// hands on the gun and are never touched. See the ARMS block for the swap.
 //
 // MEASURED, M6-S1, and the reason this can be a few lines rather than a hunt:
 // the bone array is a common model space in centimetres, and the left cluster
@@ -1259,6 +1264,7 @@ static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
 // same CalcView, the ARMS block first, so this is sequencing rather than
 // sharing -- the decision and its use cannot disagree within a frame.
 static bool g_leftTrackOn = false;
+static int  g_freeHand = HAND_LEFT;
 
 // A rotation matrix straight to a quaternion. Deliberately NOT built out of
 // HandsOffsetQuat: that composes in the XR axis convention, and these bones are
@@ -1304,13 +1310,19 @@ static Vec3 IntoBasis(const Basis& b, double x, double y, double z)
              x * b.up.x + y * b.up.y + z * b.up.z };
 }
 
-static void DriveLeftHand(void* handsActor, const FRotator& want,
+static void DriveFreeHand(void* handsActor, int hand, const FRotator& want,
     double ax, double ay, double az,
     const FVector& camLoc, const float headPos[3], double cs, double sn)
 {
     HandPose lp = {};
-    if (!Input_GetHandPose(HAND_LEFT, &lp)) return;
+    if (!Input_GetHandPose(hand, &lp)) return;
     if (!lp.aimValid && !lp.gripValid) return;
+
+    // Mirror images, so a value tuned for one hand is wrong for the other.
+    const float* const offCfg = (hand == HAND_RIGHT)
+        ? g_cfg.rightHandOffset : g_cfg.leftHandOffset;
+    const float* const rotCfg = (hand == HAND_RIGHT)
+        ? g_cfg.rightHandRot : g_cfg.leftHandRot;
 
     const Basis A = RotatorToBasis(want);
 
@@ -1326,7 +1338,7 @@ static void DriveLeftHand(void* handsActor, const FRotator& want,
     Basis T = {};
     bool haveT = false;
 
-    if (g_cfg.leftHandTracked == 2)
+    if (g_cfg.offHandTracked == 2)
     {
         const bool identity = g_cfg.leftHandAxis[0] == 1 &&
             g_cfg.leftHandAxis[1] == 2 && g_cfg.leftHandAxis[2] == 3;
@@ -1337,7 +1349,7 @@ static void DriveLeftHand(void* handsActor, const FRotator& want,
             // shoot; on most controllers it is tilted tens of degrees off the
             // hand. A bare hand wants the pose that describes the hand.
             float qOff[4], qFinal[4];
-            HandsOffsetQuat(g_cfg.leftHandRot, qOff);
+            HandsOffsetQuat(rotCfg, qOff);
             QuatMul(lp.gripValid ? lp.gripQuat : lp.aimQuat, qOff, qFinal);
 
             double cp, cy, cr;
@@ -1365,8 +1377,8 @@ static void DriveLeftHand(void* handsActor, const FRotator& want,
             if (!warned)
             {
                 warned = true;
-                Log("!!! LEFTHAND: LeftHandTracked=2 needs the identity LeftHandAxisMap.");
-                Log("!!! LEFTHAND: Falling back to position only.");
+                Log("!!! FREEHAND: OffHandTracked=2 needs the identity LeftHandAxisMap.");
+                Log("!!! FREEHAND: Falling back to position only.");
             }
         }
     }
@@ -1396,9 +1408,9 @@ static void DriveLeftHand(void* handsActor, const FRotator& want,
     // mode that frame is known exactly. In position mode there is no hand
     // orientation, so fall back to the player's heading -- which the right hand
     // does not turn either.
-    const double o0 = g_cfg.leftHandOffset[0];
-    const double o1 = g_cfg.leftHandOffset[1];
-    const double o2 = g_cfg.leftHandOffset[2];
+    const double o0 = offCfg[0];
+    const double o1 = offCfg[1];
+    const double o2 = offCfg[2];
     if (o0 || o1 || o2)
     {
         const Basis O = haveT ? T
@@ -1427,15 +1439,16 @@ static void DriveLeftHand(void* handsActor, const FRotator& want,
         target[i] = (float)((sel < 0) ? -al[a] : al[a]);
     }
 
-    ArmHide_DriveLeftCluster(handsActor, target, quatPtr);
+    ArmHide_DriveFreeHand(handsActor, hand, target, quatPtr);
 
     static DWORD lastLog = 0;
     const DWORD now = GetTickCount();
     if (now - lastLog >= 2000)
     {
         lastLog = now;
-        Log(">>> LEFTHAND: model %+7.1f %+7.1f %+7.1f   (actor-local %+6.1f fwd "
+        Log(">>> FREEHAND: %s  model %+7.1f %+7.1f %+7.1f   (actor-local %+6.1f fwd "
             "%+6.1f right %+6.1f up cm)",
+            hand == HAND_RIGHT ? "right" : "left ",
             target[0], target[1], target[2], local.x, local.y, local.z);
     }
 }
@@ -1565,8 +1578,8 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     // The controller pose goes through the SAME room-yaw conversion as the right
     // hand above rather than a second one of its own. One algebra, no drift
     // between them.
-    if (g_leftTrackOn && (g_cfg.leftHandTracked == 1 || g_cfg.leftHandTracked == 2))
-        DriveLeftHand(obj, want, wx, wy, wz, camLoc, headPos, cs, sn);
+    if (g_leftTrackOn && (g_cfg.offHandTracked == 1 || g_cfg.offHandTracked == 2))
+        DriveFreeHand(obj, g_freeHand, want, wx, wy, wz, camLoc, headPos, cs, sn);
 
     static bool announced = false;
     if (!announced)
@@ -1782,8 +1795,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // cluster -- permanently out of reach of the cluster write.
             const bool handsFree = g_cfg.sixDofHands && !theater && !inScripted &&
                 !GameState_Paused();
-            g_leftTrackOn = handsFree && hideHand && g_cfg.leftHandTracked > 0 &&
-                !HandsProbe_AbilityMode();
+            g_leftTrackOn = handsFree && hideHand && g_cfg.offHandTracked > 0;
+
+            // Which hand is free is the mirror of which one is working. The
+            // plasmid lives in the LEFT hand and the actor is posed from the left
+            // controller there, so the right hand is the one with nothing to do.
+            g_freeHand = HandsProbe_AbilityMode() ? HAND_RIGHT : HAND_LEFT;
 
             // Gated on the SEQUENCE, not on motion: the whole-actor hide above
             // already covers the still stretches, and letting this follow the
@@ -1799,10 +1816,10 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // does not wait on DriveHands. Releasing whenever we are not driving
             // is what hands the array back before a scripted sequence, which is
             // what keeps M7's motion signal honest.
-            if (g_leftTrackOn && g_cfg.leftHandTracked == 3)
-                ArmHide_SweepLeftCluster(handsActor);
+            if (g_leftTrackOn && g_cfg.offHandTracked == 3)
+                ArmHide_SweepFreeHand(handsActor, g_freeHand);
             else if (!g_leftTrackOn)
-                ArmHide_ReleaseLeftCluster();
+                ArmHide_ReleaseFreeHand();
         }
         else ArmHide_Reset();
     }
