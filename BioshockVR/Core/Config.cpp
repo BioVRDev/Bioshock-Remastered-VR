@@ -221,6 +221,7 @@ void Config_Load(const char* iniPath)
     g_cfg.armHideHandsVt = CfgHex("ArmHideHandsVt", g_cfg.armHideHandsVt);
     g_cfg.armHideSkelVt = CfgHex("ArmHideSkelVt", g_cfg.armHideSkelVt);
     g_cfg.handRigProbe = CfgBool("HandRigProbe", false);
+    g_cfg.plasmidProbe = CfgBool("PlasmidProbe", true);
     // LeftHandTracked first, as the DEFAULT for OffHandTracked -- so an ini
     // written before the right hand joined keeps working, and a file carrying
     // both still lets the current name win.
@@ -484,6 +485,7 @@ void Config_Load(const char* iniPath)
     CfgEcho("HideArmSleeves", "%d   hands vt 0x%X  skel vt 0x%X",
         (int)g_cfg.hideArmSleeves, g_cfg.armHideHandsVt, g_cfg.armHideSkelVt);
     CfgEcho("HandRigProbe", "%d", (int)g_cfg.handRigProbe);
+    CfgEcho("PlasmidProbe", "%d", (int)g_cfg.plasmidProbe);
     CfgEcho("OffHandTracked", "%d  %s", g_cfg.offHandTracked,
         g_cfg.offHandTracked == 0 ? "(off)" :
         g_cfg.offHandTracked == 1 ? "(position)" :

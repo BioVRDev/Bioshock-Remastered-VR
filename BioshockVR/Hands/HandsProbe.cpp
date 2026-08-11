@@ -1419,6 +1419,133 @@ static void ReportWeaponIdentity(const void* hands)
     }
 }
 
+// ===========================================================================
+//  M6-S4: WHICH PLASMID IS EQUIPPED
+//
+// All plasmids share slot 8 today, so Electrobolt and Telekinesis overwrite
+// each other's calibration. This locates what is needed to give each its own.
+//
+// THE SCRIPT ALREADY ANSWERS THE HARD PART. ShockPlayer declares:
+//
+//   var private travel Class<Ability> ActiveAbility;         // :374
+//   var travel array< Class<Ability> > AvailableAbilities;   // :375
+//   var config array< Class<Ability> > PossibleAbilities;    // :376
+//
+// PossibleAbilities is CONFIG, so its order is fixed by the ini and the INDEX
+// is a stable key -- the same property that makes AllPossibleWeaponClasses
+// usable. And ActiveAbility is already a Class, not an instance, so unlike the
+// weapon path there is no UObject::Class to find first: read the field, match
+// it against the array, take the index.
+//
+// A SEPARATE SCAN FROM THE WEAPON ONE ON PURPOSE. That scan is measured, its
+// candidate numbering is quoted in comments and docs, and widening its window
+// would renumber it. This one is free to look further out, and it must: the
+// weapon arrays sit at pawn+0x750/0x998/0xE34, and these are declared later.
+//
+// SELF-VALIDATING, which is what makes one run enough: the offset is only
+// reported when the dword living there EQUALS an entry of a class-list-shaped
+// array on the same pawn. A wrong offset cannot produce that coincidence.
+// ===========================================================================
+
+// hands+0x454 is CurrentAbility, measured -- the ACTIVE HAND MODE banner. It is
+// the instance, not the class, and it is used here only as the "you switched"
+// edge; the identity comes from the pawn field the scan below finds.
+static const void* CurrentAbilityPtr(const void* hands)
+{
+    if (!hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return nullptr;
+    const size_t abilOff = (size_t)g_cfg.gunPtrOff - 8;
+    if (!Readable((const uint8_t*)hands + abilOff, 4)) return nullptr;
+    return *(void* const*)((const uint8_t*)hands + abilOff);
+}
+
+static const int kAbilMax = 24;        // BioShock ships ~11 plasmids
+static const int kAbilCand = 6;
+static const size_t kAbilScanWin = 0x2000;
+
+static void*    g_abilList[kAbilCand][kAbilMax] = {};
+static int      g_abilCount[kAbilCand] = {};
+static unsigned g_abilAt[kAbilCand] = {};
+static int      g_nAbilCand = 0;
+static bool     g_abilScanned = false;
+
+static void ScanAbilityClassLists(const void* pawn)
+{
+    if (g_abilScanned || !pawn || !g_cfg.plasmidProbe) return;
+    g_abilScanned = true;
+
+    const size_t blk = ReadableBlock(pawn, kAbilScanWin);
+    for (size_t off = 0; off + 12 <= blk && g_nAbilCand < kAbilCand; off += 4)
+    {
+        const uint8_t* h = (const uint8_t*)pawn + off;
+        void* const data = *(void* const*)h;
+        const int count = *(const int*)(h + 4);
+        const int maxN = *(const int*)(h + 8);
+
+        if (count < 4 || count > kAbilMax || maxN < count) continue;
+        if (!data || !Readable(data, (size_t)count * 4)) continue;
+
+        void* tmp[kAbilMax] = {};
+        bool ok = true;
+        for (int i = 0; i < count && ok; ++i)
+        {
+            void* c = ((void**)data)[i];
+            if (!LooksLikeObject(c)) { ok = false; break; }
+            for (int j = 0; j < i; ++j) if (tmp[j] == c) { ok = false; break; }
+            tmp[i] = c;
+        }
+        if (!ok) continue;
+
+        const int k = g_nAbilCand++;
+        g_abilCount[k] = count;
+        g_abilAt[k] = (unsigned)off;
+        for (int i = 0; i < count; ++i) g_abilList[k][i] = tmp[i];
+
+        Log(">>> PLASMID: class-list candidate %d at pawn+0x%04X, %d entries",
+            k, (unsigned)off, count);
+    }
+
+    if (!g_nAbilCand)
+        Log(">>> PLASMID: no class-list-shaped array found in pawn+0..0x%X.",
+            (unsigned)kAbilScanWin);
+}
+
+// Runs only when the equipped plasmid actually CHANGES -- never per frame. The
+// tester cycles plasmids once and the log names the offset.
+static void ReportAbilityIdentity(const void* pawn, const void* curAbility)
+{
+    if (!g_nAbilCand || !pawn || !g_cfg.plasmidProbe) return;
+
+    static const void* lastAbil = (const void*)~(uintptr_t)0;
+    if (curAbility == lastAbil) return;
+    lastAbil = curAbility;
+
+    if (!curAbility) return;      // switching to a weapon; nothing to identify
+
+    Log(">>> PLASMID: equipped ability instance 0x%08X -- searching the pawn",
+        (unsigned)(uintptr_t)curAbility);
+
+    const size_t blk = ReadableBlock(pawn, kAbilScanWin);
+    int hits = 0;
+    for (size_t off = 0; off + 4 <= blk; off += 4)
+    {
+        void* const v = *(void* const*)((const uint8_t*)pawn + off);
+        if (!v) continue;
+
+        for (int k = 0; k < g_nAbilCand; ++k)
+            for (int i = 0; i < g_abilCount[k]; ++i)
+                if (g_abilList[k][i] == v)
+                {
+                    ++hits;
+                    Log(">>> PLASMID:   pawn+0x%04X = 0x%08X  -> candidate %d "
+                        "index %d", (unsigned)off, (unsigned)(uintptr_t)v, k, i);
+                }
+    }
+
+    if (!hits)
+        Log(">>> PLASMID:   no pawn field holds a class from any candidate list. "
+            "ActiveAbility is elsewhere, or the lists are the wrong arrays.");
+}
+
 // ---- PER-WEAPON GRIP OFFSET (measured 2026-07-25) ------------------------
 // MEASURED by cycling pistol -> machinegun -> wrench with the WEP probe:
 //   AllPossibleWeaponClasses  pawn+0x750   (candidate 0, 8 entries)
@@ -1696,6 +1823,8 @@ void HandsProbe_Observe(void* playerController,
     ApplyHandsScale(g_hands);
     ScanWeaponClassLists(g_pawn);
     ReportWeaponIdentity(g_hands);
+    ScanAbilityClassLists(g_pawn);          // M6-S4, one shot
+    ReportAbilityIdentity(g_pawn, CurrentAbilityPtr(g_hands));
     UpdateWeaponGrip(g_hands);
     UpdateHandMode(g_hands);
     PollHandsModeKeys(g_hands);

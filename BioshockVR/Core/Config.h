@@ -91,6 +91,11 @@ struct VrConfig
     // hidden. Diagnostic only, writes nothing, and it stops on its own.
     bool  handRigProbe = false;
 
+    // M6-S4. One-shot scan for the ability class list, plus a per-SWITCH search
+    // for the pawn field naming the equipped plasmid. Read-only, never per
+    // frame, and the match is self-validating.
+    bool  plasmidProbe = true;
+
     // M6-S1: THE TRACKED FREE HAND.
     // 0 off, 1 position, 2 position and rotation, 3 axis sweep (diagnostic).
     // Applies to exactly the slots that HIDE the free hand today; the two-handed

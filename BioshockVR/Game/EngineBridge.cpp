@@ -203,6 +203,7 @@ struct Accessor
     int            rowHits;   // stage 2: how many rows named it
     void*          fn;        // stage 4: the winner, or null
     int            slot;      // stage 4: which DWORD it came out of
+    bool           dumpCode;  // log enough bytes to read a field offset out
 };
 
 static Accessor g_acc[] =
@@ -211,8 +212,33 @@ static Accessor g_acc[] =
     { L"intUObjectexecGetPropertyText",       "GetPropertyText"       },
     { L"intUObjectexecSetPropertyTextByName", "SetPropertyTextByName" },
     { L"intUObjectexecSetPropertyText",       "SetPropertyText"       },
+
+    // ---- M6-S5: WHICH INTERFACE SCREEN IS UP -----------------------------
+    // The mod needs FlashGUIController, because the whole interface is
+    // addressed by NAME there -- 'HUD', 'Pause', one per screen -- which is an
+    // exact answer to "which screen is up" instead of the draw-signature guess
+    // that false-fires during play.
+    //
+    // LevelInfo declares the getter as a NATIVE:
+    //     native final function FlashGUIController GetFlashGUIController();
+    // and M3-S1 proved ANY registered native is findable by its
+    // int<Class>exec<Func> string. So this row costs nothing but a needle.
+    //
+    // WE DO NOT NEED TO CALL IT, which matters because calling still needs a
+    // constructed bytecode frame (M3-S2, never run). A getter this simple just
+    // loads a field off `this` -- so DUMP ITS CODE and read the offset straight
+    // out of the instruction. Static analysis of four instructions, the same
+    // move that located these functions in the first place.
+    { L"intULevelInfoexecGetFlashGUIController", "GetFlashGUIController",
+      nullptr, 0, nullptr, 0, nullptr, 0, true },
+    { L"intULevelInfoexecFlashGUIControllerExists", "FlashGUIControllerExists",
+      nullptr, 0, nullptr, 0, nullptr, 0, true },
 };
 static const int kAccessors = (int)(sizeof(g_acc) / sizeof(g_acc[0]));
+
+// The M3 card's four. Counted separately so a GUI row that does not resolve
+// cannot make M3-S1's standing result read like a regression.
+static const int kM3Accessors = 4;
 
 // THE TERMINATOR IS PART OF THE NEEDLE, and that is not a detail.
 // "intUObjectexecGetPropertyText" is a prefix of
@@ -546,6 +572,21 @@ static bool Resolve()
 
         Log(">>> NATIVE: %s @ 0x%08X (rva 0x%X) prologue %s[slot %d]",
             a.label, (unsigned)(uintptr_t)a.fn, Rva(a.fn), hex, a.slot);
+
+        // The field offset lives in the first few instructions of the getter.
+        // Printed as bytes rather than disassembled: the mod has no
+        // disassembler, and four lines of hex are enough to read a
+        // mov reg,[reg+imm] by eye. Read-only.
+        if (a.dumpCode && Readable(b, 64))
+        {
+            for (int line = 0; line < 4; ++line)
+            {
+                char row[80] = {};
+                for (int k = 0; k < 16; ++k)
+                    _snprintf_s(row + k * 3, 4, _TRUNCATE, "%02X ", b[line * 16 + k]);
+                Log(">>> NATIVE:   code +0x%02X  %s", line * 16, row);
+            }
+        }
     }
 
     // Four distinct addresses out of four adjacent rows is the corroboration
@@ -553,7 +594,7 @@ static bool Resolve()
     if (any)
     {
         int found = 0, distinct = 0;
-        for (int i = 0; i < kAccessors; ++i)
+        for (int i = 0; i < kM3Accessors; ++i)
         {
             if (!g_acc[i].fn) continue;
             ++found;
@@ -563,7 +604,13 @@ static bool Resolve()
             if (!dup) ++distinct;
         }
         Log(">>> NATIVE: %d of %d accessors located, %d distinct addresses",
-            found, kAccessors, distinct);
+            found, kM3Accessors, distinct);
+
+        // Reported apart from M3's four on purpose: these are M6-S5's, and one
+        // of them failing says nothing about the property accessors.
+        for (int i = kM3Accessors; i < kAccessors; ++i)
+            Log(">>> NATIVE: M6-S5 %-26s %s", g_acc[i].label,
+                g_acc[i].fn ? "LOCATED" : "not found");
     }
 
     // The card's target is the one that decides whether M3 continues.
