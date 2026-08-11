@@ -37,8 +37,8 @@ deploy.bat
 #
 # This used to be a blanket `*.md`, which silently made every document in the
 # repo invisible to git -- README.md only survived because it was already
-# tracked when that rule landed. The project's knowledge now lives in docs/ and
-# .planning/, so the rule has to be specific about what is genuinely scratch.
+# tracked when that rule landed. The project's shipped knowledge lives in docs/,
+# so the rule has to be specific about what is genuinely scratch.
 HANDOFF*.md
 *_Handoff*.md
 *_HANDOFF*.md
@@ -50,3 +50,16 @@ scratch/
 # never be committed or published. See docs/modules/gamestate.md for what it is
 # good for; regenerate with the CLI documented there.
 research/
+# Planning: roadmap, session cards, decisions, and feature designs.
+#
+# Local until the work lands, and that is a deliberate choice about WHEN rather
+# than whether. This is a solo project whose planning documents describe features
+# well before they exist; publishing a design months ahead of the code invites
+# people to build against something that has not been tested in a headset yet,
+# and the author would rather announce a feature when it works.
+#
+# Nothing here is secret and nothing is being withheld from the record. Every
+# measurement graduates into docs/ in the commit that uses it, which is where a
+# reader would look for it anyway and gives it better provenance than a planning
+# note ever had. `docs/` remains the published, permanent knowledge base.
+.planning/

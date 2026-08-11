@@ -234,3 +234,8 @@ Several of the hardest parts here — disabling the reticle through the engine's
 own console path, the bone indices for hiding the arms without losing the weapon,
 and the render-target approach to capturing the whole interface at once — were
 possible because that work is public. Genuinely saved weeks.
+
+That project is MIT-licensed, and its author has additionally given explicit
+permission to use the code however this one needs to. **This section names each
+system that came from there, and it gets a new line every time another one
+does** — that is the deal, and it is worth more than a licence header.

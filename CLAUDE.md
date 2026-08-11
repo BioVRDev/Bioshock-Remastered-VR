@@ -14,6 +14,14 @@ measuring, not read out of an SDK.
 card: `.planning/sessions/M<n>.md`, the section for your session. The card is your
 task. `.planning/ROADMAP.md` says which one is next.
 
+> **`.planning/` is git-ignored, and if you cloned this repo you will not have
+> it.** That is deliberate: the planning documents describe features well before
+> they exist, and this project announces a feature when it works rather than when
+> it is designed. Nothing is withheld from the record — every measurement
+> graduates into `docs/` in the commit that uses it, which is where you would look
+> for it anyway. **`docs/` is the published knowledge base and is complete on its
+> own.** Working from a clone, start at `docs/CODEMAP.md`.
+
 **Rung 2 — the default for any code session.** Plus the `docs/modules/*.md` the
 card names, the `docs/INVARIANTS.md` section it names, and `.planning/STATE.md`
 § *Next step*. A session that reads Rung 2 and makes an anchored edit is behaving
