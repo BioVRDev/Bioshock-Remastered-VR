@@ -1230,7 +1230,7 @@ static void NoteMenuCount(unsigned count, int kind, ID3D11DeviceContext* ctx)
 
 static void PollKeys()
 {
-    static bool k1 = false, k3 = false, kM = false, k9 = false;
+    static bool k1 = false, k3 = false, kM = false;
 
     // Numpad * : CLEAR. Open the thing you want to sample, press *, wait, dump.
     const bool dM = (GetAsyncKeyState(VK_MULTIPLY) & 0x8000) != 0;
@@ -1248,11 +1248,19 @@ static void PollKeys()
     }
     kM = dM;
 
-    // Numpad 9 : dump ONE frame's render-target structure. PollKeys runs at the
+    // F3 : dump ONE frame's render-target structure. PollKeys runs at the
     // END of EndFrame, so arming here captures the NEXT frame whole -- never a
     // half frame, which would put the boundary in the wrong place.
-    const bool d9 = (GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0;
-    if (d9 && !k9)
+    //
+    // MOVED OFF NUMPAD 9, 2026-08-10, and this was not cosmetic. Numpad 9 also
+    // cycles the grip tuning mode, so every press of a key used constantly
+    // during tuning fired ~400 RT lines synchronously to disk -- 2012 of them in
+    // one measured session. The collision was documented in the ini and lived
+    // with; adding two more tuning modes made it four presses to reach the one
+    // you want, and turned a known annoyance into a stutter every time.
+    static bool kF3 = false;
+    const bool d9 = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+    if (d9 && !kF3)
     {
         g_structDump = true;
         g_boundaryReport = true;
@@ -1261,10 +1269,10 @@ static void PollKeys()
         Log(">>> DRAWHOOK: frame structure dump START (backbuffer = %p)",
             (void*)g_bbRes);
     }
-    k9 = d9;
+    kF3 = d9;
 
     // Home : toggle the interface redirect. Every numpad key in this project is
-    // already spoken for, and Numpad 9 is read by HandsProbe too -- see notes.
+    // already spoken for, which is why F3 above is not a numpad key either.
     static bool kHome = false;
     const bool dHome = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
     if (dHome && !kHome)

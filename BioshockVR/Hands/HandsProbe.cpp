@@ -254,8 +254,9 @@ int HandsProbe_WeaponSlot() { return g_wepSlot; }
 //   Numpad 6 / 4   right / left     (Y)
 //   Numpad 0 / 5   up / down        (Z)
 //   Numpad 7       cycle step: 0.5 -> 2 -> 5 cm
+//   Numpad 9       cycle WHICH of the five things below the six keys edit
 //
-// Every change logs the full line, ready to paste into BioshockVR.ini.
+// Every change logs the full line AND writes itself back to BioshockVR.ini.
 static void PollGripKeys()
 {
     struct Bind { int vk; int axis; float sign; };
@@ -283,22 +284,37 @@ static void PollGripKeys()
     //   0 POSITION  8/2 fwd   6/4 right  0/5 up     (cm)   -- the hands actor
     //   1 ROTATION  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the hands MODEL
     //   2 CURSOR    8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the aim ray
+    //   3 LEFT POS  8/2 fwd   6/4 right  0/5 up     (cm)   -- M6-S1
+    //   4 LEFT ROT  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- M6-S1
+    //
+    // The two left-hand modes save to LeftHandOffset / LeftHandRot, which are
+    // NOT per-weapon: the left hand is the same hand whatever the right one is
+    // holding. Note the sign runs the opposite way to the gun's GripOffset,
+    // which is SUBTRACTED as a mesh-space correction -- here 8 simply moves the
+    // hand forward, which is what anyone tuning it would expect.
     const bool modeDown = ((GetAsyncKeyState(VK_NUMPAD9) & 0x8000) != 0) ||
         ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0);
     if (modeDown && !prevMode)
     {
-        g_editMode = (g_editMode + 1) % 3;
+        g_editMode = (g_editMode + 1) % 5;
         Log(">>> GRIP: numpad now edits %s",
-            (g_editMode == 0) ? "POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
-            : (g_editMode == 1) ? "ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
-            : "CURSOR (8/2 pitch, 6/4 yaw, 0/5 roll, deg)");
+            (g_editMode == 0) ? "GUN POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
+            : (g_editMode == 1) ? "GUN ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
+            : (g_editMode == 2) ? "CURSOR (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
+            : (g_editMode == 3) ? "LEFT HAND POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
+            : "LEFT HAND ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)");
     }
     prevMode = modeDown;
+
+    // Which modes move something in centimetres rather than degrees. Was
+    // "mode 0", and stayed correct only while position was the single first
+    // mode -- adding LEFT HAND POSITION at the end broke that assumption.
+    const bool posMode = (g_editMode == 0) || (g_editMode == 3);
 
     const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
     if (stepDown && !prevStep)
     {
-        if (g_editMode)
+        if (!posMode)
         {
             rotStep = (rotStep >= 15.0f) ? 0.1f
                 : (rotStep >= 5.0f) ? 15.0f
@@ -318,8 +334,10 @@ static void PollGripKeys()
     prevStep = stepDown;
 
     float* const tgt = (g_editMode == 0) ? g_cfg.handsGrip
-        : (g_editMode == 1) ? g_cfg.handsRot : g_cfg.cursorRot;
-    const float amt = g_editMode ? rotStep : step;
+        : (g_editMode == 1) ? g_cfg.handsRot
+        : (g_editMode == 2) ? g_cfg.cursorRot
+        : (g_editMode == 3) ? g_cfg.leftHandOffset : g_cfg.leftHandRot;
+    const float amt = posMode ? step : rotStep;
 
     bool changed = false;
     for (int i = 0; i < 6; ++i)
@@ -338,13 +356,23 @@ static void PollGripKeys()
         // Slot -1 means no weapon switch has happened yet, so there is no key
         // to write to. Log it, don't invent a GripOffset-1.
         const char* what = (g_editMode == 0) ? "GripOffset"
-            : (g_editMode == 1) ? "RotOffset" : "CursorOffset";
-        const float* val = (g_editMode == 0) ? g_cfg.handsGrip
-            : (g_editMode == 1) ? g_cfg.handsRot : g_cfg.cursorRot;
-        const char* units = (g_editMode == 0) ? "(fwd, right, up cm)"
+            : (g_editMode == 1) ? "RotOffset"
+            : (g_editMode == 2) ? "CursorOffset"
+            : (g_editMode == 3) ? "LeftHandOffset" : "LeftHandRot";
+        const float* val = tgt;
+        const char* units = posMode ? "(fwd, right, up cm)"
             : "(pitch, yaw, roll deg)";
 
-        if (g_wepSlot >= 0 && g_wepSlot < 9)
+        // THE LEFT HAND IS NOT PER-WEAPON. One hand, one value, and it must not
+        // pick up a slot suffix -- LeftHandOffset1 is a key nothing reads, and
+        // an ini key nothing reads looks exactly like one that works.
+        if (g_editMode >= 3)
+        {
+            Cfg_WriteVec3(what, val);
+            Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   [SAVED]",
+                what, val[0], val[1], val[2], units);
+        }
+        else if (g_wepSlot >= 0 && g_wepSlot < 9)
         {
             char key[32];
             _snprintf_s(key, sizeof(key), _TRUNCATE, "%s%d", what, g_wepSlot);

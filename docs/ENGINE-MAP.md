@@ -280,8 +280,43 @@ share slot 8**, so Electrobolt and Telekinesis overwrite each other's calibratio
 ## Skeleton
 
 47 bones exactly, or `ArmHide` refuses to write. Ten sleeve bones collapse; 34
-hand/finger bones and the weapon attachment are untouched. **Bone 43 is never
-modified** — telekinesis release walks the attachment path through it.
+hand/finger bones and the weapon attachment are untouched by that pass. **Bone 43
+is never scaled** — telekinesis release walks the attachment path through it,
+and that path inverse-decomposes bone scale. It may be *moved*: `HideBone` pushes
+it to `kFarBelow` and the cluster transform carries its position along.
+
+| Offset | Field |
+|---|---|
+| `AHands +0x3FC` | `SkeletonInstance*` |
+| `SkeletonInstance +0x04` | owning actor — proves the link before any write |
+| `+0x48` | `hkQsTransform*` render bone array |
+| `+0x4C` | bone count, expected 47 |
+| `+0x88` | evaluate-if-dirty byte |
+
+`hkQsTransform` is 48 bytes: `position[4]`, `rotation[4]` (quaternion), `scale[4]`.
+
+| Cluster | Bones | Wrist | Sleeve |
+|---|---|---|---|
+| Left | 6–21 | 6 | 3, 4, 5, 22, 23 |
+| Right | 27–44 | 27 | 24, 25, 26, 45, 46 |
+
+### The array's space — MEASURED, M6-S1, 2026-08-10
+
+A **common model space**, not parent-relative: bones sit tens of units apart in
+one shared frame. Units are **centimetres**, and a rendered distance is model
+units × `HandsScale`. The lane order reads as **(forward, right, up)** — the
+actor's own axes — from a rest pose where the right wrist sits `+47` forward,
+`+27` right, `-20` below the eye while the left hangs at `-3 / -31 / -82`. That
+last part is anatomy rather than a measurement, which is why it lives in
+`LeftHandAxisMap` and not in the source.
+
+**The array keeps evaluating in ordinary play even while the dirty byte is
+cleared every CalcView** — bone 27 moved between every pair of dumps with the
+sleeve pass running. Writes stick because they land after evaluation. Do not
+generalise that to scripted sequences; the M7-S4 latch was real.
+
+The engine's own pose is what a reference capture must read, so every capture is
+gated on `ScaleLooksNormal` — a cluster mid-hide reads back **our** zeroes.
 
 ---
 

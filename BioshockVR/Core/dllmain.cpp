@@ -237,8 +237,14 @@ static DWORD WINAPI InitThread(LPVOID)
     // Bump this on every release. It is the first thing to check on any log a
     // stranger sends you -- "which build is this?" has already cost one round
     // trip in this project, and __DATE__/__TIME__ alone cannot answer it.
+    //
+    // AND THE TIMESTAMP ALONE CANNOT ANSWER IT EITHER. __TIME__ is baked in when
+    // THIS FILE compiles, so an incremental build that does not touch dllmain.cpp
+    // ships a NEW dll reporting an OLD time -- measured on 2026-08-10, a dll
+    // built at 18:08 stamped 17:52. Editing the label is what moves the stamp,
+    // which is exactly why the label must be bumped rather than left alone.
     Log("BioshockVR version: 1.0.3");
-    Log("dllmain build: M7-S6 forced-move gate + freeze on  (%s %s)",
+    Log("dllmain build: M6-S1 offset frame + F3 dump  (%s %s)",
         __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};

@@ -101,27 +101,42 @@ aggressive parking (`IdleAnimMode=2` and per-animation suppression) was
 structurally fragile and abandoned. `AdditiveHandBobAnim` was already `None` and
 `WeaponBobDamping` (observed 0.5) had no observable effect — neither is a sway fix.
 
-## Future direction
+## The cluster transform — BUILT, M6-S1, 2026-08-10
 
-Top-level actor transforms are not the final authority for every rendered weapon
-piece; attachments follow skeletal matrices. The stronger architecture is to
-identify the active hand bone cluster, preserve a reference pose, and apply a
-rigid cluster transform around a reference anchor after skeleton evaluation.
-Larger and riskier than the current slot system.
+The mechanism this section used to predict now exists, and the three features it
+was predicted for are configuration on top of it. Grep anchor: `LEFT HAND
+CLUSTER` in `ArmHide.cpp`.
 
-> **This is now the critical path for three requested features.**
-> `docs/proposals/vr-features-research.md` (2026-08-10) found that left-handed
-> mode, detached hands and two-handed grip are all the *same* mechanism — this
-> one — and that the `hkQsTransform` rotation lane needed to build it is already
-> sitting untouched in the bone array `ArmHide` writes to.
->
-> Two things it must inherit rather than rediscover: the **dirty byte is not
-> optional**, and the write must be **late** (the S59/S60 measurement — the game
-> tick erases hand roll every frame, which is why `CameraHook_LateHandsWrite`
-> re-applies from Present). One thing it must verify first: that the render bone
-> array is in a **common model space** and not parent-relative. That is inferred
-> from `CollapseBone` pinning sleeve bones at the wrist's position, which is
-> strong but is not a measurement.
+Capture a reference pose for a bone cluster once, then each frame rewrite every
+bone as `target × (ref_wrist⁻¹ × ref_bone)`, clear the dirty byte, and the hand
+keeps its own shape while its wrist goes wherever it is told. **Positions and
+rotations only — never scale**, which puts the bone-43 hazard structurally out of
+reach.
+
+The first consumer is a **tracked left hand**: it appears and follows your own
+controller on exactly the weapons that hide it today, which are the ones where it
+has nothing to do. The two-handed weapons keep both hands on the gun and are
+untouched. Signed off in the headset, including scripted events.
+
+Four things it inherited or learned, none of which should be rediscovered:
+
+- **The array is a common model space in centimetres**, on the actor's own axes.
+  Measured, not inferred — `docs/ENGINE-MAP.md` § *Skeleton*.
+- **The seam is CalcView, not Present.** The research doc said "apply late",
+  citing S59/S60 — but that measured the *actor rotator*, which the game tick
+  rewrites. Bone writes are held by the dirty byte instead, and the sleeve pass
+  writing from CalcView every frame is the standing proof. Present is also the
+  render thread and would race the game thread's evaluation.
+- **The sleeve has to come with the hand.** `CollapseArm` pins the sleeve bones
+  at the wrist, but it runs *before* the cluster write and reads the wrist the
+  engine just wrote — so the forearm stayed behind and the skin stretched into a
+  sharp spike out of the palm. The cluster write re-pins them at the wrist it
+  actually set.
+- **A placement offset must not live in the actor's frame.** The actor is rotated
+  by the weapon hand, so an offset expressed there swings as the *other* hand
+  turns. Everything else cancels the actor out algebraically — `world = actorLoc
+  + A·Aᵀ·(P − actorLoc) = P` — so the offset was the only term that could couple
+  the two hands, and it did. It belongs in the frame it describes: the hand's own.
 
 ## A split was considered and rejected
 

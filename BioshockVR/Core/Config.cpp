@@ -116,6 +116,34 @@ static void CfgVec3(const char* key, float out[3])
     }
 }
 
+// Three signed 1-based lane selectors, "1,2,3" style. VALIDATED, not just
+// parsed: a map that repeats or drops a lane builds a degenerate transform, and
+// the symptom of that is a hand in the wrong place -- indistinguishable from the
+// feature simply not working. Anything invalid keeps the caller's default.
+static void CfgAxisMap(const char* key, int out[3])
+{
+    char b[64] = {};
+    GetPrivateProfileStringA("VR", key, "", b, sizeof(b), g_iniPath);
+    if (!b[0]) return;
+
+    int v[3] = {};
+    if (sscanf_s(b, "%d,%d,%d", &v[0], &v[1], &v[2]) != 3) return;
+
+    int seen = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        const int a = (v[i] < 0) ? -v[i] : v[i];
+        if (a < 1 || a > 3) return;
+        seen |= (1 << a);
+    }
+    if (seen != 0x0E)          // bits 1,2,3 -- each lane used exactly once
+    {
+        Log("  !!! %s: every lane must appear exactly once. Keeping the default.", key);
+        return;
+    }
+    out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+}
+
 // One echo line: indent, fixed-width name, value text.
 static void CfgEcho(const char* name, const char* fmt, ...)
 {
@@ -192,6 +220,11 @@ void Config_Load(const char* iniPath)
     g_cfg.hideArmSleeves = CfgBool("HideArmSleeves", false);
     g_cfg.armHideHandsVt = CfgHex("ArmHideHandsVt", g_cfg.armHideHandsVt);
     g_cfg.armHideSkelVt = CfgHex("ArmHideSkelVt", g_cfg.armHideSkelVt);
+    g_cfg.handRigProbe = CfgBool("HandRigProbe", false);
+    g_cfg.leftHandTracked = CfgIntRange("LeftHandTracked", 0, 0, 3);
+    CfgAxisMap("LeftHandAxisMap", g_cfg.leftHandAxis);
+    CfgVec3("LeftHandOffset", g_cfg.leftHandOffset);
+    CfgVec3("LeftHandRot", g_cfg.leftHandRot);
     g_cfg.handsProbe = CfgBool("EnableHandsProbe", false);
     g_cfg.handsPtrOff = CfgHex("HandsPtrOffset", g_cfg.handsPtrOff);
     g_cfg.handsPosOff = CfgHex("HandsPosOffset", g_cfg.handsPosOff);
@@ -425,6 +458,17 @@ void Config_Load(const char* iniPath)
     CfgEcho("Enable6DofHands", "%d", (int)g_cfg.sixDofHands);
     CfgEcho("HideArmSleeves", "%d   hands vt 0x%X  skel vt 0x%X",
         (int)g_cfg.hideArmSleeves, g_cfg.armHideHandsVt, g_cfg.armHideSkelVt);
+    CfgEcho("HandRigProbe", "%d", (int)g_cfg.handRigProbe);
+    CfgEcho("LeftHandTracked", "%d  %s", g_cfg.leftHandTracked,
+        g_cfg.leftHandTracked == 0 ? "(off)" :
+        g_cfg.leftHandTracked == 1 ? "(position)" :
+        g_cfg.leftHandTracked == 2 ? "(position + rotation)" : "(AXIS SWEEP)");
+    CfgEcho("LeftHandAxisMap", "%d,%d,%d   (1 fwd, 2 right, 3 up; signed)",
+        g_cfg.leftHandAxis[0], g_cfg.leftHandAxis[1], g_cfg.leftHandAxis[2]);
+    CfgEcho("LeftHandOffset", "%.1f fwd, %.1f right, %.1f up (cm)",
+        g_cfg.leftHandOffset[0], g_cfg.leftHandOffset[1], g_cfg.leftHandOffset[2]);
+    CfgEcho("LeftHandRot", "%.1f, %.1f, %.1f  (pitch,yaw,roll deg)",
+        g_cfg.leftHandRot[0], g_cfg.leftHandRot[1], g_cfg.leftHandRot[2]);
     CfgEcho("EnableHandsProbe", "%d", (int)g_cfg.handsProbe);
     CfgEcho("HandsPtrOffset", "0x%X", g_cfg.handsPtrOff);
     CfgEcho("HandsPosOffset", "0x%X", g_cfg.handsPosOff);

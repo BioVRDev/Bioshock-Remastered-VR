@@ -60,3 +60,38 @@ bool ArmHide_HandMotion(float* outSmoothed, float* outRaw);
 // Never writes exact zero -- the attachment path inverse-decomposes scale,
 // which is the same division that makes bone 43 untouchable.
 void ArmHide_SetActorHidden(void* handsActor, bool hidden);
+
+// ---- M6-S1: WHAT SPACE IS THE BONE ARRAY IN? ----------------------------
+// READ ONLY. Dumps seven bones a few times after the skeleton locks and then
+// stops. Behind HandRigProbe, default off.
+//
+// M6's cluster transform assumes the array is in a common MODEL space rather
+// than parent-relative. That is inferred from CollapseBone pinning one bone at
+// ANOTHER bone's position, never measured -- and if it is wrong the transform
+// maths is wrong too. The dump also says whether the array stays LIVE while the
+// sleeves are hidden, because this file's own dirty-byte clear can freeze it.
+void ArmHide_RigProbe(void* handsActor);
+
+// ---- M6-S1: THE TRACKED LEFT HAND ---------------------------------------
+// A rigid transform on bones 6-21: the cluster keeps its own shape while its
+// wrist goes wherever the caller asks. This is the ONE mechanism M6 is built
+// on -- left-handed mode and a two-handed grip are the same write with a
+// different target.
+//
+// targetPos is MODEL space, the frame M6-S1 measured. targetQuat may be null,
+// which slides the cluster bodily and leaves every bone at its authored angle.
+//
+// LEFT CLUSTER ONLY, and that is structural: bone 43, the weapon attachment, is
+// in the RIGHT cluster and cannot be reached from here. Nothing here writes
+// scale, so the division that makes 43 dangerous is unreachable twice over.
+bool ArmHide_DriveLeftCluster(void* handsActor, const float targetPos[3],
+    const float targetQuat[4]);
+
+// Mode 3. Ignores the controller and slides the cluster along one model lane at
+// a time so the axis map can be settled by observation rather than argument.
+bool ArmHide_SweepLeftCluster(void* handsActor);
+
+// Restores the reference pose and re-flags the array. MUST be called whenever
+// the drive stands down -- a scripted sequence needs the array evaluating again
+// before ArmHide_HandMotion is trusted.
+void ArmHide_ReleaseLeftCluster();

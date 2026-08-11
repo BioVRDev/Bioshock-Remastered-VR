@@ -14,8 +14,16 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**Run `.planning/sessions/M6.md` § M6-S1** — separate left and right hands. Read
-the card, not this section.
+**M6-S1 is DONE and verified** (2026-08-10). The tracked left hand works, in
+ordinary play and in scripted events. **The cluster transform exists**, which is
+the mechanism M6-S2 (two-handed grip) and M6-S3 (left-handed mode) are both
+configuration on top of — read `docs/modules/hands.md` § *The cluster transform*
+before either.
+
+**Next: the free hand for plasmids, and the crosshair gate.** Both requested
+after the M6-S1 sign-off. The plasmid case is the same cluster write pointed at
+the RIGHT cluster, which contains **bone 43** — position only, never rotation,
+never scale.
 
 **M7 is closed and verified.** The tester's words: "Perfect on every front."
 Scripted events land where they intend, arms and hands appear only while the rig
@@ -330,10 +338,8 @@ are inert. Keep them; do not delete.
 - [ ] **M3-S3** the controller's `LastPlayerInputContext`. Skip entirely if S2
       returns no.
 
-**Uncommitted.** Everything from 2026-08-10 is in the working tree — 20 modified
-files plus three new ones (`Game/EngineBridge.{cpp,h}`,
-`docs/modules/enginebridge.md`, `docs/proposals/vr-features-research.md`).
-Nothing was committed because it was not asked for.
+**Committed.** That earlier claim was stale — the 2026-08-10 M3-S1 and research
+work is in the history, and M6-S1 landed on top of it.
 
 ---
 
@@ -390,6 +396,18 @@ settled; the rollback copy is no longer needed.
 ---
 
 ## Last verified in a headset
+
+**2026-08-10 19:19, build `M6-S1 left hand tuning modes`.** The tracked left
+hand, tuned live and signed off: *"Looks and feels fantastic. Works perfectly,
+even in the scripted events."* Two-handed weapons visibly unchanged, scripted
+events unaffected.
+
+Health across the whole run: `EYEQ 1/1`, `hud: host found` climbing normally,
+`POLL synth ~186/s realpad 0`, game thread **4.2–5.0 ms** and **~90 frames/s
+submitted**, steady for two minutes with the cluster write live. That last pair
+is the answer to a reported framerate drop: the mod's own numbers show no
+regression, and the two real costs — the palm spike's overdraw and ~400 log lines
+per Numpad 9 press — were both fixed rather than argued about.
 
 **2026-08-10 17:14, build `M7-S6 forced-move gate + freeze on` (15:36:35).**
 Bathysphere ride, two scripted sequences, ordinary play. Tester verdict:

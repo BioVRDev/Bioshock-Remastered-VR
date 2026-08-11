@@ -1234,6 +1234,212 @@ static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
     lo = 1e9; hi = -1e9; sum = 0.0; n = 0; yawSum = 0;
 }
 
+// ===========================================================================
+//  M6-S1: THE TRACKED LEFT HAND
+//
+// Places the left hand's SIXTEEN BONES where your left controller is, while the
+// actor -- and with it the weapon and the right hand -- carries on exactly as
+// before. That separation is the whole feature: two hands, one actor.
+//
+// It applies to precisely the weapons that HIDE the left hand today, because
+// those are the ones where it has nothing to do. The two-handed weapons keep
+// both hands on the gun and are never touched. See the ARMS block for the swap.
+//
+// MEASURED, M6-S1, and the reason this can be a few lines rather than a hunt:
+// the bone array is a common model space in centimetres, and the left cluster
+// is not animated at all -- so a rigid transform on it fights nothing.
+//
+// THE ONE PREDICTION LEFT IN HERE is which model lane is which. The rest pose
+// reads as (forward, right, up) -- the actor's own axes -- but that is inferred
+// from anatomy, not measured. So it is LeftHandAxisMap in the ini rather than a
+// constant in this file, and LeftHandTracked=3 measures it outright.
+// ===========================================================================
+
+// Set by the ARMS block, consumed here. Both run on the game thread inside the
+// same CalcView, the ARMS block first, so this is sequencing rather than
+// sharing -- the decision and its use cannot disagree within a frame.
+static bool g_leftTrackOn = false;
+
+// A rotation matrix straight to a quaternion. Deliberately NOT built out of
+// HandsOffsetQuat: that composes in the XR axis convention, and these bones are
+// mesh space. Going through the basis keeps one convention end to end.
+static void BasisToQuat(const Basis& b, float out[4])
+{
+    // Columns are the rotated axes, expressed in the frame we want the result in.
+    const double m00 = b.forward.x, m01 = b.right.x, m02 = b.up.x;
+    const double m10 = b.forward.y, m11 = b.right.y, m12 = b.up.y;
+    const double m20 = b.forward.z, m21 = b.right.z, m22 = b.up.z;
+
+    const double tr = m00 + m11 + m22;
+    double x, y, z, w;
+    if (tr > 0.0)
+    {
+        double s = sqrt(tr + 1.0) * 2.0;
+        w = 0.25 * s; x = (m21 - m12) / s; y = (m02 - m20) / s; z = (m10 - m01) / s;
+    }
+    else if (m00 > m11 && m00 > m22)
+    {
+        double s = sqrt(1.0 + m00 - m11 - m22) * 2.0;
+        w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s;
+    }
+    else if (m11 > m22)
+    {
+        double s = sqrt(1.0 + m11 - m00 - m22) * 2.0;
+        w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s;
+    }
+    else
+    {
+        double s = sqrt(1.0 + m22 - m00 - m11) * 2.0;
+        w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s;
+    }
+    out[0] = (float)x; out[1] = (float)y; out[2] = (float)z; out[3] = (float)w;
+}
+
+// Express a world vector in a basis's own axes -- the same projection
+// PublishShotDir uses to turn a world shot direction into a view-relative one.
+static Vec3 IntoBasis(const Basis& b, double x, double y, double z)
+{
+    return { x * b.forward.x + y * b.forward.y + z * b.forward.z,
+             x * b.right.x + y * b.right.y + z * b.right.z,
+             x * b.up.x + y * b.up.y + z * b.up.z };
+}
+
+static void DriveLeftHand(void* handsActor, const FRotator& want,
+    double ax, double ay, double az,
+    const FVector& camLoc, const float headPos[3], double cs, double sn)
+{
+    HandPose lp = {};
+    if (!Input_GetHandPose(HAND_LEFT, &lp)) return;
+    if (!lp.aimValid && !lp.gripValid) return;
+
+    const Basis A = RotatorToBasis(want);
+
+    // ---- rotation FIRST, because the offset below is expressed in its frame --
+    // UNVALIDATED against the bone quaternions' handedness and component order,
+    // which nothing has measured. Position does not depend on any of that.
+    //
+    // Only for the identity axis map. A lane permutation is a change of frame,
+    // and applying it to a quaternion is not permuting its components -- so
+    // rather than get that subtly wrong, it declines.
+    float quat[4];
+    const float* quatPtr = nullptr;
+    Basis T = {};
+    bool haveT = false;
+
+    if (g_cfg.leftHandTracked == 2)
+    {
+        const bool identity = g_cfg.leftHandAxis[0] == 1 &&
+            g_cfg.leftHandAxis[1] == 2 && g_cfg.leftHandAxis[2] == 3;
+        if (identity)
+        {
+            // GRIP, not aim, and matching the position below -- which takes its
+            // point from the grip pose too. The aim pose is where a weapon would
+            // shoot; on most controllers it is tilted tens of degrees off the
+            // hand. A bare hand wants the pose that describes the hand.
+            float qOff[4], qFinal[4];
+            HandsOffsetQuat(g_cfg.leftHandRot, qOff);
+            QuatMul(lp.gripValid ? lp.gripQuat : lp.aimQuat, qOff, qFinal);
+
+            double cp, cy, cr;
+            HeadQuatToDeg(qFinal, cp, cy, cr);
+
+            FRotator lwant = ComposeHeadLocal(g_aimBase, cy, cp, g_cfg.headAimMode >= 2);
+            lwant.roll = g_aimBase.roll + (int32_t)(cr * 182.0444);
+
+            T = RotatorToBasis(lwant);
+            haveT = true;
+
+            // The target frame expressed in the ACTOR's frame -- which, with the
+            // identity map, is the model frame the bones are written in.
+            Basis rel;
+            rel.forward = IntoBasis(A, T.forward.x, T.forward.y, T.forward.z);
+            rel.right = IntoBasis(A, T.right.x, T.right.y, T.right.z);
+            rel.up = IntoBasis(A, T.up.x, T.up.y, T.up.z);
+
+            BasisToQuat(rel, quat);
+            quatPtr = quat;
+        }
+        else
+        {
+            static bool warned = false;
+            if (!warned)
+            {
+                warned = true;
+                Log("!!! LEFTHAND: LeftHandTracked=2 needs the identity LeftHandAxisMap.");
+                Log("!!! LEFTHAND: Falling back to position only.");
+            }
+        }
+    }
+
+    // ---- position: same conversion as the right hand above, deliberately ----
+    const float* P = lp.gripValid ? lp.gripPos : lp.aimPos;
+    const double relRight = ((double)P[0] - headPos[0]) * 100.0;
+    const double relUp = ((double)P[1] - headPos[1]) * 100.0;
+    const double relFwd = -((double)P[2] - headPos[2]) * 100.0;
+
+    double lx = camLoc.x + (relFwd * cs - relRight * sn);
+    double ly = camLoc.y + (relFwd * sn + relRight * cs);
+    double lz = camLoc.z + relUp;
+
+    // ---- THE OFFSET MUST NOT LIVE IN THE ACTOR'S FRAME ------------------
+    // REPORTED, first tuned session: with the right hand still the left hand
+    // tracked almost perfectly, but MOVING the right hand dragged the left one
+    // about. The cause is here and it is exact: this offset used to be added in
+    // actor-local space, and the actor is rotated by the RIGHT controller. A
+    // tuned 8 cm correction therefore swung through 16 cm as the right wrist
+    // turned. Everything else in this function cancels the actor out
+    // algebraically -- world = actorLoc + A * A^T * (P - actorLoc) = P -- so the
+    // offset was the only term that could couple the two hands, and it did.
+    //
+    // It belongs in the frame it describes: the offset from the controller's
+    // grip point to the wrist bone is fixed relative to YOUR HAND. In rotation
+    // mode that frame is known exactly. In position mode there is no hand
+    // orientation, so fall back to the player's heading -- which the right hand
+    // does not turn either.
+    const double o0 = g_cfg.leftHandOffset[0];
+    const double o1 = g_cfg.leftHandOffset[1];
+    const double o2 = g_cfg.leftHandOffset[2];
+    if (o0 || o1 || o2)
+    {
+        const Basis O = haveT ? T
+            : Basis{ { cs, sn, 0.0 }, { -sn, cs, 0.0 }, { 0.0, 0.0, 1.0 } };
+        lx += O.forward.x * o0 + O.right.x * o1 + O.up.x * o2;
+        ly += O.forward.y * o0 + O.right.y * o1 + O.up.y * o2;
+        lz += O.forward.z * o0 + O.right.z * o1 + O.up.z * o2;
+    }
+
+    // World offset from the actor origin (which sits at the eye), then into the
+    // actor's own axes. The bones live in the actor's frame, not the world's.
+    const Vec3 local = IntoBasis(A, lx - ax, ly - ay, lz - az);
+
+    // DrawScale scales the whole mesh, skeleton included, so a bone moved by N
+    // model units renders as N * scale centimetres. Divide to ask for a real
+    // distance. HandsScale 0 means "leave DrawScale alone", i.e. 1.
+    const double s = (g_cfg.handsScale > 0.01f) ? (double)g_cfg.handsScale : 1.0;
+    const double al[3] = { local.x / s, local.y / s, local.z / s };
+
+    // Actor axes -> model lanes, per the ini. 1 fwd, 2 right, 3 up, signed.
+    float target[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        const int sel = g_cfg.leftHandAxis[i];
+        const int a = (sel < 0 ? -sel : sel) - 1;
+        target[i] = (float)((sel < 0) ? -al[a] : al[a]);
+    }
+
+    ArmHide_DriveLeftCluster(handsActor, target, quatPtr);
+
+    static DWORD lastLog = 0;
+    const DWORD now = GetTickCount();
+    if (now - lastLog >= 2000)
+    {
+        lastLog = now;
+        Log(">>> LEFTHAND: model %+7.1f %+7.1f %+7.1f   (actor-local %+6.1f fwd "
+            "%+6.1f right %+6.1f up cm)",
+            target[0], target[1], target[2], local.x, local.y, local.z);
+    }
+}
+
 static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg.sixDofHands) return;
@@ -1349,6 +1555,18 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     L->z = (float)wz;
 
     WatchGunDistance(camLoc, obj);
+
+    // ---- M6-S1: THE LEFT HAND, IN THE FRAME THE RIGHT HAND DEFINES -------
+    // Deliberately LAST, because it consumes `want` and wx/wy/wz -- the actor
+    // rotation and location this function has just decided. "Decoupled from the
+    // right hand" is exactly that: the actor keeps carrying the weapon hand, and
+    // the left cluster is then placed relative to it.
+    //
+    // The controller pose goes through the SAME room-yaw conversion as the right
+    // hand above rather than a second one of its own. One algebra, no drift
+    // between them.
+    if (g_leftTrackOn && (g_cfg.leftHandTracked == 1 || g_cfg.leftHandTracked == 2))
+        DriveLeftHand(obj, want, wx, wy, wz, camLoc, headPos, cs, sn);
 
     static bool announced = false;
     if (!announced)
@@ -1538,22 +1756,53 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 !theater && !inScripted && !GameState_Paused();
             ArmHide_Update(handsActor, hide);
 
+            // M6-S1, DIAGNOSTIC AND READ-ONLY. Behind HandRigProbe, default
+            // off, and it stops after six dumps. Deliberately AFTER the sleeve
+            // pass: the numbers we need describe the array as the cluster
+            // transform will actually find it, hidden sleeves and all.
+            ArmHide_RigProbe(handsActor);
+
             // Per-weapon: the shotgun and Tommy gun read better two-handed, so
             // the second hand can be kept for individual slots.
             const int wslot = HandsProbe_WeaponSlot();
             const bool hideHand = (wslot >= 0 && wslot <= 8)
                 ? (g_cfg.hideHandSlot[wslot] != 0) : (g_cfg.hideInactiveHand != 0);
 
+            // M6-S1: WHERE THE HIDE BECOMES A TRACK.
+            //
+            // The slots that hide the left hand are exactly the slots where it
+            // has nothing to do, and the slots that KEEP it are the two-handed
+            // weapons -- shotgun and Tommy gun, whose second hand is already on
+            // the gun where it belongs. So one condition serves both halves of
+            // what was asked for: show and track the left hand precisely where
+            // it is hidden today, and leave the two-handers completely alone.
+            //
+            // Ability mode is excluded because there the left hand IS the active
+            // one, holding the plasmid. It also keeps bone 43 -- in the right
+            // cluster -- permanently out of reach of the cluster write.
+            const bool handsFree = g_cfg.sixDofHands && !theater && !inScripted &&
+                !GameState_Paused();
+            g_leftTrackOn = handsFree && hideHand && g_cfg.leftHandTracked > 0 &&
+                !HandsProbe_AbilityMode();
+
             // Gated on the SEQUENCE, not on motion: the whole-actor hide above
             // already covers the still stretches, and letting this follow the
             // motion signal too would have the two paths fighting each other
             // over the same bones.
-            if (hideHand && g_cfg.sixDofHands && !theater && !inScripted &&
-                !GameState_Paused())
+            if (hideHand && handsFree && !g_leftTrackOn)
                 ArmHide_UpdateInactiveHand(handsActor,
                     HandsProbe_AbilityMode() ? 0 : 1);
             else
                 ArmHide_ReleaseInactiveHand();
+
+            // Mode 3 drives itself -- it ignores the controller entirely, so it
+            // does not wait on DriveHands. Releasing whenever we are not driving
+            // is what hands the array back before a scripted sequence, which is
+            // what keeps M7's motion signal honest.
+            if (g_leftTrackOn && g_cfg.leftHandTracked == 3)
+                ArmHide_SweepLeftCluster(handsActor);
+            else if (!g_leftTrackOn)
+                ArmHide_ReleaseLeftCluster();
         }
         else ArmHide_Reset();
     }

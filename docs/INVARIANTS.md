@@ -61,6 +61,23 @@ handoff disagree, this file wins.
 - **`AActor::Location = +0x1D8`**, one unit = 1 cm. `+0x1A0` was a bad early scan.
 - **Bone 43 is untouchable.** Telekinesis release walks the attachment path
   through it; moving or scaling it crashes the game.
+- **The render bone array is a common model space, in centimetres, on the
+  actor's own axes** — measured M6-S1, 2026-08-10. Bones sit tens of units apart
+  in one shared frame; parent-relative would have given small per-bone offsets.
+  A rendered distance is model units × `HandsScale`. The lane order reads as
+  (forward, right, up) from the rest pose, which is anatomy, not a measurement —
+  it lives in `LeftHandAxisMap` for that reason.
+- **The array keeps evaluating in ordinary play even while the dirty byte is
+  cleared every CalcView** — bone 27 moved between every pair of M6-S1 dumps
+  with the sleeve pass running. The engine re-flags each tick and our writes
+  stick because they land after evaluation. **Do not generalise this to scripted
+  sequences**: the M7-S4 latch was real and is recorded below.
+- **The build stamp does not always advance.** `dllmain build:` carries
+  `__TIME__` from `Core/dllmain.cpp`, so an incremental build that does not
+  recompile that file ships a new DLL reporting an old time — observed
+  2026-08-10, a DLL built at 18:08 stamped 17:52. Bumping the label is what
+  moves the stamp, so bump it every session; the file timestamp in the game
+  folder is the independent check.
 - Hand rotation offsets **compose as quaternions**. Adding Euler trims shears
   near vertical wrist orientations.
 - Never add a per-frame memory scan. One-shot, lock, stop.
