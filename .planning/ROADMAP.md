@@ -22,6 +22,11 @@ outcome is decided, not when the idea feels done. Cards are in
 | ☐ | **M3-S2** call it on `Health` | diagnostic | the value **tracks damage** — bridge proven, or not |
 | ☐ | **M3-S3** read the controller's `LastPlayerInputContext` | diagnostic | `kContexts` finally gets an input. **Now has computed candidates: `controller+0x9C4` or `+0x9C0`**, walked back from the measured `+0x9E0` |
 | ✅ | **M7** scripted-event detection and QOL | visible | **"Perfect on every front."** Sequences land where they intend; arms follow rig motion; entry stall gated; gameplay shake gone |
+| ✅ | **M6-S1** the tracked free hand | visible | **"Looks and feels fantastic. Works perfectly, even in the scripted events."** The cluster transform exists; S2 and S3 are configuration on it |
+| ⏳ | **M6-S4** per-plasmid calibration | research → code | locate probe **deployed, never run**. `PossibleAbilities` is a config array; `ActiveAbility` is already a class |
+| ⏳ | **M6-S5** anchor the loose HUD screens | research → code | locate probe **deployed, never run**. Reads the playing Flash movie by NAME; `AnchorIndexCounts` rejected on evidence |
+| ☐ | **M6-S2** two-handed grip | visible | the off-hand tracks a point on the weapon |
+| ☐ | **M6-S3** left-handed mode | visible | buy the `set Pistol AttachBone L_Grip` ticket first |
 | ☐ | **M2-S1** StateBus | refactor | `GameState_Cutscene()` returns the real signal; no behaviour change |
 | ☐ | **M2-S2** HUD gate on the real signal | visible | HUD hidden in cutscenes, correct everywhere else |
 | ☐ | **M2-S3** cutscene anchor, gated | visible | opening anchored; in-world moments unaffected |
@@ -142,9 +147,10 @@ These are small, independent, and none depends on cutscene detection.
    `PlayerController` exec — e.g. `ForcePause` — to confirm `UGameEngine::Exec`
    reaches them. The second gates quick-save-on-a-chord, which is the single
    highest-value QOL item found.
-1. **Fill `AnchorIndexCounts`.** The "What is this?" screen does not resize with
-   the HUD because the list is empty. Bring the screen up, Numpad `*`, Numpad `3`,
-   take the signature that only appears while it is up. One play session, no code.
+1. ~~**Fill `AnchorIndexCounts`.**~~ **REJECTED ON EVIDENCE, 2026-08-10.** Index
+   counts false-fire during ordinary play, and a wrong entry in a signature list
+   has frozen the camera before. Superseded by **M6-S5**, which reads the name of
+   the Flash movie that is actually playing. See `DECISIONS.md`.
 2. **Diagnose the ammo-counter transparency.** Noted after the square fix and not
    explained; `HudAlphaFix=0` did not change it. Re-add the `CAPTURED:` diagnostic
    and look for a `tex=yes` line during normal play — if the counter is textured it
@@ -199,8 +205,9 @@ divergence as a shortcut.
 - **Rotation comfort**, once a real scripted-sequence signal exists. `ModYaw` and
   `FreezeGameRotation` are already written and default-off, waiting for a state
   they can be gated on.
-- **Per-plasmid grip/cursor offsets.** All plasmids share slot 8, so Electrobolt
-  and Telekinesis overwrite each other.
+- ~~**Per-plasmid grip/cursor offsets.**~~ **PROMOTED to M6-S4** — the script
+  research is done and it needs neither the native call nor a `UObject::Class`
+  hunt. The locate probe is built and deployed, awaiting one run.
 - **Crosshair as a published ray + optional scene trace**, replacing fixed depth.
 - **Alternate-build hardening**: clear cached pointers on pawn-null; rederive the
   GOG delta signature (currently zero matches); derive the engine pointer/vtable

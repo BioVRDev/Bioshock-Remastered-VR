@@ -14,16 +14,37 @@ chat sessions. It is the answer to "where is this project right now".
 
 ## Next step
 
-**M6-S1 is DONE and verified** (2026-08-10). The tracked left hand works, in
-ordinary play and in scripted events. **The cluster transform exists**, which is
-the mechanism M6-S2 (two-handed grip) and M6-S3 (left-handed mode) are both
-configuration on top of — read `docs/modules/hands.md` § *The cluster transform*
-before either.
+**The next session is RESEARCH AND PLANNING ONLY — no code.** Requested
+explicitly (2026-08-10, late). New features to be scoped; nothing to build until
+the outstanding builds below have been in a headset.
 
-**Next: the free hand for plasmids, and the crosshair gate.** Both requested
-after the M6-S1 sign-off. The plasmid case is the same cluster write pointed at
-the RIGHT cluster, which contains **bone 43** — position only, never rotation,
-never scale.
+> ## ⚠ TWO BUILDS ARE DEPLOYED AND UNTESTED
+> The DLL in the game folder is `M6-S1 movement modes + plasmid/GUI locate` and
+> **nothing in the last two builds has been in a headset.** Do not treat any of
+> it as working, and do not stack another build on it. The tester is away until
+> 2026-08-11.
+>
+> Untested, in deploy order:
+> - **The free hand for plasmids** — the right-cluster write. Includes the
+>   **bone 43 position write**, and *telekinesis release has never been tried
+>   against it*. That is the one path here that can **crash** rather than look
+>   wrong; the release test was asked for and not reached.
+> - **`MovementMode` 0/1/2** and the double-applied-head-yaw fix.
+> - **The two locate probes** (`PlasmidProbe`, the `FlashGUIController` native
+>   row). Read-only, so they cannot break anything — but they have produced no
+>   data yet, and M6-S4/S5 both wait on that log.
+>
+> **Two commits are unpushed**: `0503c0e`, `a3484ce`. The working tree is clean.
+
+**When testing resumes**, the first run should cover, in this order: telekinesis
+release with a plasmid equipped (the crash risk), then `MovementMode=0` (does
+turning 90° still walk you backwards?), then cycling every plasmid to feed the
+probe log.
+
+**M6-S1 is DONE and verified.** The tracked left hand works in ordinary play and
+in scripted events. **The cluster transform exists**, which is the mechanism
+M6-S2 (two-handed grip) and M6-S3 (left-handed mode) are both configuration on
+top of — read `docs/modules/hands.md` § *The cluster transform* before either.
 
 **M7 is closed and verified.** The tester's words: "Perfect on every front."
 Scripted events land where they intend, arms and hands appear only while the rig
@@ -103,6 +124,64 @@ ViewActor divergence as a shortcut. All four are falsified with evidence in
 ---
 
 ## Recently closed
+
+**M6-S1 — the tracked free hand (2026-08-10).** Verified: *"Looks and feels
+fantastic. Works perfectly, even in the scripted events."* The hand that is not
+holding your weapon appears and follows its own controller on exactly the slots
+that hide it today; the two-handed weapons are untouched. Live numpad tuning on
+Numpad 9, saved back to the ini.
+
+Four measurements came out of it, all in `docs/ENGINE-MAP.md` § *Skeleton* and
+`docs/INVARIANTS.md`:
+
+- The render bone array is a **common model space, centimetres, on the actor's
+  own axes**. Confirmed, not inferred.
+- **The array keeps evaluating in ordinary play with the dirty byte cleared** —
+  bone 27 moved between every pair of dumps. Scoped to ordinary play; M7-S4's
+  latch was real and is a different window.
+- **"Apply late" was wrong for bones.** S59/S60 measured the actor *rotator*
+  being erased, not the array. CalcView plus the dirty byte is the seam.
+- **The build stamp does not always advance** — `__TIME__` is baked in when
+  `dllmain.cpp` compiles, so an incremental build that misses that file ships a
+  new DLL reporting an old time. Bump the label every session.
+
+Two bugs the headset found, both instructive and both fixed:
+
+1. **A sharp spike out of the palm** — vertices weighted across a bone we moved
+   and a bone we did not. `CollapseArm` pins the sleeve at the wrist but runs
+   *before* the cluster write, reading the engine's wrist. Diagnosed from one
+   tester sentence: the spike followed the *right* hand while the rest of the
+   hand followed the left.
+2. **The right hand dragged the left** — the placement offset was applied in the
+   actor's frame, and the actor is rotated by the weapon hand. Everything else
+   cancels the actor out algebraically, so the offset was the only term that
+   *could* couple them.
+
+**The controllable scripted sequence — MEASURED and fixed (2026-08-10).** The
+Big Daddy killing a splicer is a scripted scene the player walks through, and the
+mod treated it like a locked one: `ScriptedAimReleased()` fired, the aim was
+handed back, and head-look stopped steering. Tester at `=1`: *"test 2 worked well
+and the big daddy splicer fight felt mostly normal."*
+
+The evidence, one run, two windows, and both candidate signals separated them:
+
+| | locked cutscene | Big Daddy |
+|---|---|---|
+| duration | 108 s | ~ |
+| HUD drawing | 0 throughout | **1 throughout** |
+| `aForward`/`aStrafe` | **0.0 every sample** | ±950, constantly |
+| `hands+0x594` | `0x6` | `0x7` |
+
+**Noticed, recorded, not acted on:** that `hands+0x594` bit-0 difference is a
+third and cheaper discriminator, in a DWORD already read every frame. One sample
+per case is not enough to trust it.
+
+**The crosshair now knows what is in your hands (2026-08-10).** Hidden when
+nothing is equipped and during scripted scenes. Verified both: *"the crosshair is
+correctly gone during the opening"* and *"no crosshair in scripted event is
+working correctly now."* The signal cost nothing — `HandsProbe` already reads
+`CurrentAbility` and `CurrentHoldable` every frame, and both null is empty hands.
+
 
 **M7 — scripted-event QOL, and the arc's longest bug is fixed (2026-08-10).**
 Verified in the headset across several cycles. What works now:
@@ -396,6 +475,31 @@ settled; the rollback copy is no longer needed.
 ---
 
 ## Last verified in a headset
+
+**2026-08-10 21:38, build `crosshair in scenes + unarmed head aim`.** A full run
+through the opening, then a second pass on the Big Daddy scene with
+`ControllableScriptedFix=1`.
+
+**Verified:** the crosshair is gone with empty hands and gone in scripted scenes;
+the Big Daddy scene plays normally with the fix on; the free hand still tracks
+and the two-handed weapons are still untouched.
+
+**Assumed, NOT verified, in this same build:** the free hand for **plasmids**
+(the right-cluster write, including the bone 43 position write) and the
+**telekinesis release** test that goes with it. Both were asked for and neither
+was reached.
+
+**Found by accident, and it turned into a feature:** head aim was driving
+locomotion, hard — *"turning like 90 degrees left almost moves you backwards and
+to the left."* That is not sensitivity, it is the head yaw applied **twice**: the
+aim field carries it, and `HeadRelativeMove` rotates the movement stick by it
+again. 90 twice is 180. Fixed in the next build via `MovementMode`, **untested**.
+
+**Also reported, with a side-by-side screenshot:** the tonic equip screen. The
+game's own render shows the green panels **completely empty**, so the capture is
+working perfectly and only the placement is wrong — that interface is spatially
+bound to world geometry and rides the flat quad instead. Plus an opaque black
+"Waiting…" box absent from the game's render. Both on the M6-S5 card.
 
 **2026-08-10 19:19, build `M6-S1 left hand tuning modes`.** The tracked left
 hand, tuned live and signed off: *"Looks and feels fantastic. Works perfectly,

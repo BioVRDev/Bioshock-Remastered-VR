@@ -349,3 +349,62 @@ spells the *animation* name correctly), so adding it from memory or from
 `ShockPlayer.uc` would silently never match. Added, classified `CTX_SCRIPTED` by
 inference, compiled, **not deployed and never run**. Re-run that diff against
 `User.ini` rather than trusting the corpus or the table.
+
+---
+
+## 2026-08-10 — M6-S1 and the free hand
+
+**The cluster write goes at CalcView, not Present, and the research doc was
+wrong to say "apply late".** `docs/proposals/vr-features-research.md` inherited
+that from S59/S60 — but that measurement was about the actor **rotator**, which
+the game tick rewrites, not about the bone array. Bone writes are held by the
+dirty byte instead, and the sleeve pass writing from CalcView every frame is the
+standing proof. Present is also the render thread and would race the game
+thread's evaluation for no measured benefit. **Do not "fix" this back.**
+
+**Rejected: a damping constant for head-based movement.** The report was "turning
+90 degrees left almost moves you backwards", which reads like over-sensitivity
+and invites a tuning factor. It was a **duplicate**: the aim field carried the
+head *and* `HeadRelativeMove` rotated the movement stick by the head offset
+again, and 90 twice is 180. The fix is to suppress the second rotation.
+A damping constant would have masked it at one angle and stayed wrong at every
+other one.
+
+**`MovementMode` supersedes the `AimSource` + `HeadRelativeMove` interaction.**
+Those two switches encoded three sensible modes and one broken combination (head
+aim with the stick still being rotated). One key now names the mode; the old
+pair is read only as the seed when `MovementMode` is absent. Head aim seeds mode
+0 whatever `HeadRelativeMove` says — **reproducing the broken pairing faithfully
+is not a compatibility win.**
+
+**Two predicates for the aim source, deliberately not one.**
+`AimUsesHeadNow()` drives the aim field *and* the stick gate — those must agree
+or the head is applied twice. `ModeUsesHead()` drives the view composition and
+ignores the empty-handed case, so picking a weapon up never changes how the world
+is presented. Collapsing them into one predicate reintroduces one bug or the
+other.
+
+**Bone 43 takes the cluster's position and nothing else.** It is the weapon
+attachment and telekinesis release walks the attachment path through it —
+telekinesis being a plasmid, which is exactly when the right cluster is driven.
+Moving it is what `HideBone` already proved safe; rotation is untested and scale
+is known fatal. It is skipped on restore for the same reason. **Still unverified
+in a headset as of this entry.**
+
+**Rejected on evidence: filling `AnchorIndexCounts` to anchor the loose HUD
+screens.** It is the obvious move and it is in the backlog, but the tester
+reports index counts **false-firing during ordinary play**. A gameplay-vs-menu
+gate would narrow the window it can misfire in, not close it, and a wrong entry
+in a signature list has frozen the camera before. The replacement is a real
+state signal — `FlashGUIController` keeps a list of **named** playing movies, so
+"which screen is up" has an exact answer the game already maintains. M6-S5.
+
+**Per-plasmid tuning does NOT wait on the native property call.** M3-S2 has never
+run and this does not need it. `ShockPlayer` declares `PossibleAbilities` as a
+**config** array of ability classes — fixed order, so the index is a stable ini
+key — and `ActiveAbility` is already a `Class<Ability>` rather than an instance,
+so there is no `UObject::Class` hunt at all. M6-S4.
+
+**The frame-structure dump moved off Numpad 9 to F3.** It shared that key with
+the grip tuning cycle and wrote ~400 lines to disk per press — 2012 in one
+measured session. Tolerable when the cycle had three modes; not once it had five.

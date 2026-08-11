@@ -83,9 +83,22 @@ This is unresolved, not abandoned. Keep both compiled and default-off.
 ## Aim and movement are the same field
 
 `Controller.Rotation` (`+0x1E4`) drives the view, the weapon trace **and** the
-walk direction. `AimSource=1` writes the controller's direction into it, so
-motion aim necessarily drags locomotion along. `AimSource=0` puts everything on
-the head, which is coherent but is not motion aim.
+walk direction. Writing the controller's direction into it means motion aim
+necessarily drags locomotion along; writing the head's puts everything on the
+head, which is coherent but is not motion aim.
+
+**`MovementMode` is the switch, and `AimSource`/`HeadRelativeMove` are legacy**
+seeds read only when it is absent. Mode 0 head, 1 combined (the default and the
+old behaviour), 2 controller. The coupling above is exactly why one key owns
+both halves now: mode 0 was *unreachable* before, because the aim carried the
+head while `HeadRelativeMove` still rotated the movement stick by the head
+offset — **the head applied twice**, measured as "turning 90 degrees left almost
+moves you backwards". 90 twice is 180.
+
+Two predicates keep that honest, and must not be merged: `AimUsesHeadNow()`
+drives the aim field *and* the stick gate (they must agree or the duplicate comes
+back); `ModeUsesHead()` drives the view composition and ignores the empty-handed
+case, so picking a weapon up never recomposes the view.
 
 `AimSource=2` ("write nothing, let the game keep its heading") **cannot work** —
 with `ModYaw` on, the game has no input from which to update that heading, so it
