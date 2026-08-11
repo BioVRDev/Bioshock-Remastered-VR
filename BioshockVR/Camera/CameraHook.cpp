@@ -109,6 +109,43 @@ static bool ScriptedQol()
 // so the arms and hands must keep using the motion signal; making them follow
 // this would show them during boarding, when nothing is animating. Two
 // questions, two predicates, and they must not be merged.
+// ===========================================================================
+//  MOVEMENT MODE -- WHO STEERS, YOUR HEAD OR YOUR CONTROLLER
+//
+// TWO predicates, and keeping them apart is the whole point.
+//
+// AimUsesHeadNow() decides what goes into the AIM FIELD, and InputHook reads it
+// to decide whether to rotate the movement stick as well. Those two must agree
+// or the head gets applied TWICE: that is the measured bug behind "turning 90
+// degrees left almost moves you backwards", because 90 twice is 180.
+// Controller.Rotation is what the walk direction is measured from, and
+// HeadRelativeMove rotates the stick on top of it -- fine while the aim carries
+// the CONTROLLER, a duplicate the moment it carries the head.
+//
+// ModeUsesHead() decides how the VIEW is composed, and deliberately ignores the
+// empty-handed case. Picking a weapon up must not change how the world is
+// presented; it was asked for as "don't tie this to anything else", and a view
+// that recomposes as you holster is exactly the side effect that warns against.
+// ===========================================================================
+static bool ModeUsesHead()
+{
+    return g_cfg.movementMode == 0;
+}
+
+static bool AimUsesHeadNow()
+{
+    if (ModeUsesHead()) return true;
+
+    // Empty hands: no crosshair, so nothing shows where the controller points.
+    // Looking at a thing to pick it up is the natural fallback -- and it takes
+    // the stick rotation with it, which is what stops the double-application.
+    return g_cfg.headAimUnarmed && !HandsProbe_Armed();
+}
+
+// Exported so InputHook gates the stick rotation on the SAME answer rather than
+// a second copy of the reasoning.
+bool CameraHook_AimUsesHead() { return AimUsesHeadNow(); }
+
 // ---- A SCRIPTED SEQUENCE YOU CAN WALK THROUGH ---------------------------
 bool DrawHook_HudCaptured();   // DrawHook.cpp -- did the interface draw?
 
@@ -1960,7 +1997,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
         // instead of letting it swing the gun, so the failure mode is "aim
         // saturates" rather than "aim flies away".
         g_aimHandValid = false;
-        if (g_cfg.aimSource == 1)
+        if (!AimUsesHeadNow())
         {
             HandPose hpose = {};
             // Plasmids are cast from the left hand, so the aim -- and therefore
@@ -2142,7 +2179,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // compositor reproject with a pose the image was not rendered from
             // -- the S2 flicker, reopened backwards. Head-only, because
             // g_prevQuat is a head quaternion.
-            const bool lag = (g_cfg.headAim && g_cfg.aimSource != 1 && g_prevQuatValid);
+            const bool lag = (g_cfg.headAim && ModeUsesHead() && g_prevQuatValid);
             const float* sq = lag ? g_prevQuat : hq;
 
             _InterlockedIncrement(&g_lpSeq);        // odd == writing
@@ -2471,7 +2508,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // not pan what is drawn on it.
             if (g_cfg.headTracking)
             {
-                if (g_cfg.headAim && g_cfg.aimSource == 1 && g_aimInit)
+                if (g_cfg.headAim && !ModeUsesHead() && g_aimInit)
                 {
                     // MOTION AIM: the aim field now carries the CONTROLLER, so
                     // the view can no longer be inherited from it. Compose the
@@ -2508,7 +2545,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // than a code fault -- which cost a session.
                 {
                     static int lastBranch = -1;
-                    const int b = (g_cfg.headAim && g_cfg.aimSource == 1 && g_aimInit) ? 2
+                    const int b = (g_cfg.headAim && !ModeUsesHead() && g_aimInit) ? 2
                         : (g_cfg.headAim ? 1 : 0);
                     if (b != lastBranch)
                     {
@@ -2795,16 +2832,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     // DELIBERATELY THE NARROWEST POSSIBLE CHANGE, because it was
                     // asked for with "don't tie this to anything else": ONLY the
                     // direction written into the aim field moves. The view
-                    // composition below and at the head-aim branch still read
-                    // g_cfg.aimSource directly, so nothing about how the world is
+                    // composition reads ModeUsesHead() instead, which ignores
+                    // the empty-handed case -- so nothing about how the world is
                     // presented changes as you pick a weapon up or put it down.
                     //
                     // Not extended to scripted sequences even though the
                     // crosshair is hidden there too: M7 already releases the aim
                     // in that window on purpose, and reaching into it for a
                     // convenience is how a working thing gets broken.
-                    const bool handAim = (g_cfg.aimSource == 1) && g_aimHandValid &&
-                        !(g_cfg.headAimUnarmed && !HandsProbe_Armed());
+                    const bool handAim = !AimUsesHeadNow() && g_aimHandValid;
 
                     const double aimY = handAim ? g_aimHandYaw : g_headYaw;
                     const double aimP = handAim ? g_aimHandPitch : g_headPitch;

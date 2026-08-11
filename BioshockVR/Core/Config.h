@@ -222,7 +222,27 @@ struct VrConfig
     float swingTravel = 0.15f;
     float gripThreshold = 0.80f;
     float gripHysteresis = 0.15f;
-    int   headRelativeMove = 1;
+    int   headRelativeMove = 1;   // LEGACY -- seeds movementMode, see below
+
+    // HOW YOUR HEAD AND YOUR CONTROLLER SHARE AIMING AND WALKING.
+    //
+    //   0 HEAD        the aim field carries your HEAD, and the movement stick is
+    //                 NOT rotated again -- your head is already in the aim.
+    //                 Walk and aim where you look.
+    //   1 COMBINED    the aim carries the controller, the stick is rotated by
+    //                 your head offset. Aim with the controller, walk where you
+    //                 look. This is what the mod has always done. (default)
+    //   2 CONTROLLER  the aim carries the controller, no stick rotation. Looking
+    //                 around does not change where you walk.
+    //
+    // MODE 0 EXISTS BECAUSE OF A BUG THIS FIXES. Head aim used to leave
+    // HeadRelativeMove rotating the stick as well, so the head was applied
+    // TWICE -- turning 90 degrees walked you 180, i.e. backwards. Reported as
+    // "too extreme"; it was not sensitivity, it was a duplicate.
+    //
+    // Seeded from AimSource and HeadRelativeMove when the key is absent, so an
+    // ini written before this behaves exactly as it did.
+    int   movementMode = 1;
     int   snapTurn = 0;
     float snapTurnDeg = 45.0f;
     int   freezeGameRot = 0;   // discard the game's pitch and roll (shake/kick)
@@ -234,9 +254,13 @@ struct VrConfig
     int   freezeGameplayRot = 1;
 
     // A scripted sequence the player can still WALK THROUGH keeps the aim.
-    // Default OFF until a headset log shows the HUD signal separates those from
-    // the sequences that own you -- scriptedProbe is what prints that.
-    int   controllableScripted = 0;
+    //
+    // ON, and MEASURED 2026-08-10 rather than assumed. Two windows in one run,
+    // and both candidate signals separated them outright:
+    //   locked cutscene, 108 s : hud 0 throughout, aForward/aStrafe 0.0 EVERY
+    //                            sample -- the player provably was not moving
+    //   the Big Daddy scene    : hud 1 throughout, axes swinging +-950
+    int   controllableScripted = 1;
     bool  scriptedProbe = true;
     // COMFORT. 1 = the scripted camera turns you to face the action (default,
     // and what makes cutscenes read correctly). 0 = the view holds still and you

@@ -325,12 +325,24 @@ void Config_Load(const char* iniPath)
     g_cfg.gripThreshold = CfgFloat("GripThreshold", 0.80f, 0.30f, 0.99f);
     g_cfg.gripHysteresis = CfgFloat("GripHysteresis", 0.15f, 0.00f, 0.50f);
     g_cfg.headRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
+
+    // MUST come after AimSource and HeadRelativeMove: those two seed it, so an
+    // ini written before MovementMode existed keeps behaving exactly as it did.
+    // Head aim implies mode 0 whatever HeadRelativeMove says -- that pairing was
+    // the double-application bug, and reproducing it faithfully is not a
+    // compatibility win.
+    {
+        const int seed = (g_cfg.aimSource == 1)
+            ? (g_cfg.headRelativeMove ? 1 : 2)
+            : 0;
+        g_cfg.movementMode = CfgIntRange("MovementMode", seed, 0, 2);
+    }
     g_cfg.snapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
     g_cfg.snapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
     g_cfg.freezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
     g_cfg.freezeGameplayRot = CfgIntRange("FreezeGameplayRotation", 1, 0, 1);
     g_cfg.scriptedRotFollow = CfgIntRange("ScriptedRotationFollow", 1, 0, 1);
-    g_cfg.controllableScripted = CfgIntRange("ControllableScriptedFix", 0, 0, 1);
+    g_cfg.controllableScripted = CfgIntRange("ControllableScriptedFix", 1, 0, 1);
     g_cfg.scriptedProbe = CfgBool("ScriptedWindowProbe", true);
     g_cfg.scriptedHandsMotion =
         CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
@@ -571,7 +583,12 @@ void Config_Load(const char* iniPath)
         g_cfg.swingOutFrac, g_cfg.swingTravel);
     CfgEcho("Grip", "on %.2f  off %.2f", g_cfg.gripThreshold,
         g_cfg.gripThreshold - g_cfg.gripHysteresis);
-    CfgEcho("HeadRelativeMove", "%d", g_cfg.headRelativeMove);
+    CfgEcho("HeadRelativeMove", "%d   (legacy -- MovementMode is the authority)",
+        g_cfg.headRelativeMove);
+    CfgEcho("MovementMode", "%d  %s", g_cfg.movementMode,
+        g_cfg.movementMode == 0 ? "(head: walk and aim where you look)"
+        : g_cfg.movementMode == 1 ? "(combined: controller aims, head steers)"
+        : "(controller: head does not steer)");
     CfgEcho("PitchServo", "%d  gain %.3f  dead %.1f deg  max %.2f",
         g_cfg.pitchServo, g_cfg.pitchServoGain, g_cfg.pitchServoDead, g_cfg.pitchServoMax);
     CfgEcho("SuppressIndexCounts", "'%s'", g_cfg.suppressList);

@@ -49,6 +49,7 @@ extern void LogFile(const char* msg);
 
 bool CameraHook_GetPitchError(float* outDeg);
 bool CameraHook_GetHeadYawOffset(float* outDeg);
+bool CameraHook_AimUsesHead();   // is the head already in the aim field?
 
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
@@ -756,8 +757,18 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         // -- rotating it there means stick-up stops selecting the top entry
         // whenever your head is turned. Theater and non-gameplay contexts get
         // the raw stick too.
+        // AND NOT WHEN THE AIM ALREADY CARRIES THE HEAD. This rotation exists to
+        // make "forward" mean "where I am looking" while the aim field carries
+        // the CONTROLLER. The moment the aim carries the head instead -- movement
+        // mode 0, or empty hands -- the head is already in the walk direction and
+        // doing it again applies it TWICE. Measured as "turning 90 degrees left
+        // almost moves you backwards": 90 twice is 180.
+        //
+        // Asking CameraHook rather than re-deriving it here is deliberate: the
+        // two halves of this must never disagree about which source is live.
         const bool headRelOk =
-            g_cfg.headRelativeMove &&
+            (g_cfg.movementMode == 1) &&
+            !CameraHook_AimUsesHead() &&
             g_cfg.headTracking &&
             !menuUp &&
             !gripLOn && !gripROn &&
