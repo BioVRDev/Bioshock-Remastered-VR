@@ -283,27 +283,82 @@ static bool LocateSkeleton(void* hands)
 // animating right now? See ArmHide.h for why the flags were falsified.
 // ===========================================================================
 
-static const int      kMotionBone = kRightWrist;   // 27
 static const unsigned kDrawScale3DOff = 0x2B0;     // X/Y/Z floats, measured
 static const float    kHiddenScale = 0.0001f;      // NEVER exactly zero
+
+// Which cluster the free-hand drive is writing, if any. Declared here rather
+// than beside the rest of the cluster state because the motion sampler below is
+// the first thing that needs them.
+static bool g_clDriven = false;
+static int  g_clHand = -1;         // which hand the cluster reference describes
+
+// ===========================================================================
+//  WHICH BONE THE MOTION GATE SAMPLES -- AND WHY IT CANNOT BE A CONSTANT
+//
+// It was kRightWrist (27), fixed. MEASURED 2026-08-11, three runs: during the
+// plasmid balcony scene the value read EXACTLY 0.0000 for 189 consecutive
+// samples in one run and 223 in another, and the arms stayed hidden for the
+// whole scene.
+//
+// Bone 27 is the RIGHT wrist, and a plasmid puts the weapon in your LEFT hand --
+// so the free hand is the RIGHT one and the drive is writing bones 27-44. The
+// gate was measuring the bone the mod itself writes. A rigid transform from a
+// captured reference reproduces the IDENTICAL pose every frame while the
+// controller is still, so the delta is not merely small, it is bit-for-bit zero.
+//
+// IT LOOKED LIKE A MOVEMENT-MODE BUG. Arms appeared in mode 2 and not in 0 or 3,
+// which is coincidence at one run per mode: mode 2 was the run where the tester
+// was head-steering and moving their right controller enough for bone 27 to
+// move. Nothing about MovementMode reaches the bone array, and the mod's own log
+// sequence at the scene start is identical in all three runs.
+//
+// SO SAMPLE THE WRIST OF THE CLUSTER WE ARE NOT DRIVING. It is still a hand
+// bone -- which is what the signal is about -- and it is always the engine's.
+// Bones 0-2 are the only ones outside every cluster and sleeve set, but they are
+// root and spine and may not move during a HAND animation at all.
+//
+// This is docs/INVARIANTS.md's "you cannot hide by bone and measure by bone at
+// the same time", second instance. The rule was written about hiding; DRIVING
+// has exactly the same effect and the wording now covers both.
+// ===========================================================================
+static int MotionBone()
+{
+    return (g_clDriven && g_clHand == HAND_RIGHT) ? kLeftWrist : kRightWrist;
+}
+
+int ArmHide_MotionBone() { return MotionBone(); }
 
 static float g_motPrevPos[3] = {};
 static float g_motPrevRot[4] = {};
 static bool  g_motHave = false;
+static int   g_motBone = -1;       // which bone g_motPrev* describes
 static float g_motSmoothed = 0.0f;
 
 static void MotionReset()
 {
     g_motHave = false;
+    g_motBone = -1;
     g_motSmoothed = 0.0f;
 }
 
 bool ArmHide_HandMotion(float* outSmoothed, float* outRaw)
 {
-    if (!g_bones || kMotionBone >= g_boneCount) return false;
+    const int bone = MotionBone();
+    if (!g_bones || bone >= g_boneCount) return false;
 
     BoneTransform cur = {};
-    if (!SafeRead(&g_bones[kMotionBone], &cur, sizeof(cur))) return false;
+    if (!SafeRead(&g_bones[bone], &cur, sizeof(cur))) return false;
+
+    // A HAND SWITCH CHANGES WHICH BONE THIS IS, and the distance between two
+    // different bones is not motion. Drop the history instead of measuring
+    // across the change -- the same discipline as the dt guard in the turn
+    // accumulator, and the reason g_motBone exists at all.
+    if (bone != g_motBone)
+    {
+        g_motBone = bone;
+        g_motHave = false;
+        g_motSmoothed = 0.0f;
+    }
 
     float raw = 0.0f;
     if (g_motHave)
@@ -651,7 +706,18 @@ void ArmHide_ReleaseInactiveHand()
 // the same array ArmHide writes to.
 // ===========================================================================
 
-static const int kProbeBones[] = { 0, 3, 6, 21, 24, 27, 44 };
+// SKELETAL CYCLE 0 WIDENED THIS. 43 and 44 join because 43 is the weapon attach
+// point and 44 is the tip of that chain -- the barrel axis for aim-down-sight and
+// the wrench tip are the SAME read, which is what collapsed two planned cycles
+// into one. The ten sleeve bones join because the visible-arms question needs
+// their reference positions and taking them costs nothing while the rig is
+// already being dumped. Read, never written.
+static const int kProbeBones[] =
+{
+    0, 6, 21, 27, 43, 44,                  // root, wrists, cluster ends, tip
+    3,  4,  5, 22, 23,                     // left sleeve
+    24, 25, 26, 45, 46                     // right sleeve
+};
 static const int kProbeDumpsWanted = 6;      // one on lock, then every 2 s
 static const int kProbeIntervalMs = 2000;
 
@@ -665,6 +731,119 @@ static bool ProbeRead(int idx, BoneTransform* out)
 {
     if (!g_bones || idx < 0 || idx >= g_boneCount) return false;
     return SafeRead(&g_bones[idx], out, sizeof(BoneTransform));
+}
+
+// ---- CYCLE 0: THE BONE NAME MAP ----------------------------------------
+// WHY IT IS WORTH HAVING. Every bone index in this file is hardcoded and
+// validated only by COUNT -- kExpectedBones == 47. That is a proxy: any other
+// 47-bone skeleton would pass it while every index meant something else. Names
+// turn the check into an identity.
+//
+// THE CHAIN IS UNMEASURED AND IS THEREFORE WALKED, NOT TRUSTED. A second
+// source puts a SharedSkeletonData at SkeletonInstance+0x08 and a name map at
+// +0xAC (his write-up says +0xB4 and his source says +0xAC -- they disagree,
+// which is exactly why this dumps rather than dereferences). Nothing here
+// assumes the map's shape.
+//
+// SELF-VALIDATING, in this file's usual way: the TArray interpretation is only
+// believed when its count EQUALS the bone count we already located by a
+// different route. A wrong offset cannot produce that agreement.
+//
+// ONE SHOT, READ-ONLY, and every read goes through SafeRead. Worst case it logs
+// four lines of hex that say "not this offset" and the next session reads them.
+static void ProbeBoneNames()
+{
+    static bool done = false;
+    if (done || !g_skeleton) return;
+    done = true;
+
+    void* shared = nullptr;
+    if (!SafeRead((const uint8_t*)g_skeleton + 0x08, &shared, 4) || !shared)
+    {
+        Log(">>> RIGPROBE: name map -- skel+0x08 is null or unreadable.");
+        return;
+    }
+    Log(">>> RIGPROBE: name map -- skel+0x08 = 0x%08X (SharedSkeletonData?)",
+        (unsigned)(uintptr_t)shared);
+
+    // Interpret +0xAC as a TArray {data, count, max}, the shape used everywhere
+    // else in this engine, and believe it ONLY on the count agreeing.
+    struct { void* data; int count; int maxN; } arr = {};
+    if (!SafeRead((const uint8_t*)shared + 0xAC, &arr, sizeof(arr)))
+    {
+        Log(">>> RIGPROBE: name map -- +0xAC unreadable.");
+        return;
+    }
+
+    Log(">>> RIGPROBE: name map -- +0xAC = { data 0x%08X, count %d, max %d }  "
+        "bones located elsewhere = %d",
+        (unsigned)(uintptr_t)arr.data, arr.count, arr.maxN, g_boneCount);
+
+    if (arr.count != g_boneCount || !arr.data ||
+        arr.maxN < arr.count || arr.count <= 0)
+    {
+        // NOT a failure to hide. The next session reads these 64 bytes and
+        // finds the real offset without spending a headset cycle on it.
+        Log(">>> RIGPROBE: name map -- count disagrees, so this is NOT the map. "
+            "Dumping shared+0xA0..0xDF so the layout can be read by eye:");
+        for (int line = 0; line < 4; ++line)
+        {
+            uint8_t b[16] = {};
+            if (!SafeRead((const uint8_t*)shared + 0xA0 + line * 16, b, 16))
+                break;
+            Log(">>> RIGPROBE:   +0x%02X  %02X %02X %02X %02X %02X %02X %02X %02X "
+                "%02X %02X %02X %02X %02X %02X %02X %02X",
+                0xA0 + line * 16,
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+        }
+        return;
+    }
+
+    // THE COUNT AGREED, SO +0xAC IS THE MAP. What it is an array OF was guessed
+    // wrong first time round and this is the correction.
+    //
+    // MEASURED 2026-08-11: read as 4-byte FNames the entries came back
+    // -1, 26659, 0, 0 / -1, 35607, 0, 1 / -1, 17127, 0, 2 -- a pattern with
+    // PERIOD 4 whose last lane counts up. That is not 47 FNames, it is 47
+    // records of at least 16 bytes with an index field, read four bytes at a
+    // time. The count matching was real; the element type was not.
+    //
+    // SO STOP GUESSING AND DUMP. Raw bytes for the first four records, which is
+    // enough to see the stride and find the name lane by eye -- the same move
+    // that decoded the two interface getters from their instruction bytes. A
+    // wrong element size costs a cycle; a hex dump costs four lines.
+    Log(">>> RIGPROBE: name map -- count AGREES with %d bones, so +0xAC is the "
+        "map. Raw bytes (the ELEMENT TYPE is what is still unknown):",
+        g_boneCount);
+
+    for (int line = 0; line < 8; ++line)
+    {
+        uint8_t b[16] = {};
+        if (!SafeRead((const uint8_t*)arr.data + line * 16, b, 16)) break;
+        Log(">>> RIGPROBE:   data+0x%02X  %02X %02X %02X %02X %02X %02X %02X %02X "
+            "%02X %02X %02X %02X %02X %02X %02X %02X",
+            line * 16,
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    }
+
+    // The stride the period-4 pattern implies, tested outright: if element k
+    // really is 16 bytes with its index at +0x0C, then lane 3 reads 0,1,2,3...
+    // and this line says so in one place instead of leaving it to arithmetic.
+    {
+        bool ascending = true;
+        for (int i = 0; i < arr.count && i < 16 && ascending; ++i)
+        {
+            int v = -1;
+            if (!SafeRead((const uint8_t*)arr.data + (size_t)i * 16 + 0x0C, &v, 4))
+            { ascending = false; break; }
+            if (v != i) ascending = false;
+        }
+        Log(">>> RIGPROBE: name map -- stride-16 hypothesis: index lane at "
+            "+0x0C %s", ascending ? "COUNTS UP 0,1,2,... -- CONFIRMED"
+                                  : "does not count up -- wrong stride");
+    }
 }
 
 void ArmHide_RigProbe(void* handsActor)
@@ -708,6 +887,10 @@ void ArmHide_RigProbe(void* handsActor)
 
     g_probeLast = now;
     ++g_probeDumps;
+
+    // Once per session, before the first dump -- it is an identity check on the
+    // rig the dumps are about, so it belongs ahead of them in the log.
+    ProbeBoneNames();
 
     Log(">>> RIGPROBE: dump %d of %d   bone: pos x,y,z | quat x,y,z,w | scale x,y,z",
         g_probeDumps, kProbeDumpsWanted);
@@ -766,6 +949,30 @@ void ArmHide_RigProbe(void* handsActor)
         Log(">>> RIGPROBE:   wrist6 - bone0 = %.2f %.2f %.2f   len %.2f   "
             "(bone 0 near the origin means a shared frame, not parent-relative)",
             dx, dy, dz, sqrtf(dx * dx + dy * dy + dz * dz));
+    }
+
+    // ---- CYCLE 0: THE BARREL AXIS ---------------------------------------
+    // Bone 43 is the weapon attach point and 44 is the tip of that chain, so
+    // 43->44 IS the barrel of the gun and the head of the wrench -- one read
+    // serving both, which is why the wrench's separately-tuned WrenchTipOffset
+    // turned out to be unnecessary.
+    //
+    // A SECOND SOURCE PREDICTS THIS NUMBER: an independently developed mod
+    // against the same game records "bone 44 muzzle-ish tip at x=+71". If the
+    // dominant lane below is x and the magnitude is near 71, the barrel axis is
+    // confirmed by two projects that never shared code, and true aim-down-sight
+    // stops being a guess. If it disagrees, THAT is the finding.
+    {
+        BoneTransform b43 = {}, b44 = {};
+        if (ProbeRead(43, &b43) && ProbeRead(44, &b44))
+        {
+            const float dx = b44.position[0] - b43.position[0];
+            const float dy = b44.position[1] - b43.position[1];
+            const float dz = b44.position[2] - b43.position[2];
+            Log(">>> RIGPROBE:   bone44 - bone43 = %.2f %.2f %.2f   len %.2f   "
+                "(the BARREL AXIS; a second source predicts x ~ +71)",
+                dx, dy, dz, sqrtf(dx * dx + dy * dy + dz * dz));
+        }
     }
 
     // LIVENESS. Not a nicety: if the array is frozen by our own dirty-byte
@@ -846,8 +1053,9 @@ struct ClusterBone
 
 static ClusterBone g_clRef[kClusterMax] = {};
 static bool  g_clRefValid = false;
-static bool  g_clDriven = false;
-static int   g_clHand = -1;        // which hand the reference above describes
+// g_clDriven and g_clHand are declared UP with the motion sampler instead --
+// ArmHide_HandMotion has to know which cluster we are writing before it picks a
+// bone to measure, and it runs ~700 lines above here.
 
 // Everything the cluster it belongs to needs, in one place, so no caller has to
 // remember that the right hand's sleeve is a different five bones.

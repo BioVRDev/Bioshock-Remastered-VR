@@ -24,6 +24,10 @@
 // Read-only files, the wrong storefront profile and VirtualStore redirection
 // have all silently defeated edits here.
 
+// How many ExecCommandN slots the ini offers. Eight because that is more than
+// any planned experiment group needs and the array costs 1.5 KB.
+static const int kExecCommands = 8;
+
 struct VrConfig
 {
     // core -----------------------------------------------------------------------
@@ -214,6 +218,49 @@ struct VrConfig
     float arrowWorld[3] = { 0.f, 0.f, 60.f }; // fwd,right,up from the camera, cm
     int   hideInactiveHand = 1;   // HideInactiveHand
     int   hideHandSlot[9] = {};   // HideInactiveHandN, per weapon slot
+
+    // M6-S5. Walks the decoded FlashGUIController chain and logs which named
+    // Flash movie is on top, only when it changes. Read-only, nothing is called.
+    int   flashGuiProbe = 1;
+
+    // Diagnostics for two long-standing reports, both read-only and both silent
+    // until the thing they measure happens. Neither changes behaviour.
+    int   turnRateProbe = 1;    // is right-stick turn speed frame-rate linked?
+    int   scriptedRotProbe = 1; // what turns the player during the balcony fall?
+
+    // Follow the game's OWN camera rotation through a scripted sequence, rather
+    // than only the aim field. DEFAULT OFF: the aim field is measured to receive
+    // essentially nothing during the balcony fall (one 1.85-degree event in 67
+    // seconds), so the camera is the remaining candidate for where that scene's
+    // rotation lives. Shipped beside the probe that will confirm or kill it.
+    // CONFIRMED AND SHIPPED ON, 2026-08-11. Across the balcony fall the game put
+    // 0.00 deg/s into the aim field and up to 125 deg/s onto its OWN camera
+    // rotation, with every gate open -- so the scene's rotation was never on the
+    // field we follow, and head aim was overwriting the one it was on.
+    int   scriptedCameraFollow = 1;
+
+    // Ground truth for the residual walk drift: where the pawn ACTUALLY went,
+    // against where the mode promised. Read-only, silent unless you are moving.
+    int   walkDriftProbe = 1;
+
+    // WalkFromPawnYaw lived here and is GONE -- falsified 2026-08-11. The pawn's
+    // rotator tracks the aim field exactly (60 of 62 samples read `aim-pawn
+    // +0.0`, including while a 76-degree controller offset was held), so
+    // measuring against it changed nothing.
+
+    // The game's own turn sensitivity, written into Bioshock.ini. 70 is the "7"
+    // the tester settled on; the shipped game default reads far too slow in VR.
+    // -1 leaves whatever the game already has alone.
+    int   gameTurnSpeed = 70;
+
+    // ExecCommand1..8 -- console commands issued once at startup through
+    // ExecQueue. An empty entry is skipped, so the ini can leave gaps.
+    //
+    // THIS IS AN EXPERIMENT CHANNEL, NOT A FEATURE. It exists so a question like
+    // "what does the wrench trace actually read?" can be answered by editing one
+    // ini line instead of by a build, a deploy and a headset cycle. Anything
+    // that earns a permanent home gets its own setting.
+    char  execCommand[kExecCommands][192] = {};
     int   hideCutsceneBars = 1;   // HideCutsceneBars
     int   cutsceneBarVerts = 29;  // CutsceneBarVertices
     int   swingEnabled = 1;
@@ -229,27 +276,75 @@ struct VrConfig
     float gripHysteresis = 0.15f;
     int   headRelativeMove = 1;   // LEGACY -- seeds movementMode, see below
 
-    // HOW YOUR HEAD AND YOUR CONTROLLER SHARE AIMING AND WALKING.
+    // WHO STEERS YOUR WALKING. LOCOMOTION ONLY -- this no longer decides who
+    // AIMS. That split is what makes four modes possible; see headAimAlways.
     //
-    //   0 HEAD        the aim field carries your HEAD, and the movement stick is
-    //                 NOT rotated again -- your head is already in the aim.
-    //                 Walk and aim where you look.
-    //   1 COMBINED    the aim carries the controller, the stick is rotated by
-    //                 your head offset. Aim with the controller, walk where you
-    //                 look. This is what the mod has always done. (default)
-    //   2 CONTROLLER  the aim carries the controller, no stick rotation. Looking
-    //                 around does not change where you walk.
+    //   0 NEITHER     right stick only. Neither looking nor pointing changes
+    //                 where you walk -- a flat-screen shooter's locomotion.
+    //   1 CONTROLLER  where you point. Looking around does not steer. (default)
+    //   2 HEAD        where you look. Pointing does not steer.
+    //   3 BOTH        where you point, plus where you look on top of it. What
+    //                 the mod did for its whole life before these four existed.
     //
-    // MODE 0 EXISTS BECAUSE OF A BUG THIS FIXES. Head aim used to leave
-    // HeadRelativeMove rotating the stick as well, so the head was applied
-    // TWICE -- turning 90 degrees walked you 180, i.e. backwards. Reported as
-    // "too extreme"; it was not sensitivity, it was a duplicate.
+    // HOW, because it is not obvious and the obvious reading is wrong. The aim
+    // field carries the CONTROLLER in all four -- it is never rewritten here.
+    // The game measures the walk direction from that field and then applies the
+    // stick angle, so rotating the STICK by R redirects walking while leaving
+    // aim, the weapon trace and forced-move sequences untouched:
+    //
+    //     walk = aimFieldYaw + stickAngle + R
+    //
+    // With H = head yaw and O = the controller's clamped offset from the head
+    // (so the controller's absolute yaw is C = H + O):
+    //
+    //     0 NEITHER     R = -(H + O)      1 CONTROLLER  R = 0
+    //     2 HEAD        R = -O            3 BOTH        R = H
+    //
+    // This is the same trick HeadRelativeMove has always used for mode 3; the
+    // other three are just different values of R. It is ALSO why graveyard entry
+    // 13 does not apply: that entry binds AIM to Controller.Rotation, and this
+    // never touches Controller.Rotation.
+    //
+    // WHY MODE 3 IS NOT THE DEFAULT ANY MORE. Pointing and looking both steering
+    // means a 90-degree head turn plus a 90-degree point walks you backwards.
+    // That was reported as "too extreme" and diagnosed as a double application.
+    // It is a legitimate mode, not a bug -- but it is a surprising default.
     //
     // Seeded from AimSource and HeadRelativeMove when the key is absent, so an
     // ini written before this behaves exactly as it did.
     int   movementMode = 1;
+
+    // PURE HEAD AIM, independent of who steers. The aim field carries your head
+    // instead of your controller, so the crosshair, the weapon trace and the
+    // view all follow where you look.
+    //
+    // SEPARATE FROM movementMode ON PURPOSE. It used to be welded to mode 0,
+    // which meant you could not have head aim with any other locomotion, and
+    // could not have head-steered locomotion without also losing controller aim.
+    // Expected to become the default once the two-handed weapon grip lands.
+    int   headAimAlways = 0;
     int   snapTurn = 0;
     float snapTurnDeg = 45.0f;
+
+    // THE GAME'S MOVEMENT DEADZONE IS SQUARE -- per axis, 0.225, straight out of
+    // its own binding file. Rotating the stick to redirect walking moves
+    // magnitude between the two axes and the game then shrinks each one
+    // independently, which distorts the DIRECTION by up to ~11 degrees and
+    // collapses it to pure strafe once the forward lane falls under the
+    // threshold. That is the whole of the long-reported walk drift.
+    //
+    // StickPrecomp inverts it on the way out. GameStickDeadzone is exposed so a
+    // profile with a different threshold can be corrected without a rebuild.
+    int   stickPrecomp = 1;
+    float gameStickDeadzone = 0.225f;
+
+    // TURN RESPONSE. The game's own turn rate is nearly vertical at the top of
+    // the stick -- 0.98 gives ~105 deg/s, 0.99 ~140, 1.00 ~200, measured. So the
+    // same push landing 2% differently doubled the speed. These remap the axis
+    // into a range that excludes the cliff, trading top speed for repeatability.
+    // Raise turnAxisMax toward 1.0 to get the spike back.
+    float turnAxisMax = 0.95f;
+    float turnAxisExp = 1.0f;   // 1.0 linear; >1 finer control near centre
     int   freezeGameRot = 0;   // discard the game's pitch and roll (shake/kick)
     // M7-S6: discards the game's rotation during ordinary play only -- shake,
     // weapon kick, the auto-pan toward enemies. Gated on the stick being centred

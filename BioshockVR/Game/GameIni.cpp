@@ -160,6 +160,18 @@ void SyncGameIni()
     WritePrivateProfileStringA(kSecUser, "bHorizontalFOVLock", "True", path);
     WritePrivateProfileStringA(kSecRender, "HorizontalFOVLock", "True", path);
 
+    // TURN SPEED. The game's own sensitivity slider, same section as the FOV.
+    //
+    // WHY THE MOD SETS IT AT ALL. The shipped default reads far too slow once the
+    // right stick is the only way to turn: the mod caps the axis at TurnAxisMax
+    // to kill the game's near-vertical response at full deflection (see
+    // TurnResponse in InputHook.cpp), and a low sensitivity underneath that cap
+    // leaves turning sluggish. 70 is what the tester settled on -- the in-game
+    // slider's "7" -- and it is a starting point, not a preference: -1 leaves
+    // whatever the player already chose completely alone.
+    if (g_cfg.gameTurnSpeed >= 0)
+        WriteInt(path, kSecUser, "Sensitivity", g_cfg.gameTurnSpeed);
+
     // Resolution. 0 means "don't touch it".
     //
     // FULLSCREEN vs WINDOWED: UE2 keeps TWO viewport sizes and reads whichever
@@ -196,6 +208,14 @@ void SyncGameIni()
     Log("gameini: HorizontalFOV      = %d   (we want %d)", gotFov, fov);
     Log("gameini: WindowedViewport   = %d x %d", gotX, gotY);
     Log("gameini: FullscreenViewport = %d x %d", gotFsX, gotFsY);
+
+    // Read back like the FOV, and for the same reason: the game rewrites this
+    // file at exit, so "we wrote it" is not the same as "it is set".
+    if (g_cfg.gameTurnSpeed >= 0)
+        Log("gameini: Sensitivity       = %d   (we want %d -- the in-game turn "
+            "speed slider, 70 == 7)",
+            GetPrivateProfileIntA(kSecUser, "Sensitivity", -1, path),
+            g_cfg.gameTurnSpeed);
     Log("gameini: NOTE -- what the ini says is only a REQUEST. Compare against");
     Log("gameini: the 'backbuffer :' line later in this log. In exclusive");
     Log("gameini: fullscreen the buffer must be a real DISPLAY MODE, so a");

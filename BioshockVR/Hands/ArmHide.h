@@ -42,9 +42,19 @@ void ArmHide_ReleaseInactiveHand();
 // touches it -- and ScriptedHandsAnimationHandle is only ever assigned, never
 // cleared. Motion answers the question the flags cannot.
 //
+// WHICH BONE IT SAMPLES IS NOT FIXED, and must not be. It is the wrist of the
+// cluster the free-hand drive is NOT writing, because a driven cluster reports
+// our own rigid transform -- bit-for-bit identical every frame while the
+// controller is still. Measured 2026-08-11 as 189 and 223 consecutive
+// `raw 0.0000` samples with the arms hidden for a whole scene. See the banner in
+// ArmHide.cpp. Call ArmHide_MotionBone() to log which one is live.
+//
 // Returns false until the skeleton is locked. `outRaw` is the un-smoothed
 // per-call value, logged for threshold calibration.
 bool ArmHide_HandMotion(float* outSmoothed, float* outRaw);
+
+// Which bone the call above is currently measuring. For the log line only.
+int ArmHide_MotionBone();
 
 // ---- M7-S4: HIDE THE WHOLE ACTOR ----------------------------------------
 // Arms, hands AND weapon, via the actor's DrawScale3D.
@@ -56,6 +66,12 @@ bool ArmHide_HandMotion(float* outSmoothed, float* outRaw);
 // moving BECAUSE WE FROZE IT, motion would read zero forever, and the hands
 // would never come back. DrawScale3D leaves the bone array untouched, so the
 // motion signal stays honest whether the hands are visible or not.
+//
+// THAT PREDICTION CAME TRUE THROUGH THE OTHER DOOR. Hiding never did it, but the
+// M6-S1 cluster DRIVE writes bones and clears the same dirty byte, and the
+// sampled bone sat inside the driven cluster during every plasmid scene. The
+// hazard is the write, not the reason for it -- which is why the sampled bone is
+// now chosen against the driven cluster rather than being a constant.
 //
 // Never writes exact zero -- the attachment path inverse-decomposes scale,
 // which is the same division that makes bone 43 untouchable.

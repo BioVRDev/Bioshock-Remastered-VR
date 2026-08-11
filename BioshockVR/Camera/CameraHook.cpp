@@ -49,6 +49,7 @@ bool GameState_Theater();    // GameState.cpp
 bool GameState_ScriptedAnim();          // GameState.cpp
 bool GameState_Bathysphere();           // GameState.cpp
 bool Input_GetTurnX(float* out);        // InputHook.cpp
+bool Input_GetSentStickAngle(float* outDeg);   // InputHook.cpp -- for WalkDrift
 
 static void Log(const char* fmt, ...);   // defined just below
 
@@ -73,11 +74,139 @@ static bool ScriptedHandsMoving()
     if (GameState_ScriptedAnim() && now - s_lastLog >= 500)
     {
         s_lastLog = now;
-        Log(">>> SCRIPTED: motion raw %.4f smoothed %.4f  thresh %.4f  -> %s",
-            raw, smoothed, g_cfg.scriptedHandsMotion, moving ? "MOVING" : "still");
+        // The BONE is printed because which one is sampled depends on the hand
+        // being driven, and a run of exact zeros is only interpretable if you
+        // know whether it came from a bone we were writing.
+        Log(">>> SCRIPTED: motion raw %.4f smoothed %.4f  thresh %.4f  bone %d "
+            "-> %s",
+            raw, smoothed, g_cfg.scriptedHandsMotion, ArmHide_MotionBone(),
+            moving ? "MOVING" : "still");
     }
 
     return moving || (s_lastMoving && (now - s_lastMoving) < 300);
+}
+
+// ===========================================================================
+//  TURN RATE -- A DIAGNOSTIC, NOT A FIX
+//
+// REPORTED, LONG-STANDING: "the turn speed with the right thumbstick is
+// inconsistent. Sometimes it's slow and sometimes it's fast. I can have a period
+// where I am standing still and it's slow, then I release and do it again and
+// it's much faster."
+//
+// WITH ModYaw=0 THE MOD DOES NOT TURN YOU. The right stick is passed through to
+// the game as an XInput axis and the game rotates itself; all this file does is
+// follow the result. So the rate is the game's own -- but the mod is what
+// changed the frame pacing, and a turn applied PER TICK rather than per second
+// would vary with load exactly as described.
+//
+// So measure it before changing anything: degrees of yaw the game actually
+// produced in the last second, against the number of CalcView calls that second.
+// If degrees track the call count, it is frame-rate dependence, and the fix is
+// to drive turning through g_aimBase at ModYawSpeed -- machinery that already
+// exists and that the tester has just confirmed feels right during scripted
+// sequences, where it is the only thing turning them.
+//
+// Logs only while the stick is meaningfully deflected, once a second, so an
+// ordinary session is a handful of lines. `dY` is in UE rotator units.
+static void TurnRateProbe(int dY)
+{
+    if (!g_cfg.turnRateProbe) return;
+
+    float tx = 0.0f;
+    const bool deflected = Input_GetTurnX(&tx) && fabsf(tx) > 0.5f;
+
+    static double s_degrees = 0.0;
+    static int    s_calls = 0;
+    static DWORD  s_since = 0;
+    static bool   s_wasDeflected = false;
+
+    const DWORD now = GetTickCount();
+
+    // A fresh push starts a fresh measurement. The complaint is specifically
+    // about one push differing from the next, so carrying a partial second
+    // across a release would average away the thing being measured.
+    if (deflected && !s_wasDeflected)
+    {
+        s_degrees = 0.0; s_calls = 0; s_since = now;
+    }
+    s_wasDeflected = deflected;
+
+    if (!deflected) return;
+
+    s_degrees += fabs((double)dY) / 182.0444;
+    ++s_calls;
+
+    if (s_since && now - s_since >= 1000)
+    {
+        const double secs = (double)(now - s_since) / 1000.0;
+        Log(">>> TURNRATE: %.1f deg/s over %.2fs  (%d CalcView calls, %.0f/s)  "
+            "stick %.2f",
+            s_degrees / secs, secs, s_calls, s_calls / secs, tx);
+        s_degrees = 0.0; s_calls = 0; s_since = now;
+    }
+}
+
+// ===========================================================================
+//  WHAT TURNS THE PLAYER DURING A SCRIPTED SEQUENCE
+//
+// THE FIRST VERSION OF THIS PROBE MEASURED THE WRONG THING, and it is worth
+// saying why. It logged the ABSOLUTE change in three rotation fields across a
+// scripted window and reported ~95 degrees on all three -- which read as "the
+// rotation is arriving fine". The tester supplied the missing fact: that 95
+// degrees was THEM, turning with the right stick. A probe that cannot separate
+// player input from engine injection answers a different question than the one
+// asked.
+//
+// So this one logs `dY`, which the surrounding code already defines as "only the
+// GAME's own change since our last write" -- player turning is excluded by
+// construction. Alongside it goes the game's own camera yaw and all four gates,
+// so a rotation that arrived and was DISCARDED is distinguishable from one that
+// never arrived.
+//
+// Silent outside a scripted window; one line a second inside one.
+static void ScriptedRotProbe(bool scripted, int dY, int32_t cleanYaw,
+    bool cut, bool freeze, bool gameplayFreeze, bool rotBlocked)
+{
+    if (!g_cfg.scriptedRotProbe) return;
+
+    static bool     s_was = false;
+    static double   s_injected = 0.0;      // sum of |dY|, the game's own
+    static double   s_camera = 0.0;        // sum of |d cleanRot.yaw|
+    static int32_t  s_prevClean = 0;
+    static DWORD    s_last = 0;
+
+    const DWORD now = GetTickCount();
+
+    if (scripted && !s_was)
+    {
+        s_injected = 0.0; s_camera = 0.0;
+        s_prevClean = cleanYaw;
+        s_last = now;
+        Log(">>> SCRIPTROT: window began.");
+    }
+    else if (!scripted && s_was)
+    {
+        Log(">>> SCRIPTROT: window ended.");
+    }
+    s_was = scripted;
+    if (!scripted) return;
+
+    s_injected += fabs((double)dY) / 182.0444;
+    s_camera += fabs((double)(short)(cleanYaw - s_prevClean)) / 182.0444;
+    s_prevClean = cleanYaw;
+
+    if (now - s_last < 1000) return;
+    const double secs = (double)(now - s_last) / 1000.0;
+    s_last = now;
+
+    Log(">>> SCRIPTROT: game injected %.2f deg/s into the AIM FIELD, %.2f deg/s "
+        "onto its own CAMERA  | gates cut=%d freeze=%d gameplayFreeze=%d "
+        "rotBlocked=%d",
+        s_injected / secs, s_camera / secs,
+        (int)cut, (int)freeze, (int)gameplayFreeze, (int)rotBlocked);
+
+    s_injected = 0.0; s_camera = 0.0;
 }
 
 // M7-S2. THE FIRST REAL SCRIPTED-EVENT SIGNAL THIS PROJECT HAS HAD.
@@ -110,26 +239,29 @@ static bool ScriptedQol()
 // this would show them during boarding, when nothing is animating. Two
 // questions, two predicates, and they must not be merged.
 // ===========================================================================
-//  MOVEMENT MODE -- WHO STEERS, YOUR HEAD OR YOUR CONTROLLER
+//  WHO AIMS -- TWO PREDICATES, AND KEEPING THEM APART IS THE WHOLE POINT
 //
-// TWO predicates, and keeping them apart is the whole point.
+// NEITHER OF THESE IS MovementMode ANY MORE. Until 2026-08-11 mode 0 meant both
+// "your head aims" and "your head steers", which made the other three modes
+// impossible to express. Locomotion moved out to InputHook's R term; what is
+// left here is only the question of what the AIM FIELD carries.
 //
-// AimUsesHeadNow() decides what goes into the AIM FIELD, and InputHook reads it
-// to decide whether to rotate the movement stick as well. Those two must agree
-// or the head gets applied TWICE: that is the measured bug behind "turning 90
-// degrees left almost moves you backwards", because 90 twice is 180.
-// Controller.Rotation is what the walk direction is measured from, and
-// HeadRelativeMove rotates the stick on top of it -- fine while the aim carries
-// the CONTROLLER, a duplicate the moment it carries the head.
+// AimUsesHeadNow() decides what goes into the aim field, and it is DYNAMIC --
+// it flips with empty hands. Safe, because locomotion no longer reads it: the R
+// term cancels whatever the aim field happens to carry, so the two can disagree
+// without the head being applied twice. That double application was the measured
+// bug behind "turning 90 degrees left almost moves you backwards" (90 twice is
+// 180), and the reason it cannot return is now structural rather than a rule.
 //
-// ModeUsesHead() decides how the VIEW is composed, and deliberately ignores the
-// empty-handed case. Picking a weapon up must not change how the world is
-// presented; it was asked for as "don't tie this to anything else", and a view
-// that recomposes as you holster is exactly the side effect that warns against.
+// ModeUsesHead() decides how the VIEW is composed and is deliberately STATIC --
+// the config flag alone, never the empty-hands term. Picking a weapon up must
+// not change how the world is presented; it was asked for as "don't tie this to
+// anything else", and a view that recomposes as you holster is exactly the side
+// effect that warns against. WIRING THIS ONE TO AimUsesHeadNow() WOULD DO THAT.
 // ===========================================================================
 static bool ModeUsesHead()
 {
-    return g_cfg.movementMode == 0;
+    return g_cfg.headAimAlways != 0;
 }
 
 static bool AimUsesHeadNow()
@@ -137,14 +269,49 @@ static bool AimUsesHeadNow()
     if (ModeUsesHead()) return true;
 
     // Empty hands: no crosshair, so nothing shows where the controller points.
-    // Looking at a thing to pick it up is the natural fallback -- and it takes
-    // the stick rotation with it, which is what stops the double-application.
+    // Looking at a thing to pick it up is the natural fallback.
     return g_cfg.headAimUnarmed && !HandsProbe_Armed();
 }
 
 // Exported so InputHook gates the stick rotation on the SAME answer rather than
 // a second copy of the reasoning.
 bool CameraHook_AimUsesHead() { return AimUsesHeadNow(); }
+
+// ===========================================================================
+//  DO WE OWN THE AIM FIELD THIS FRAME?
+//
+// THE REGRESSION THIS EXISTS TO PREVENT, MEASURED 2026-08-11. InputHook redirects
+// walking by rotating the movement stick by R, and R is derived from the identity
+//
+//     walk = aimFieldYaw + stickAngle + R
+//
+// which assumes the aim field carries OUR composed heading, base + C. Two of the
+// four movement modes SUBTRACT the head and controller terms on that assumption.
+//
+// During a scripted sequence the assumption is false. M7-S3 deliberately
+// suppresses the write into Controller.Rotation -- grep "THE SUPPRESSION LIVES
+// HERE NOW" -- so the field carries the GAME's heading, containing neither term.
+// Subtracting them then rotates the walk off the path the scene intends. The
+// tester's words: "when you enter it, you are turned slightly to the left, which
+// causes the walking path to move you to the wrong position."
+//
+// IT LOOKED LIKE A MODE-0-ONLY BUG AND WAS NOT. Mode 2 subtracts only O, which is
+// zero while the head owns the aim -- so an UNARMED scripted scene masks it
+// completely and an armed one drifts by up to AimClampDeg. The mode that appeared
+// clean was the one that got lucky.
+//
+// GAME THREAD writes this from CalcView; the XInput detour reads it. One aligned
+// LONG, so a torn read is not possible; the interlocked exchange is for the
+// barrier, not the atomicity.
+static volatile LONG g_ownsAimField = 0;
+
+bool CameraHook_OwnsAimField()
+{
+    // Starvation checked here rather than trusted from the flag: if CalcView
+    // stops being called the flag keeps its last value forever, and "we own the
+    // aim" is the dangerous direction to be stale in.
+    return g_ownsAimField != 0 && !CameraHook_Starved();
+}
 
 // ---- A SCRIPTED SEQUENCE YOU CAN WALK THROUGH ---------------------------
 bool DrawHook_HudCaptured();   // DrawHook.cpp -- did the interface draw?
@@ -593,6 +760,30 @@ static double WrapDeg180(double d)
     return d;
 }
 
+// ===========================================================================
+//  AimOverride -- ONE SITE WHERE A FEATURE CAN TAKE THE AIM
+//
+// Absolute pitch/yaw substituted by whichever feature owns the aim this frame.
+// THREE PLANNED FEATURES ALL WANT THIS SAME LINE: aiming down the gun barrel
+// (bones 43->44), the wrench tip during a swing, and the two-handed grip.
+//
+// INTRODUCED EMPTY, ON PURPOSE, BEFORE ANY OF THEM EXIST. This codebase has
+// already paid once for two features reaching the same place independently: the
+// head yaw applied twice, where the aim field carried it and HeadRelativeMove
+// rotated the stick by it again, and 90 degrees became 180. The fix was one
+// resolver with a fixed precedence. Building the resolver first means the third
+// feature adds a CLAUSE rather than a second site.
+//
+// PRECEDENCE, when the clauses arrive: barrel/tip first (it is weapon-slot
+// scoped, so it already knows when it does not apply), two-handing second, and
+// none of them while the head owns the aim -- there the head is the aim by
+// contract and a substitution would be a silent third opinion.
+static bool AimOverride(double* pitchDeg, double* yawDeg)
+{
+    (void)pitchDeg; (void)yawDeg;
+    return false;                      // no feature owns the aim yet
+}
+
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg)
 {
     for (int t = 0; t < 8; ++t)
@@ -876,6 +1067,257 @@ bool CameraHook_GetShotDir(float out[3])
         out[0] = g_shotDir[0]; out[1] = g_shotDir[1]; out[2] = g_shotDir[2];
         MemoryBarrier();
         if (g_shotSeq == s0) return true;
+    }
+    return false;
+}
+
+// ===========================================================================
+//  THE WALK ROTATION -- MEASURED HERE, NOT PREDICTED ON THE OTHER THREAD
+//
+// The game measures the walk direction from the aim field and then applies the
+// stick angle, so rotating the stick by R redirects walking without touching the
+// field:
+//
+//     walk = aimFieldYaw + stickAngle + R
+//
+// R USED TO BE DERIVED FROM THE HEAD AND CONTROLLER YAWS, on the assumption that
+// aimFieldYaw == base.yaw + headYaw + controllerOffset. Reading the field
+// instead is strictly more robust, because ComposeHeadLocal is a BASIS
+// MULTIPLICATION and in general its yaw depends on the pitch as well.
+//
+// ⚠ BUT THAT DID NOT FIX THE REPORTED COUPLING, AND THE HONEST REASON MATTERS.
+// With HeadAimMode=2 -- the shipping default -- ComposeHeadLocal drops the base
+// pitch, so M is a PURE YAW rotation and want.yaw == base.yaw + aimY exactly.
+// The old prediction and this measurement are numerically IDENTICAL in that
+// configuration, which is exactly why the tester reported the drift as "still
+// present and the exact same" after this landed. This form is correct for
+// HeadAimMode 0 and 1 and removes a class of future error; it was never capable
+// of fixing the drift. CHECK WHICH HEAD-AIM MODE IS LIVE BEFORE BLAMING THE
+// COMPOSITION.
+//
+// WHAT THAT LEAVES: R cancels aimRot.yaw algebraically and exactly, so a
+// surviving drift means the line above is wrong -- walking is NOT measured from
+// the aim field alone. See WalkDriftProbe below, which measures where the player
+// actually went instead of inferring it a third time.
+//
+// Every value needed is already in hand at the write site, exact and
+// post-composition:
+//
+//   aimRot   what goes into the aim field -- what walking is measured from
+//   viewRot  the view actually rendered -- the head's contribution, exactly
+//   base     the heading with nothing composed onto it
+//
+//   mode 0 neither      want base            R = base   - aimRot
+//   mode 1 controller   want the field       R = 0
+//   mode 2 head         want the view        R = viewRot - aimRot
+//   mode 3 both         field + the head     R = viewRot - base
+//
+// This cancels BY CONSTRUCTION whatever the composition did, at any pitch, with
+// no trigonometry of ours left to drift. Same discipline as PublishShotDir
+// above, and for the same reason: one calculation, no second algebra.
+//
+// GAME THREAD writes, the XInput detour reads. Seq-locked.
+static volatile long g_walkSeq = 0;
+static float         g_walkRotDeg = 0.0f;
+static volatile long g_walkOk = 0;
+
+// The cinematic follow's reference. File-scope so the edge detector can drop it
+// on both boundaries without being inside the block that uses it -- see the
+// banner at `THE CINEMATIC REFERENCE, DROPPED ON BOTH EDGES`.
+static bool    g_cineHave = false;
+static int32_t g_cinePrev = 0;
+
+// ===========================================================================
+//  WHERE THE PLAYER ACTUALLY WENT -- GROUND TRUTH, NOT A THIRD INFERENCE
+//
+// THE BUG: walking a straight line while pointing the controller 90 degrees to
+// one side drifts the path 10-20 degrees the OTHER way, steadily, and mirrors
+// exactly when the controller points the other side. Mode 0 promises that
+// pointing changes nothing.
+//
+// TWO EXPLANATIONS HAVE ALREADY FAILED -- the clamp, and the composition (see
+// the ⚠ note above). R cancels aimRot.yaw algebraically and exactly, so if drift
+// survives then `walk = aimFieldYaw + stickAngle` is simply not the equation the
+// game solves. Rather than guess a third time, measure the one thing that cannot
+// be argued with: the direction the pawn ACTUALLY travelled, from its own
+// position, against the direction mode 0 promised.
+//
+// Pawn location is pawn+0x1D8, confirmed by the 6-DOF hands probe. The heading
+// is atan2 over the horizontal lanes only -- a stair or a slope must not read as
+// a turn.
+//
+// THE LEADING SUSPECT IS ON THE SAME LINE. UE2 builds movement acceleration from
+// GetAxes(Pawn.Rotation), so pawn yaw is logged beside the aim field's. A steady
+// difference between those two, matching the drift, names the cause outright.
+//
+// FALSIFIED 2026-08-11, kept only because the probe still reports it as a
+// standing check: the pawn's rotator yaw tracks the aim field EXACTLY. 60 of 62
+// samples read `aim-pawn +0.0`, including while a 76-degree controller offset was
+// held -- the condition the hypothesis was invented for. UE2 does build movement
+// from GetAxes(Pawn.Rotation), but the pawn is not where the drift enters.
+static bool PawnYaw(int32_t* out)
+{
+    const uint8_t* const p = (const uint8_t*)GameState_Pawn();
+    if (!p || !out) return false;
+    if (IsBadReadPtr(p + 0x1E4, 12)) return false;
+    *out = ((const int32_t*)(p + 0x1E4))[1];
+    return true;
+}
+
+// What the game ACTUALLY received, after our rotated stick has been through
+// ToAxis, the game's own deadzone and its input binding. aForward and aStrafe are
+// the raw input axes UE2 builds NewAccel from -- both measured and named in
+// docs/ENGINE-MAP.md -- so their angle is the movement direction the engine will
+// use, expressed relative to whatever rotation it measures from.
+//
+// THIS IS THE TERM THE PROBE WAS MISSING. Comparing it against the angle we sent
+// says in one line whether the transformation survives the trip, instead of
+// leaving the whole chain to be inferred from where the player ended up.
+static bool ReceivedStickAngle(const void* controller, double* outDeg)
+{
+    const uint8_t* const c = (const uint8_t*)controller;
+    if (!c || !outDeg) return false;
+    if (IsBadReadPtr(c + 0x5C0, 4) || IsBadReadPtr(c + 0x5C8, 4)) return false;
+
+    const float fwd = *(const float*)(c + 0x5C0);
+    const float str = *(const float*)(c + 0x5C8);
+    if (fabs((double)fwd) + fabs((double)str) < 1.0) return false;   // centred
+
+    *outDeg = atan2((double)str, (double)fwd) * (180.0 / 3.14159265358979323846);
+    return true;
+}
+
+// Silent unless the pawn is actually moving; one line a second.
+//
+// ⚠ THE FIRST VERSION COULD NOT ANSWER, and it is worth saying why rather than
+// quietly widening it. It compared travel against base.yaw alone -- but the
+// intended heading is base.yaw + STICK ANGLE, and the stick is not readable from
+// CalcView. The limitation was written in the comment and shipped anyway, and the
+// result was +-7 degrees of noise at ZERO controller offset, as large as the
+// signal. InputHook now publishes the angle it sent, so `intended` is real.
+static void WalkDriftProbe(int32_t aimYaw, int32_t baseYaw, float rDeg,
+    const void* controller)
+{
+    if (!g_cfg.walkDriftProbe) return;
+
+    const uint8_t* const p = (const uint8_t*)GameState_Pawn();
+    if (!p || IsBadReadPtr(p + 0x1D8, 12)) return;
+    const float* const loc = (const float*)(p + 0x1D8);
+
+    static float  s_prev[3] = {};
+    static bool   s_have = false;
+    static DWORD  s_last = 0;
+    static const void* s_pawn = nullptr;
+
+    // A new pawn is a new coordinate history. Reset rather than measure a
+    // teleport as travel.
+    if (p != s_pawn) { s_pawn = p; s_have = false; s_last = 0; }
+
+    const DWORD now = GetTickCount();
+    if (!s_have || now - s_last < 1000)
+    {
+        if (!s_have) { memcpy(s_prev, loc, sizeof(s_prev)); s_have = true; s_last = now; }
+        return;
+    }
+
+    const double dx = (double)loc[0] - s_prev[0];
+    const double dy = (double)loc[1] - s_prev[1];
+    memcpy(s_prev, loc, sizeof(s_prev));
+    s_last = now;
+
+    // Below this you are standing still and the heading is noise.
+    const double dist = sqrt(dx * dx + dy * dy);
+    if (dist < 20.0) return;
+
+    // UE yaw: 0 is +X, increasing toward +Y, 65536 units per turn.
+    const double actual = atan2(dy, dx) * (180.0 / 3.14159265358979323846);
+    const double baseDeg = (double)(short)baseYaw / 182.0444;
+    const double aimDeg = (double)(short)aimYaw / 182.0444;
+
+    int32_t pawnYawRaw = 0;
+    const bool havePawnYaw = PawnYaw(&pawnYawRaw);
+    const double pawnDeg = (double)(short)pawnYawRaw / 182.0444;
+
+    // THE ANGLE WE SENT, from InputHook, and THE ANGLE THE GAME RECEIVED, from
+    // its own raw input axes. If those two disagree the bug is in the trip
+    // between them and nothing further downstream needs explaining.
+    float sentDeg = 0.0f;
+    const bool haveSent = Input_GetSentStickAngle(&sentDeg);
+
+    double recvDeg = 0.0;
+    const bool haveRecv = ReceivedStickAngle(controller, &recvDeg);
+
+    double sentVsRecv = recvDeg - (double)sentDeg;
+    while (sentVsRecv > 180.0) sentVsRecv -= 360.0;
+    while (sentVsRecv < -180.0) sentVsRecv += 360.0;
+
+    // INTENDED is the heading mode 0 promises: the base plus wherever the stick
+    // is pushed. Without the stick term this reduces to base, which is only the
+    // right answer while walking exactly forward -- the flaw in the first cut.
+    double intended = baseDeg + (haveSent ? (double)sentDeg : 0.0);
+    while (intended > 180.0) intended -= 360.0;
+    while (intended < -180.0) intended += 360.0;
+
+    double err = actual - intended;
+    while (err > 180.0) err -= 360.0;
+    while (err < -180.0) err += 360.0;
+
+    double aimVsPawn = aimDeg - pawnDeg;
+    while (aimVsPawn > 180.0) aimVsPawn -= 360.0;
+    while (aimVsPawn < -180.0) aimVsPawn += 360.0;
+
+    Log(">>> WALKDRIFT: moved %.0f  actual %+.1f  intended %+.1f  err %+.1f  |  "
+        "sent %+.1f  recv %+.1f  recv-sent %+.1f  |  base %+.1f  aim %+.1f  "
+        "aim-pawn %+.1f  R %+.1f",
+        dist, actual, intended, err,
+        haveSent ? (double)sentDeg : 0.0,
+        haveRecv ? recvDeg : 0.0,
+        (haveSent && haveRecv) ? sentVsRecv : 0.0,
+        baseDeg, aimDeg, havePawnYaw ? aimVsPawn : 0.0, rDeg);
+}
+
+static void PublishWalkRotation(const FRotator& viewRot, const FRotator& aimRot,
+    const FRotator& base, const void* controller)
+{
+    // Walking is measured from the aim field -- which is what we write, so this
+    // cancels it. The PAWN rotator was tried as an alternative basis and
+    // FALSIFIED: it tracks the aim field exactly (see PawnYaw), so substituting
+    // it changed nothing and the flag is gone.
+    const int32_t fromYaw = aimRot.yaw;
+
+    // Rotator units are 16-bit and wrap, so every difference is taken as a
+    // SIGNED SHORT before it becomes degrees. A raw subtraction reads a small
+    // turn across the wrap as a full circle.
+    double r = 0.0;
+    switch (g_cfg.movementMode)
+    {
+    case 0:  r = (double)(short)(base.yaw - fromYaw);    break;
+    case 2:  r = (double)(short)(viewRot.yaw - fromYaw); break;
+    case 3:  r = (double)(short)(viewRot.yaw - base.yaw); break;
+    default: r = 0.0;                                    break;   // 1
+    }
+
+    _InterlockedIncrement(&g_walkSeq);         // odd == writing
+    MemoryBarrier();
+    g_walkRotDeg = (float)(r / 182.0444);
+    MemoryBarrier();
+    _InterlockedIncrement(&g_walkSeq);         // even == done
+    g_walkOk = 1;
+
+    WalkDriftProbe(aimRot.yaw, base.yaw, (float)(r / 182.0444), controller);
+}
+
+bool CameraHook_GetWalkRotation(float* outDeg)
+{
+    if (!outDeg || !g_walkOk) return false;
+    for (int t = 0; t < 8; ++t)
+    {
+        const long s0 = g_walkSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        const float v = g_walkRotDeg;
+        MemoryBarrier();
+        if (g_walkSeq == s0) { *outDeg = v; return true; }
     }
     return false;
 }
@@ -2047,6 +2489,19 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 g_aimHandYaw = g_headYaw + sy;
                 g_aimHandPitch = g_headPitch + sp;
                 g_aimHandValid = true;
+
+                // THE SEAM. Empty today -- see the AimOverride banner. It sits
+                // here, after the controller aim is composed and before anything
+                // reads g_aimHandYaw, because a feature that owns the aim owns
+                // the FINAL answer: the clamp, the smoothing and the plasmid
+                // pitch trim above are all corrections to a CONTROLLER pose, and
+                // a barrel or a wrench tip is not one.
+                double ovP = g_aimHandPitch, ovY = g_aimHandYaw;
+                if (AimOverride(&ovP, &ovY))
+                {
+                    g_aimHandPitch = ovP;
+                    g_aimHandYaw = ovY;
+                }
             }
         }
 
@@ -2281,10 +2736,32 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Only the write back into Controller.Rotation is suppressed.
             const bool scriptedAim = ScriptedAimReleased();
 
+            // ---- THE CINEMATIC REFERENCE, DROPPED ON BOTH EDGES -------------
+            // ScriptedCameraFollow differences the game's own camera yaw frame to
+            // frame, so it needs a reference -- and the reference is only valid
+            // WITHIN one window.
+            //
+            // ⚠ THE FIRST VERSION NEVER DROPPED IT, and the symptom was reported
+            // before the cause was found: "both runs had the balcony fall land in
+            // different spots -- first almost perfect, second way off". A latch
+            // set on the first scripted frame and never cleared means the SECOND
+            // window of a session differences against a value left over from the
+            // END of the first, which is an arbitrary jump straight into
+            // g_aimBase. The first scene of a run is clean; every one after it
+            // inherits garbage.
+            //
+            // DROPPED HERE, at the edge detector, rather than inside the follow
+            // block itself -- that block sits behind headAim, headTracking, the
+            // UI gate and the starvation gate, so a window that ends while any of
+            // those is false would never clear it. This runs on every CalcView.
+            // Both edges, because a scene must open from where it actually starts
+            // rather than from wherever the last one ended.
+            static bool s_wasScriptedAim = false;
+            if (s_wasScriptedAim != scriptedAim) g_cineHave = false;
+
             // Re-arm on the way out, or the base is stale by however far the
             // sequence turned you and the view snaps. Same reason the cutscene
             // path below clears g_aimInit.
-            static bool s_wasScriptedAim = false;
             if (s_wasScriptedAim && !scriptedAim)
             {
                 g_aimInit = false;
@@ -2446,6 +2923,49 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                             g_aimBase.pitch += dP;
                             g_aimBase.yaw += dY;
                             g_aimBase.roll += dR;
+                        }
+
+                        TurnRateProbe(dY);
+                        ScriptedRotProbe(scriptedAim, dY, cleanRot.yaw,
+                            aimNowCut, freeze, gameplayFreeze,
+                            scriptedRotBlocked);
+
+                        // ---- THE BALCONY FALL -- CONFIRMED AND ON -----------
+                        // MEASURED 2026-08-11: across the 67-second balcony
+                        // window the game injected rotation into the aim field
+                        // exactly ONCE, 1.85 degrees, at the very start, while
+                        // putting up to 125 deg/s onto its OWN camera rotation --
+                        // with every gate open, so nothing was being discarded.
+                        // The Little Sister scene, which always turned the player
+                        // correctly, does the opposite and uses the aim field.
+                        // TWO SCENES, TWO DIFFERENT FIELDS. cleanRot is the
+                        // game's own value, read before we touch anything.
+                        //
+                        // ⚠ THE REFERENCE MUST BE DROPPED ON BOTH EDGES, and the
+                        // first version of this did not drop it at all. s_have
+                        // was set on the first scripted frame and never cleared,
+                        // so the SECOND scripted window of a session differenced
+                        // against a value left over from the END of the first --
+                        // an arbitrary jump straight into g_aimBase. Measured as
+                        // "both runs had the balcony fall land in different
+                        // spots; first almost perfect, second way off": the first
+                        // scene of a run is clean and every one after it inherits
+                        // garbage.
+                        //
+                        // Dropping on entry as well as exit is what makes each
+                        // scene open from where it actually starts rather than
+                        // from wherever the last one ended -- the same rule the
+                        // reference mod states for its cinematic reference.
+                        if (g_cfg.scriptedCameraFollow && scriptedAim)
+                        {
+                            if (g_cineHave)
+                            {
+                                const int d =
+                                    (int)(short)(cleanRot.yaw - g_cinePrev);
+                                g_aimBase.yaw += d;
+                            }
+                            g_cinePrev = cleanRot.yaw;
+                            g_cineHave = true;
                         }
                     }
                 }
@@ -2799,6 +3319,20 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // the view, so writing our heading during a scripted sequence steers
             // it. Skipping just this write is what makes sequences land where
             // they intend -- do not move this condition back up to the read.
+            // ---- PUBLISH WHO OWNS THE AIM FIELD -------------------------
+            // Set from the two conditions the fork below actually branches on,
+            // so it cannot drift from the thing it describes. GAME THREAD
+            // writes; the XInput detour reads. See CameraHook_OwnsAimField.
+            _InterlockedExchange(&g_ownsAimField,
+                (aimField && !scriptedAim) ? 1 : 0);
+
+            // The game owns the field -- nothing of ours is in it, so the two
+            // subtractive modes have nothing to subtract. Modes 2 and 3 keep the
+            // head's contribution to the view, which is plain head-relative
+            // movement and means the same thing whoever wrote the field.
+            if (!aimField || scriptedAim)
+                PublishWalkRotation(finalRot, g_aimBase, g_aimBase, pThis);
+
             if (aimField && scriptedAim)
             {
                 // The delta above is measured against g_aimLastWrote ("only the
@@ -2856,6 +3390,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // against the view we just composed. Both final, both from the
                 // same frame.
                 PublishShotDir(finalRot, want);
+
+                // And so does locomotion, for exactly the same reason. `want` is
+                // the post-composition yaw the walk direction will be measured
+                // from; deriving it a second time on the other thread is what
+                // left the residual coupling.
+                PublishWalkRotation(finalRot, want, g_aimBase, pThis);
 
                 // S74: do NOT write during a cutscene. Always-writing latches
                 // the detector ON forever.

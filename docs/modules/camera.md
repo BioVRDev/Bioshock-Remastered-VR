@@ -80,33 +80,135 @@ yaw is the axis you actually feel.
 
 This is unresolved, not abandoned. Keep both compiled and default-off.
 
-## Aim and movement are the same field
+## Aim and movement are the same field — for aim only
 
 `Controller.Rotation` (`+0x1E4`) drives the view, the weapon trace **and** the
-walk direction. Writing the controller's direction into it means motion aim
-necessarily drags locomotion along; writing the head's puts everything on the
-head, which is coherent but is not motion aim.
+walk direction. For **aim** that coupling is structural and unbroken: no
+arrangement of that one field separates the view from the trace.
 
-**`MovementMode` is the switch, and `AimSource`/`HeadRelativeMove` are legacy**
-seeds read only when it is absent. Mode 0 head, 1 combined (the default and the
-old behaviour), 2 controller. The coupling above is exactly why one key owns
-both halves now: mode 0 was *unreachable* before, because the aim carried the
-head while `HeadRelativeMove` still rotated the movement stick by the head
-offset — **the head applied twice**, measured as "turning 90 degrees left almost
-moves you backwards". 90 twice is 180.
+**Locomotion is separable, and always was.** The game applies the stick angle on
+top of the field, so rotating the *stick* redirects walking without touching the
+field at all:
 
-Two predicates keep that honest, and must not be merged: `AimUsesHeadNow()`
-drives the aim field *and* the stick gate (they must agree or the duplicate comes
-back); `ModeUsesHead()` drives the view composition and ignores the empty-handed
-case, so picking a weapon up never recomposes the view.
+```
+walk = aimFieldYaw + stickAngle + R
+```
 
-`AimSource=2` ("write nothing, let the game keep its heading") **cannot work** —
-with `ModYaw` on, the game has no input from which to update that heading, so it
-freezes permanently. See `docs/INVARIANTS.md`.
+`HeadRelativeMove` had been doing exactly this since it shipped. The four
+`MovementMode` values are just values of `R`, computed from two already-exported
+terms — `H` (head yaw, `CameraHook_GetHeadYawOffset`) and `O` (the controller's
+clamped offset from the head, `CameraHook_GetAimOffset`), where the controller's
+absolute yaw is `C = H + O`.
 
-Decoupling requires knowing what the firing trace reads. If it comes off the
-weapon socket rather than `Controller.Rotation`, the seam exists; if not, it
-doesn't. That is unmeasured and is the first thing to settle.
+| Mode | Walks where | `R` |
+|---:|---|---|
+| 0 neither | right stick only | `-(H+O)` |
+| 1 controller | you point | `0` |
+| 2 head | you look | `-O` |
+| 3 both | you point, plus where you look | `H` |
+
+### `R` is measured at the write site, never predicted
+
+The table above is how the modes are *described*. It is **not** how `R` is
+computed, and the difference cost a cycle.
+
+`aimFieldYaw = base + H + O` is an approximation: the field is written by
+`ComposeHeadLocal()`, a **basis multiplication**, so in general its yaw depends
+on the pitch too.
+
+> **It is exact in the shipping config, though**, and assuming otherwise cost a
+> cycle. `HeadAimMode=2` drops the base pitch, making `M = Rz(yaw_base)` — a pure
+> yaw — so `want.yaw == base.yaw + aimY` exactly. The measured and predicted
+> forms are numerically identical there. Measuring is still the right form (it is
+> correct for modes 0 and 1) but it fixed no reported bug.
+
+`PublishWalkRotation()` computes `R` in `CalcView`, from the rotators actually
+written, and publishes one seq-locked float that `InputHook` simply applies:
+
+| Mode | desired walk heading | `R` |
+|---|---|---|
+| 0 neither | `base` | `base.yaw - aimRot.yaw` |
+| 1 controller | the field as written | `0` |
+| 2 head | the **view** | `viewRot.yaw - aimRot.yaw` |
+| 3 both | field + the head's part | `viewRot.yaw - base.yaw` |
+
+Exact at any pitch, by construction. Same discipline as `PublishShotDir`, which
+was written for the same reason — one calculation, no second algebra to drift.
+
+**When the game owns the field** (a scripted release, head aim off, UI up, hook
+starved) `aimRot` is not written: the subtractive rows collapse to `0` and modes
+2 and 3 keep `viewRot.yaw - base.yaw`, which is plain head-relative movement and
+means the same thing whoever wrote the field. `CameraHook_OwnsAimField()` still
+names that condition. Subtracting terms the field never contained is what steered
+the plasmid balcony scene off its path.
+
+### Scripted scenes rotate you on two different fields
+
+`ScriptedCameraFollow` (on by default) advances `g_aimBase` by the game's own
+`cleanRot` yaw delta during a scripted window, **as well as** following the aim
+field. Both are needed, because different scenes use different fields:
+
+| Scene | aim field | the game's own camera |
+|---|---:|---:|
+| Little Sister rescue | rotates | — |
+| **Balcony fall** | **0.00 deg/s** | **up to 125 deg/s** |
+
+Measured 2026-08-11 with every gate open, so nothing was being discarded — the
+fall's rotation had simply never been read. It is why that scene never turned the
+player, for the whole life of the mod.
+
+### Turn response
+
+The game's own turn rate is nearly vertical at the top of the stick — measured
+`0.98` → ~105 deg/s, `0.99` → ~140, `1.00` → ~200 — so the same push landing 2%
+differently doubled the speed. **Frame-rate dependence was the first hypothesis
+and is falsified**: 40 samples across 142–239 CalcView calls/s show no
+correlation.
+
+`TurnAxisMax` (0.95) and `TurnAxisExp` (1.0) remap the axis so the cliff is
+unreachable, trading top speed for repeatability. Both are ini-tunable because
+that trade is a matter of taste. Snap turn and `ModYaw` bypass this path.
+
+### Who aims is now a separate switch
+
+`HeadAimAlways` decides what the aim field carries; `MovementMode` decides only
+who steers. They were welded together until 2026-08-11, which made head aim
+imply head steering and made three of the four modes inexpressible.
+
+Two predicates keep it honest and **must not be merged**: `AimUsesHeadNow()`
+drives the aim field and is *dynamic* (it flips with empty hands); `ModeUsesHead()`
+drives view composition and is the *static config flag alone*, so picking a
+weapon up never recomposes the view.
+
+`AimSource`/`HeadRelativeMove` are legacy seeds, read only when `MovementMode` is
+absent. `AimSource=2` ("write nothing, let the game keep its heading") **cannot
+work** — with `ModYaw` on the game has no input from which to update that
+heading, so it freezes permanently. See `docs/INVARIANTS.md`.
+
+### Aim decoupling still needs one measurement
+
+Whether the firing trace reads `Controller.Rotation` or the weapon socket. If the
+socket, the seam exists. `AWeapon::GetPerfectFireStart` is now located at vtable
+slot `+0x304` (`docs/ENGINE-MAP.md`) and **answers it by asking**.
+
+### A known artifact, diagnosed and deferred
+
+Walking speed varies with the rotation angle. `ToAxis()` clamps each stick
+component to ±1 independently, so the pair is a **square** while `R` is a
+rotation — a rotated full diagonal produces a component near 1.41 which is then
+clipped. The fix, when wanted, is to scale by `1/max(|x|,|y|)` when that exceeds
+1: direction preserved, speed capped uniformly. **It predates the four modes** and
+applies equally to the old `HeadRelativeMove`.
+
+## `AimOverride` — one site where a feature can take the aim
+
+Empty today, returning false, and introduced *before* its callers on purpose.
+Three planned features want the same substitution — the gun barrel (bones 43→44),
+the wrench tip, and the two-handed grip. Precedence when they arrive: barrel/tip
+first (weapon-slot scoped), two-handing second, none while the head owns the aim.
+
+This codebase has already paid once for two features reaching the same place
+independently; a resolver built first means the third adds a clause, not a site.
 
 ## Head aim modes
 

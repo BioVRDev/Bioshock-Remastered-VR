@@ -56,6 +56,21 @@ bool CameraHook_GetPitchError(float* outDeg);
 
 bool CameraHook_GetHeadYawOffset(float* outDeg);
 
+// True only while the mod is actually writing Controller.Rotation -- i.e. while
+// the aim field carries our composed heading rather than the game's.
+//
+// FALSE during a scripted release (M7-S3 suppresses the write on purpose), with
+// head aim off, while the UI is up, and when the camera hook is starved.
+bool CameraHook_OwnsAimField();
+
+// How far to rotate the MOVEMENT STICK, in degrees, to make walking go where the
+// current MovementMode says it should. Computed at the aim write site from the
+// values actually written, so it cancels the composition exactly at any pitch --
+// deriving it from the head and controller yaws instead left a residual coupling
+// that grew with pitch and inverted with direction. See the banner in
+// CameraHook.cpp. False until the first aim write.
+bool CameraHook_GetWalkRotation(float* outDeg);
+
 // Direction the shot ACTUALLY goes, in XR head-local axes. False until the
 // head-aim write has run at least once.
 bool CameraHook_GetShotDir(float out[3]);

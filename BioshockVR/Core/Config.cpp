@@ -329,15 +329,47 @@ void Config_Load(const char* iniPath)
 
     // MUST come after AimSource and HeadRelativeMove: those two seed it, so an
     // ini written before MovementMode existed keeps behaving exactly as it did.
-    // Head aim implies mode 0 whatever HeadRelativeMove says -- that pairing was
-    // the double-application bug, and reproducing it faithfully is not a
-    // compatibility win.
+    //
+    // THE NUMBERS CHANGED MEANING on 2026-08-11, when the modes went from three
+    // to four and stopped deciding who aims. Old 0/1/2 (head, both, controller)
+    // are new 2/3/1. Both shipped ini files were rewritten in the same commit
+    // rather than reinterpreted silently -- and the echo below prints the mode
+    // NAME, so a stale number is visible in the log rather than felt in a
+    // headset. The seed below is remapped to match.
     {
         const int seed = (g_cfg.aimSource == 1)
-            ? (g_cfg.headRelativeMove ? 1 : 2)
-            : 0;
-        g_cfg.movementMode = CfgIntRange("MovementMode", seed, 0, 2);
+            ? (g_cfg.headRelativeMove ? 3 : 1)
+            : 2;
+        g_cfg.movementMode = CfgIntRange("MovementMode", seed, 0, 3);
     }
+
+    // Head aim used to BE movement mode 0. An ini written before the split says
+    // AimSource=0 to mean "no controller aim", which is the same request.
+    g_cfg.headAimAlways = CfgIntRange("HeadAimAlways",
+        (g_cfg.aimSource == 1) ? 0 : 1, 0, 1);
+    g_cfg.flashGuiProbe = CfgIntRange("FlashGuiProbe", 1, 0, 1);
+    g_cfg.turnRateProbe = CfgIntRange("TurnRateProbe", 1, 0, 1);
+    g_cfg.scriptedRotProbe = CfgIntRange("ScriptedRotProbe", 1, 0, 1);
+    g_cfg.scriptedCameraFollow = CfgIntRange("ScriptedCameraFollow", 1, 0, 1);
+    g_cfg.walkDriftProbe = CfgIntRange("WalkDriftProbe", 1, 0, 1);
+    g_cfg.gameTurnSpeed = CfgIntRange("GameTurnSpeed", 70, -1, 100);
+
+    // ExecCommand1..8. ONE-BASED, matching the ini's own GripOffset/HideArms
+    // convention and what a non-programmer would write first.
+    for (int i = 0; i < kExecCommands; ++i)
+    {
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "ExecCommand%d", i + 1);
+        CfgStr(key, "", g_cfg.execCommand[i], sizeof(g_cfg.execCommand[i]));
+    }
+
+    g_cfg.stickPrecomp = CfgIntRange("StickPrecomp", 1, 0, 1);
+    g_cfg.gameStickDeadzone =
+        CfgFloat("GameStickDeadzone", g_cfg.gameStickDeadzone, 0.0f, 0.90f);
+
+    g_cfg.turnAxisMax = CfgFloat("TurnAxisMax", g_cfg.turnAxisMax, 0.20f, 1.0f);
+    g_cfg.turnAxisExp = CfgFloat("TurnAxisExp", g_cfg.turnAxisExp, 0.50f, 4.0f);
+
     g_cfg.snapTurn = CfgIntRange("SnapTurn", 0, 0, 1);
     g_cfg.snapTurnDeg = CfgFloat("SnapTurnDegrees", 45.0f, 5.0f, 180.0f);
     g_cfg.freezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
@@ -588,9 +620,42 @@ void Config_Load(const char* iniPath)
     CfgEcho("HeadRelativeMove", "%d   (legacy -- MovementMode is the authority)",
         g_cfg.headRelativeMove);
     CfgEcho("MovementMode", "%d  %s", g_cfg.movementMode,
-        g_cfg.movementMode == 0 ? "(head: walk and aim where you look)"
-        : g_cfg.movementMode == 1 ? "(combined: controller aims, head steers)"
-        : "(controller: head does not steer)");
+        g_cfg.movementMode == 0 ? "(neither: right stick only)"
+        : g_cfg.movementMode == 1 ? "(controller: walk where you point)"
+        : g_cfg.movementMode == 2 ? "(head: walk where you look)"
+        : "(both: point and look each steer)");
+    CfgEcho("HeadAimAlways", "%d  %s", g_cfg.headAimAlways,
+        g_cfg.headAimAlways ? "(the aim field carries your HEAD)"
+        : "(the aim field carries your CONTROLLER)");
+
+    CfgEcho("FlashGuiProbe", "%d", g_cfg.flashGuiProbe);
+    CfgEcho("StickPrecomp", "%d  %s", g_cfg.stickPrecomp,
+        g_cfg.stickPrecomp ? "(undo the game's SQUARE movement deadzone)"
+        : "(off -- rotated walking will drift)");
+    CfgEcho("GameStickDeadzone", "%.3f   (User.ini XENON_LTHUMB_*AXIS DeadZone)",
+        g_cfg.gameStickDeadzone);
+    CfgEcho("TurnAxis", "max %.2f  exp %.2f   (1.00 max == the game's own steep "
+        "top end)", g_cfg.turnAxisMax, g_cfg.turnAxisExp);
+    CfgEcho("TurnRateProbe", "%d", g_cfg.turnRateProbe);
+    CfgEcho("ScriptedRotProbe", "%d", g_cfg.scriptedRotProbe);
+    CfgEcho("ScriptedCameraFollow", "%d  %s", g_cfg.scriptedCameraFollow,
+        g_cfg.scriptedCameraFollow ? "(scripted scenes turn you from the "
+        "game's camera)" : "(off -- aim field only)");
+    CfgEcho("WalkDriftProbe", "%d", g_cfg.walkDriftProbe);
+    CfgEcho("GameTurnSpeed", "%d  %s", g_cfg.gameTurnSpeed,
+        g_cfg.gameTurnSpeed < 0 ? "(leave the game's own value alone)"
+        : "(written into Bioshock.ini Sensitivity)");
+
+    // Echoed individually, not as a count. The whole value of the experiment
+    // channel is being able to read back the EXACT string the engine will get --
+    // a mistyped property name is invisible in "3 commands set".
+    for (int i = 0; i < kExecCommands; ++i)
+    {
+        if (!g_cfg.execCommand[i][0]) continue;
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "ExecCommand%d", i + 1);
+        CfgEcho(key, "%s", g_cfg.execCommand[i]);
+    }
     CfgEcho("PitchServo", "%d  gain %.3f  dead %.1f deg  max %.2f",
         g_cfg.pitchServo, g_cfg.pitchServoGain, g_cfg.pitchServoDead, g_cfg.pitchServoMax);
     CfgEcho("SuppressIndexCounts", "'%s'", g_cfg.suppressList);

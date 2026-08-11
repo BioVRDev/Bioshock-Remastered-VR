@@ -82,6 +82,21 @@ bool Input_GetHandPose(int hand, HandPose* out);
 // same reason. See docs/modules/camera.md.
 bool Input_GetTurnX(float* out);
 
+// A short confirmation buzz on one hand, at the moment a gesture is recognised.
+// hand is HAND_LEFT or HAND_RIGHT, amplitude 0..1, ms clamped to 1..2000.
+//
+// The haptic actions have been created and bound since motion controls shipped
+// and had ZERO callers until this existed. Fails silently -- no haptic support,
+// a sleeping controller and an unfocused session all return non-success, and
+// none of them should refuse the gesture that asked for the buzz.
+void Input_Pulse(int hand, float amplitude, int ms);
+
+// The movement-stick angle last handed to the game, in degrees, in the game's own
+// (forward, strafe) convention -- atan2(strafe, forward), so a pure forward push
+// rotated by R reads as exactly R. For WalkDriftProbe, which lives in CalcView
+// and cannot otherwise see the stick.
+bool Input_GetSentStickAngle(float* outDeg);
+
 // ---- consumer: call from Hooks.cpp --------------------------------------
 // Once per Present. Handles deferred hook installation (the game may load its
 // XInput DLL long after our first frame) and the once-a-second log line.

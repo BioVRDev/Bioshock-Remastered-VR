@@ -93,15 +93,29 @@ handoff disagree, this file wins.
   (`0x32313936`) raised a false `BATHYSPHERE MODE ON` whose own log line said
   `capsule=1`. **Gate on the oracle, do not just print it.** Same for any bool:
   a lone bool reads exactly 0 or 1, so anything else is a wrong pointer.
-- **You cannot hide by bone and measure by bone at the same time.** `ArmHide`
-  clears the skeleton's dirty byte so its writes stick, which stops the engine
-  re-evaluating **the whole bone array** — so any signal read from that array
-  freezes the instant anything hides through it. M7-S4 hid the arms on a motion
-  signal sampled from the same array and produced a **bistable latch**: a scene
-  entered hidden could never un-hide (motion read a flat `0.0000` while the same
-  metric peaked at 3.77 elsewhere in the run), and a scene entered visible could
-  never hide. Hide through `DrawScale3D` on the actor instead, or measure
-  something the hide does not touch.
+- **You cannot WRITE a bone and measure it at the same time — hiding, driving or
+  anything else.** `ArmHide` clears the skeleton's dirty byte so its writes
+  stick, which stops the engine re-evaluating **the whole bone array**, so any
+  signal read from that array freezes the instant anything writes through it.
+  M7-S4 hid the arms on a motion signal sampled from the same array and produced
+  a **bistable latch**: a scene entered hidden could never un-hide (motion read a
+  flat `0.0000` while the same metric peaked at 3.77 elsewhere in the run), and a
+  scene entered visible could never hide. Hide through `DrawScale3D` on the actor
+  instead, or measure something the write does not touch.
+
+  **It came back through the other door on 2026-08-11, and the wording is why.**
+  The rule said *hide*; the M6-S1 cluster **drive** writes bones and clears the
+  same byte, and the motion probe's fixed `kMotionBone = 27` sits inside the
+  right cluster — which is the driven one during every plasmid scene. Arms stayed
+  hidden for the whole balcony scene, with `raw` reading **exactly** `0.0000` for
+  189 consecutive samples in one run and 223 in another. Bit-for-bit zero rather
+  than merely small is the signature: a rigid transform from a captured reference
+  reproduces the identical pose while the controller is still.
+
+  **It presented as a movement-mode bug** (arms appeared in mode 2, not in 0 or
+  3) at one run per mode. `MovementMode` rotates a stick and cannot reach the
+  bone array; mode 2 was simply the run with more controller motion. The
+  sampled bone is now chosen against the driven cluster.
 - **When a differential probe shares a log budget with noisy windows, the noisy
   windows eat it.** M7-S1's 200-transition cap was consumed in six seconds by the
   controller and pawn windows (117/256 and 206/288 fields non-zero and churning),
@@ -120,6 +134,139 @@ handoff disagree, this file wins.
 - Native OpenXR interaction-profile suggestions and the shim's SteamVR bindings
   are **separate systems**. `xrSuggestInteractionProfileBindings` is a no-op in
   the shim; its bindings are generated from string literals in `shim_input.cpp`.
+
+### Locomotion and the aim field
+- **The game's movement stick has a SQUARE deadzone, so ROTATING it distorts the
+  direction.** `User.ini` binds both movement lanes with a per-axis threshold:
+
+  ```
+  XENON_LTHUMB_XAXIS=Axis xStrafe   Speedbase=1.0 DeadZone=0.225 | ...
+  XENON_LTHUMB_YAXIS=Axis xForward  Speedbase=1.0 DeadZone=0.225 | ...
+  ```
+
+  Rotating the stick to redirect walking **moves magnitude between the two
+  axes**, and the game then shrinks each axis independently — so what it walks is
+  not what was sent. Modelling it as `out = (|a| − d)/(1 − d)` reproduces the
+  logged sent-vs-received pairs **seven for seven**:
+
+  | sent | predicted | logged |
+  |---:|---:|---:|
+  | −72.0 | −83.4 | −83.4 |
+  | −74.7 | −87.0 | −87.0 |
+  | +78.6 | +90.0 | +90.0 |
+  | +162.1 | +173.5 | +173.6 |
+  | −13.6 | −0.8 | −0.8 |
+
+  The ±90.0 saturation is the signature: once the forward lane falls under 0.225
+  it is zeroed and the walk collapses to pure strafe. The residual clusters at
+  **±11°** and is worst near 90°, where the forward component is smallest.
+
+  `StickPrecomp` inverts it — `send = sign(u)·(|u|·m·(1−d) + d)` — which the game
+  then decodes back to exactly `u·m`. Applied **only when we rotated**; an
+  unrotated stick meets the game's deadzone exactly as it always has.
+
+  > **The general rule this cost four builds to learn: when a correction is
+  > provably exact and the symptom survives, stop refining the correction and
+  > measure what the other side actually received.** `R` was algebraically exact
+  > from the first attempt; the distortion happened after the value left us.
+
+
+- **Graveyard entry 13 binds AIM, not locomotion.** `Controller.Rotation` drives
+  the view, the weapon trace *and* the walk direction, and no arrangement of that
+  one field separates the first two. **The walk direction is separable anyway**,
+  because the game applies the stick angle *on top of* the field:
+
+  ```
+  walk = aimFieldYaw + stickAngle + R
+  ```
+
+  Rotating the stick by `R` redirects walking while leaving aim, the weapon trace
+  and forced-move sequences untouched. `HeadRelativeMove` had been doing exactly
+  this since it shipped; the four `MovementMode` values are just values of `R`.
+  Entry 13 as previously written would have forbidden work that demonstrably
+  works.
+
+- **Compute anything derived from the aim field at the write site, from the
+  rotator actually written.** `ComposeHeadLocal()` is a **basis multiplication**,
+  so in general the resulting yaw depends on the pitch too, and
+  `aimFieldYaw = base + headYaw + controllerOffset` is an approximation.
+  `PublishShotDir` has always done it the right way for the crosshair;
+  `PublishWalkRotation` now does it for locomotion.
+
+  > **⚠ CORRECTION, and the reason it is worth the space.** This entry first
+  > claimed the composition error *was* the cause of a residual locomotion
+  > coupling. **It was not, and the claim was not checked against the live
+  > config.** With `HeadAimMode=2` — the shipping default — the base pitch is
+  > dropped, `M` becomes `Rz(yaw_base)`, a **pure yaw**, and
+  > `want.yaw == base.yaw + aimY` *exactly*. The measured form and the predicted
+  > form are numerically identical there, which is why the drift survived the
+  > change unaltered: *"still present and the exact same"*. The measured form is
+  > still correct and still preferred — it is right for `HeadAimMode` 0 and 1 —
+  > but **check which head-aim mode is live before blaming the composition.**
+
+- **A cinematic reference must be dropped on BOTH edges of the window.**
+  Anything that differences a value frame-to-frame across a scripted scene needs
+  a reference, and that reference is valid **only within one window**. A latch
+  set on the first scripted frame and never cleared makes the *second* window of
+  a session difference against a value left over from the **end of the first** —
+  an arbitrary jump. Measured as *"both runs had the balcony fall land in
+  different spots; first almost perfect, second way off"*: the first scene of a
+  run is clean and every one after it inherits garbage.
+
+  **Drop it at the edge detector, not inside the feature.** The follow block sits
+  behind `headAim`, `headTracking`, the UI gate and the starvation gate, so a
+  window that ends while any of those is false would never clear it. The
+  reference mod states the same rule for its own cinematic reference: *"drop the
+  look reference so the next shot opens framed as authored rather than wherever
+  this one ended."*
+
+- **The pawn's rotator tracks the aim field exactly — falsified 2026-08-11.**
+  UE2 builds movement acceleration from `GetAxes(Pawn.Rotation)`, so the pawn
+  looked like a candidate basis for a residual walk drift. It is not: 60 of 62
+  samples read `aim-pawn +0.0`, **including while a 76° controller offset was
+  held**, which is the exact condition the hypothesis was invented for. Do not
+  re-propose the pawn rotator as a separate movement basis.
+
+- **A scripted scene can rotate you on the game's OWN camera and never touch the
+  aim field — SOLVED 2026-08-11.** The balcony fall had never turned the player
+  since the mod existed. Measured across the whole 67-second scene:
+
+  ```
+  game injected 0.00 deg/s into the AIM FIELD, 125.21 deg/s onto its own CAMERA
+  gates cut=0 freeze=0 gameplayFreeze=0 rotBlocked=0
+  ```
+
+  Nothing was being discarded — every gate was open. The rotation simply lives on
+  `*CameraRotation`, which head aim overwrites wholesale every frame, while the
+  Little Sister scene (which always worked) puts its rotation on the aim field.
+  **Two different scenes, two different fields.** `ScriptedCameraFollow` follows
+  the camera too and ships on. Do not assume a scripted rotation arrives on
+  `Controller.Rotation` because a previous one did.
+
+- **Turn rate is NOT frame-rate linked — falsified 2026-08-11.** 40 samples,
+  CalcView between 142 and 239 calls/s, **no correlation at all**: at ~230
+  calls/s the measured rate ran from 52.9 to 215.6 deg/s. What it tracks is stick
+  deflection, on a curve that is nearly vertical at the very top — `0.98` gives
+  ~105 deg/s, `0.99` ~140, `1.00` ~200. A 2% difference in push doubles the rate,
+  which is the whole of the long-standing "sometimes slow, sometimes fast"
+  report. `TurnAxisMax` keeps the cliff unreachable.
+
+- **The stick-rotation identity is only valid while WE own the aim field.**
+  `R` subtracts the head term `H` and the controller term `O` on the assumption
+  that the field carries `base + H + O`. **During a scripted sequence it does
+  not** — M7-S3 deliberately suppresses the write (grep `THE SUPPRESSION LIVES
+  HERE NOW`), so the field holds the game's own heading and contains neither.
+  Subtracting them there steers the sequence off its intended path.
+
+  Measured 2026-08-11 on the plasmid balcony scene: *"when you enter it, you are
+  turned slightly to the left, which causes the walking path to move you to the
+  wrong position."* Gate on `CameraHook_OwnsAimField()`, never on the mode alone.
+
+  **It presented as a mode-0-only bug and was not.** Mode 2 subtracts only `O`,
+  which is zero while the head owns the aim — so an *unarmed* scripted scene
+  masks it completely while an armed one drifts by up to `AimClampDeg`. The mode
+  that looked clean was the one that got lucky. **A mode-specific symptom is not
+  evidence of a mode-specific cause.**
 
 ### Architecture
 - **Draw signatures may control cosmetic presentation. They must never gate

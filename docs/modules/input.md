@@ -93,6 +93,32 @@ still a clean read.
   `HeadAimMode=2` the camera hook erases injected pitch ~8 ms later and it reads
   as a fight.
 
+## The game's deadzone is square, and the mod pre-compensates
+
+`User.ini` binds both movement lanes with a **per-axis** threshold —
+`XENON_LTHUMB_XAXIS`/`YAXIS`, `DeadZone=0.225`. Rotating the stick to redirect
+walking moves magnitude between the two axes, and a per-axis threshold applied
+after that **changes the direction**: up to ~11°, and a hard collapse to pure
+strafe once the forward lane drops under the threshold. That was the walk drift
+reported for four builds.
+
+`StickPrecomp` inverts the game's transform before `ToAxis`:
+
+```
+send_i = sign(u_i) · ( |u_i| · m · (1 − d) + d ),   zero components stay zero
+```
+
+The game decodes that back to exactly `u_i · m` — direction and magnitude both
+exact, verified across the full angle range. The result is bounded at 1.0, so it
+never clips. **Applied only when the stick was actually rotated**; an unrotated
+stick meets the game's deadzone exactly as it always has, which is the vanilla
+feel and is not broken.
+
+> **`User.ini` is deliberately NOT edited to fix this.** Those lines carry several
+> bindings each — `XENON_LTHUMB_XAXIS` also holds `Axis xLean DeadZone=0.4` — the
+> file has multiple binding sections, and the game rewrites it at exit. String
+> surgery there risks breaking the controls outright, for a value we can invert.
+
 ## Physical wrench
 
 `Swing.cpp` is a **gesture-to-button adapter**, not collision: head-relative hand

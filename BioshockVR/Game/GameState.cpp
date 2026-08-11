@@ -28,6 +28,7 @@
 #include "Game/GameState.h"
 #include "Game/EngineExec.h"
 #include "Game/EngineBridge.h"
+#include "Game/ExecQueue.h"
 #include "Core/Keybinds.h"
 
 #include <windows.h>
@@ -605,6 +606,130 @@ static void HuntPauser()
     }
 }
 
+// ============================================================================
+//  M6-S5: WHICH INTERFACE SCREEN IS UP -- READ, NEVER CALLED
+//
+// THE WHOLE INTERFACE IS A STACK OF NAMED FLASH MOVIES, and the engine exposes
+// GetTopPlayingMovie to say which one is on top. That is an exact answer to
+// "which screen is up", replacing the draw-signature heuristic that flipped 12
+// times in one spot during ordinary gameplay.
+//
+// WE DO NOT CALL IT, AND WE DO NOT NEED TO. Every one of those natives is an
+// exec taking an FFrame, which is M3-S2 -- deprioritised on a second-source
+// negative. But the two getters are four instructions each, so their CODE was
+// dumped (Build A, `>>> NATIVE: code +0x00`) and decoded by eye. Both turned out
+// to be pure field walks. Static analysis of a dump, the same move that located
+// the natives in the first place.
+//
+//   GetFlashGUIController, ecx = LevelInfo:
+//     8B 81 FC 00 00 00   mov eax,[ecx+0xFC]
+//     8B 40 5C            mov eax,[eax+0x5C]
+//     8B 40 4C            mov eax,[eax+0x4C]
+//     39 50 48            cmp [eax+0x48],edx      ; edx == 0, bail if equal
+//     8B 40 44 / 8B 00    mov eax,[eax+0x44] / deref
+//     8B 40 7C            mov eax,[eax+0x7C]      ; the controller
+//
+//   GetTopPlayingMovie, ecx = FlashGUIController:
+//     8B 91 5C 01 00 00   mov edx,[ecx+0x15C]     ; count
+//     8B 81 58 01 00 00   mov eax,[ecx+0x158]     ; array data
+//     8B 4C 90 FC         mov ecx,[eax+edx*4-4]   ; data[count-1] == the TOP
+//
+// AND IT IS A LIVE CUTSCENE LEAD, not only a HUD-placement fix. Graveyard entry
+// 1 died on "the HUD visibly hides while bHideHUD never moves"; HideMovie is the
+// mechanism that would explain it, and a movie stack we can read is where its
+// effect shows up. ShockPlayer.uc calls exactly that during the rescue.
+//
+// READ-ONLY. Every step goes through Readable() and bails rather than guessing,
+// which is the only acceptable shape for a six-deep pointer chain we decoded
+// from instructions rather than measured.
+static void* FlashGuiController()
+{
+    if (!g_level) return nullptr;
+
+    const uint8_t* p = (const uint8_t*)g_level;
+
+    // +0xFC -> +0x5C -> +0x4C, each checked before it is followed.
+    static const unsigned kStep[3] = { 0xFC, 0x5C, 0x4C };
+    for (int i = 0; i < 3; ++i)
+    {
+        if (!Readable(p + kStep[i], 4)) return nullptr;
+        p = *(const uint8_t* const*)(p + kStep[i]);
+        if (!GsLooksLikeObject(p)) return nullptr;
+    }
+
+    // The getter's own guard: cmp [eax+0x48], 0 -- bail when it is zero.
+    if (!Readable(p + 0x48, 4)) return nullptr;
+    if (*(const int*)(p + 0x48) == 0) return nullptr;
+
+    if (!Readable(p + 0x44, 4)) return nullptr;
+    const uint8_t* const q = *(const uint8_t* const*)(p + 0x44);
+    if (!GsLooksLikeObject(q) || !Readable(q, 4)) return nullptr;
+
+    const uint8_t* const r = *(const uint8_t* const*)q;
+    if (!GsLooksLikeObject(r) || !Readable(r + 0x7C, 4)) return nullptr;
+
+    void* const ctrl = *(void* const*)(r + 0x7C);
+    return GsLooksLikeObject(ctrl) ? ctrl : nullptr;
+}
+
+// Logs only when the TOP MOVIE CHANGES, so a whole session costs a handful of
+// lines and the log reads as a transcript of which screen was up when. That is
+// the shape the cutscene question actually needs.
+static void FlashGuiTick()
+{
+    if (!g_cfg.flashGuiProbe || !g_level) return;
+
+    void* const ctrl = FlashGuiController();
+
+    static void* lastCtrl = (void*)~(uintptr_t)0;
+    if (ctrl != lastCtrl)
+    {
+        lastCtrl = ctrl;
+        Log(">>> FLASHGUI: controller = 0x%08X%s", (unsigned)(uintptr_t)ctrl,
+            ctrl ? "" : "  (chain did not resolve)");
+    }
+    if (!ctrl) return;
+
+    const uint8_t* const c = (const uint8_t*)ctrl;
+    if (!Readable(c + 0x158, 8)) return;
+
+    const int count = *(const int*)(c + 0x15C);
+    const uint8_t* const data = *(const uint8_t* const*)(c + 0x158);
+
+    void* top = nullptr;
+    if (count > 0 && count < 64 && GsLooksLikeObject(data) &&
+        Readable(data + (size_t)(count - 1) * 4, 4))
+        top = *(void* const*)(data + (size_t)(count - 1) * 4);
+
+    static void* lastTop = (void*)~(uintptr_t)0;
+    static int   lastCount = -1;
+    if (top == lastTop && count == lastCount) return;
+    lastTop = top;
+    lastCount = count;
+
+    Log(">>> FLASHGUI: %d movie(s) playing, top = 0x%08X",
+        count, (unsigned)(uintptr_t)top);
+
+    // ONE DUMP, EVER. The movie's NAME is the point of all this and its offset
+    // is not known yet -- so dump the object head once and read the layout off
+    // the log, exactly as the two getters above were solved. Repeating it every
+    // change would bury the transcript this function exists to produce.
+    static bool dumped = false;
+    if (top && !dumped && Readable(top, 64))
+    {
+        dumped = true;
+        Log(">>> FLASHGUI: top movie object head (find the name field here):");
+        for (int line = 0; line < 4; ++line)
+        {
+            const uint8_t* const b = (const uint8_t*)top + line * 16;
+            Log(">>> FLASHGUI:   +0x%02X  %08X %08X %08X %08X",
+                line * 16,
+                *(const unsigned*)(b + 0), *(const unsigned*)(b + 4),
+                *(const unsigned*)(b + 8), *(const unsigned*)(b + 12));
+        }
+    }
+}
+
 static void ObservePause(const void* controller)
 {
     if (!g_level)
@@ -980,6 +1105,22 @@ void GameState_Observe(void* playerController)
     // Before the EnableGameState early-return: the reticle should still go away
     // when the context scan is switched off. Different feature, different switch.
     Reticle_Tick();
+
+    // The console channel, drained on the GAME THREAD. Same placement reasoning
+    // as Reticle_Tick above: an ini experiment must still fire with
+    // EnableGameState off, because half of what it is used to investigate is
+    // whether the context scan matters at all.
+    //
+    // Order is deliberate -- queue first, then drain, so a command posted this
+    // frame runs this frame rather than waiting for the next one.
+    ExecQueue_RunStartupCommands();
+    ExecQueue_Tick();
+
+    // M6-S5. Read-only, and silent until the top movie changes. Outside the
+    // EnableGameState gate for the same reason as the two above: it is a
+    // different feature from the context scan and answers a question the scan
+    // has never been able to.
+    FlashGuiTick();
 
     if (!g_cfg.gameState) return;
     RefreshPawn(playerController);

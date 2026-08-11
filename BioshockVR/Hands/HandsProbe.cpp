@@ -1459,7 +1459,10 @@ static const void* CurrentAbilityPtr(const void* hands)
 }
 
 static const int kAbilMax = 24;        // BioShock ships ~11 plasmids
-static const int kAbilCand = 6;
+// 16, not 6. The floor dropping to 2 (see below) admits far more shapes, and
+// with only 6 slots the junk near the top of the pawn would fill them all before
+// the scan ever reached the real arrays at pawn+0x750 and beyond.
+static const int kAbilCand = 16;
 static const size_t kAbilScanWin = 0x2000;
 
 static void*    g_abilList[kAbilCand][kAbilMax] = {};
@@ -1468,10 +1471,49 @@ static unsigned g_abilAt[kAbilCand] = {};
 static int      g_nAbilCand = 0;
 static bool     g_abilScanned = false;
 
+// RUN 1 FOUND TWO LIMITS AND BOTH WERE IN HERE, NOT IN THE ENGINE.
+//
+// 1. The latch was permanent, so the scan ran once on the FIRST pawn of the
+//    session and never again. Run 1 crossed three pawns; every switch after the
+//    first level change was matched against a list gathered before it. Now the
+//    latch is per-pawn: a new pawn rescans, the same pawn does not.
+//
+// 2. The floor was `count < 4`, which is right for weapons (8 of them, always
+//    all present) and wrong for plasmids. You own two for the first hour of the
+//    game, so the array that would identify them was rejected for being the
+//    size it actually is. Dropped to 2.
+//
+// The self-validation is unchanged and is what makes one run enough: an offset
+// is only reported when the dword living there EQUALS an entry of a
+// class-list-shaped array on the same pawn.
+static const void* g_abilScannedFor = nullptr;
+
+// The equipped-ability edge tracker. A FILE static so a rescan can clear it --
+// left inside ReportAbilityIdentity it would suppress the first report on a new
+// pawn whenever the incoming ability pointer happened to match the outgoing one,
+// and the allocator reuses addresses across a level change, so that is not
+// hypothetical.
+static const void* g_lastAbil = (const void*)~(uintptr_t)0;
+
 static void ScanAbilityClassLists(const void* pawn)
 {
-    if (g_abilScanned || !pawn || !g_cfg.plasmidProbe) return;
+    if (!pawn || !g_cfg.plasmidProbe) return;
+    if (g_abilScanned && g_abilScannedFor == pawn) return;
+
+    const bool rescan = g_abilScanned;
     g_abilScanned = true;
+    g_abilScannedFor = pawn;
+    g_nAbilCand = 0;                  // a new pawn invalidates every candidate
+
+    if (rescan)
+    {
+        // Force the next ReportAbilityIdentity to speak even if the equipped
+        // ability pointer has not changed -- it must be re-matched against the
+        // candidates just gathered, not the dead ones.
+        g_lastAbil = (const void*)~(uintptr_t)0;
+        Log(">>> PLASMID: pawn changed -- rescanning class lists on 0x%08X",
+            (unsigned)(uintptr_t)pawn);
+    }
 
     const size_t blk = ReadableBlock(pawn, kAbilScanWin);
     for (size_t off = 0; off + 12 <= blk && g_nAbilCand < kAbilCand; off += 4)
@@ -1481,7 +1523,7 @@ static void ScanAbilityClassLists(const void* pawn)
         const int count = *(const int*)(h + 4);
         const int maxN = *(const int*)(h + 8);
 
-        if (count < 4 || count > kAbilMax || maxN < count) continue;
+        if (count < 2 || count > kAbilMax || maxN < count) continue;
         if (!data || !Readable(data, (size_t)count * 4)) continue;
 
         void* tmp[kAbilMax] = {};
@@ -1515,14 +1557,39 @@ static void ReportAbilityIdentity(const void* pawn, const void* curAbility)
 {
     if (!g_nAbilCand || !pawn || !g_cfg.plasmidProbe) return;
 
-    static const void* lastAbil = (const void*)~(uintptr_t)0;
-    if (curAbility == lastAbil) return;
-    lastAbil = curAbility;
+    if (curAbility == g_lastAbil) return;
+    g_lastAbil = curAbility;
 
     if (!curAbility) return;      // switching to a weapon; nothing to identify
 
-    Log(">>> PLASMID: equipped ability instance 0x%08X -- searching the pawn",
-        (unsigned)(uintptr_t)curAbility);
+    // READ THE INSTANCE'S OWN CLASS. Run 1 shipped without this and it is why
+    // the probe could not answer: it reported every pawn field holding ANY class
+    // from ANY candidate list, which on a static field is a coincidence that
+    // repeats forever. Two ability instances alternating produced the identical
+    // pair of offsets 17 times because nothing tied the report to the ability.
+    //
+    // UObject::Class at +0x30 is the same offset already measured for holdables
+    // -- an ability and a weapon are both UObjects, so the layout is shared.
+    // With this, a field is only interesting when it CHANGES TO MATCH the class
+    // of whatever you just equipped, which no static field can fake.
+    const void* cls = nullptr;
+    if (Readable((const uint8_t*)curAbility + 0x30, 4))
+        cls = *(void* const*)((const uint8_t*)curAbility + 0x30);
+
+    int clsK = -1, clsI = -1;
+    for (int k = 0; k < g_nAbilCand && clsK < 0; ++k)
+        for (int i = 0; i < g_abilCount[k]; ++i)
+            if (g_abilList[k][i] == cls) { clsK = k; clsI = i; break; }
+
+    if (clsK >= 0)
+        Log(">>> PLASMID: equipped ability 0x%08X  class 0x%08X = candidate %d "
+            "index %d -- searching the pawn",
+            (unsigned)(uintptr_t)curAbility, (unsigned)(uintptr_t)cls,
+            clsK, clsI);
+    else
+        Log(">>> PLASMID: equipped ability 0x%08X  class 0x%08X is in NO "
+            "candidate list -- searching the pawn",
+            (unsigned)(uintptr_t)curAbility, (unsigned)(uintptr_t)cls);
 
     const size_t blk = ReadableBlock(pawn, kAbilScanWin);
     int hits = 0;
@@ -1531,15 +1598,31 @@ static void ReportAbilityIdentity(const void* pawn, const void* curAbility)
         void* const v = *(void* const*)((const uint8_t*)pawn + off);
         if (!v) continue;
 
+        // The answer, when it appears: a pawn field holding the class of the
+        // ability you are actually holding. Logged apart from the rest so it
+        // cannot be lost among the coincidences.
+        if (cls && v == cls)
+            Log(">>> PLASMID:   *** pawn+0x%04X == THE EQUIPPED CLASS  <- "
+                "ActiveAbilityClass candidate", (unsigned)off);
+
         for (int k = 0; k < g_nAbilCand; ++k)
             for (int i = 0; i < g_abilCount[k]; ++i)
                 if (g_abilList[k][i] == v)
                 {
-                    ++hits;
-                    Log(">>> PLASMID:   pawn+0x%04X = 0x%08X  -> candidate %d "
-                        "index %d", (unsigned)off, (unsigned)(uintptr_t)v, k, i);
+                    // CAPPED. 16 candidate lists instead of 6 is a lot more
+                    // coincidence to print, and this project has already lost a
+                    // run to ~400 lines per keypress. The starred line above is
+                    // the one that matters and is never suppressed.
+                    if (++hits <= 40)
+                        Log(">>> PLASMID:   pawn+0x%04X = 0x%08X  -> candidate "
+                            "%d index %d",
+                            (unsigned)off, (unsigned)(uintptr_t)v, k, i);
                 }
     }
+
+    if (hits > 40)
+        Log(">>> PLASMID:   ... and %d more coincidental matches, suppressed.",
+            hits - 40);
 
     if (!hits)
         Log(">>> PLASMID:   no pawn field holds a class from any candidate list. "
@@ -1560,6 +1643,50 @@ static const char* kWepName[9] = {
     "MachineGun", "ChemicalThrower", "ResearchCamera", "Plasmid"
 };
 
+// ---- CYCLE 0: AWeapon::GetPerfectFireStart, LOCATE ONLY ------------------
+// M4-S3 ASKS WHAT THE FIRING TRACE READS -- Controller.Rotation, or the weapon's
+// own socket. Every attempt so far has tried to INFER it. This asks: the game
+// has a virtual that returns the shot origin and rotation, and a second source
+// puts it at vtable slot +0x304 with "live-confirmed firing, origin substitution
+// proven".
+//
+// A VTABLE SLOT NEEDS NO HARDCODED RVA, which is the whole reason this is worth
+// doing and the reason it survives a storefront change. We already hold the
+// weapon pointer; slot 0x304/4 = 193 of its vtable is a pointer we can read.
+//
+// LOCATE ONLY. NOTHING IS CALLED. Calling a misidentified virtual crashes rather
+// than logs, and a __thiscall returning a struct by hidden pointer is exactly
+// the shape that "unbalanced the stack" in the reference project. The prologue
+// bytes are logged so the address can be sanity-checked against the four
+// accessors EngineBridge already validates the same way.
+static void ProbeFireStartSlot(const void* hold)
+{
+    static bool done = false;
+    if (done || !hold || !g_cfg.plasmidProbe) return;
+
+    if (!Readable(hold, 4)) return;
+    void* const vt = *(void* const*)hold;
+    if (!vt || !Readable((const uint8_t*)vt + 0x304, 4)) return;
+
+    done = true;
+
+    void* const fn = *(void* const*)((const uint8_t*)vt + 0x304);
+    if (!fn || !Readable(fn, 8))
+    {
+        Log(">>> FIRESTART: weapon vtable 0x%08X slot +0x304 = 0x%08X -- not "
+            "readable code. The slot number is a second-source claim, not ours.",
+            (unsigned)(uintptr_t)vt, (unsigned)(uintptr_t)fn);
+        return;
+    }
+
+    const uint8_t* b = (const uint8_t*)fn;
+    Log(">>> FIRESTART: GetPerfectFireStart? vtable 0x%08X +0x304 -> 0x%08X  "
+        "prologue %02X %02X %02X %02X %02X %02X %02X %02X  (LOCATE ONLY, "
+        "never called)",
+        (unsigned)(uintptr_t)vt, (unsigned)(uintptr_t)fn,
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+}
+
 // One grip offset per slot, all seeded from HandsGripOffset. The numpad keys
 // edit whichever slot is live; switching weapons SAVES the slot you were on and
 // LOADS the one you switched to. So a single session tunes every weapon, and
@@ -1575,6 +1702,10 @@ static int ResolveWeaponSlot(const void* hands)
 
     const void* hold = *(void* const*)((const uint8_t*)hands + g_cfg.gunPtrOff);
     if (!hold) return 8;                       // plasmid / ability mode
+
+    // The weapon pointer is in hand here and nowhere else, and the probe is a
+    // one-shot that latches on its first success.
+    ProbeFireStartSlot(hold);
 
     int k = -1;
     for (int i = 0; i < g_nWepCand; ++i) if (g_wepCount[i] == 8) { k = i; break; }

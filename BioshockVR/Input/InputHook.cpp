@@ -50,6 +50,10 @@ extern void LogFile(const char* msg);
 bool CameraHook_GetPitchError(float* outDeg);
 bool CameraHook_GetHeadYawOffset(float* outDeg);
 bool CameraHook_AimUsesHead();   // is the head already in the aim field?
+// How far to rotate the movement stick for the current MovementMode. Computed
+// at the aim write site from the rotators actually written -- see the banner
+// above PublishWalkRotation in CameraHook.cpp.
+bool CameraHook_GetWalkRotation(float* outDeg);
 
 
 bool DrawHook_MenuUp();              // DrawHook.cpp
@@ -505,6 +509,55 @@ static bool LocateOne(XrSpace act, XrSpace base, XrTime t, float q[4], float p[3
     return true;
 }
 
+// ---- HAPTICS ---------------------------------------------------------------
+// THE ACTIONS HAVE EXISTED SINCE MOTION CONTROLS SHIPPED AND NOTHING HAS EVER
+// FIRED ONE. haptic_l and haptic_r are created in MakeAction and bound in every
+// interaction profile below; there was simply never a caller. This is it.
+//
+// Holsters, the two-handed grip and the wrench all want the same thing: a short
+// confirmation buzz on ONE hand at the moment a gesture is recognised. A gesture
+// you cannot feel lands is one you second-guess and repeat.
+//
+// FAILS SILENTLY BY DESIGN, and the log line is throttled to the first failure.
+// A runtime with no haptic support, a controller that has gone to sleep, or a
+// session without focus all return non-success here, and none of them is worth a
+// per-gesture log line -- let alone refusing the gesture that triggered it.
+void Input_Pulse(int hand, float amplitude, int ms)
+{
+    if (!g_xrReady) return;
+
+    const XrAction a = (hand == HAND_RIGHT) ? g_aHapticR : g_aHapticL;
+    if (a == XR_NULL_HANDLE) return;
+
+    if (amplitude < 0.0f) amplitude = 0.0f;
+    if (amplitude > 1.0f) amplitude = 1.0f;
+    if (ms < 1) ms = 1;
+    if (ms > 2000) ms = 2000;          // a stuck buzz is worse than no buzz
+
+    XrHapticVibration v = { XR_TYPE_HAPTIC_VIBRATION };
+    v.amplitude = amplitude;
+    v.duration = (XrDuration)ms * 1000000LL;    // ms -> nanoseconds
+    v.frequency = XR_FREQUENCY_UNSPECIFIED;
+
+    XrHapticActionInfo hi = { XR_TYPE_HAPTIC_ACTION_INFO };
+    hi.action = a;
+    hi.subactionPath = XR_NULL_PATH;
+
+    const XrResult r =
+        xrApplyHapticFeedback(g_sess, &hi, (const XrHapticBaseHeader*)&v);
+
+    if (r != XR_SUCCESS)
+    {
+        static bool told = false;
+        if (!told)
+        {
+            told = true;
+            Log(">>> INPUT: xrApplyHapticFeedback -> %d. Haptics are off for "
+                "this session; gestures still work.", (int)r);
+        }
+    }
+}
+
 void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
 {
     if (!g_xrReady) return;
@@ -603,6 +656,163 @@ void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
 }
 
 // ---------------------------------------------------------------- the detour
+
+// ===========================================================================
+//  TURN RESPONSE -- WHY THE SAME PUSH GAVE A DIFFERENT SPEED
+//
+// REPORTED AS "sometimes it's slow and sometimes it's fast". MEASURED
+// 2026-08-11, 40 samples, and the first hypothesis died cleanly: CalcView ran at
+// 142-239 calls/s and the turn rate showed NO correlation with it at all -- at
+// ~230 calls/s the rate ranged from 52.9 to 215.6 deg/s. FRAME-RATE DEPENDENCE
+// IS FALSIFIED.
+//
+// What it tracks is stick deflection, and the game's curve is nearly vertical at
+// the very top:
+//
+//     stick 0.90-0.93 ->  64-72 deg/s        stick 0.99 -> 112-144
+//     stick 0.96-0.97 ->  82-101             stick 1.00 -> 187-216
+//     stick 0.98      ->  94-117
+//
+// A 2% difference in how hard you push DOUBLES the turn rate. So holding it
+// steady feels steady, and releasing and re-pushing lands you somewhere else on
+// a curve that is almost a cliff at the end. Nothing was inconsistent except
+// where on the stick the thumb happened to stop.
+//
+// THE FIX IS TO NEVER SEND THE CLIFF. Remap the deflection into [0, TurnAxisMax]
+// so the steep region is unreachable and the same push always means the same
+// rate. TurnAxisExp shapes the rest of the range: 1.0 is linear, above 1 gives
+// finer control near centre.
+//
+// BOTH ARE INI-TUNABLE, deliberately -- this trades top speed for repeatability
+// and that is a matter of taste, so raising the cap must not need a rebuild.
+//
+// NOT APPLIED TO SNAP TURN OR ModYaw: both bypass this axis entirely and rotate
+// g_aimBase themselves at a rate we already control.
+// ===========================================================================
+//  THE GAME'S MOVEMENT DEADZONE IS SQUARE, AND THAT IS THE WALK DRIFT
+//
+// MEASURED 2026-08-11, and it is in the game's own binding file:
+//
+//   XENON_LTHUMB_XAXIS=Axis xStrafe   Speedbase=1.0 DeadZone=0.225 | ...
+//   XENON_LTHUMB_YAXIS=Axis xForward  Speedbase=1.0 DeadZone=0.225 | ...
+//
+// PER AXIS. Rotating the stick by R to redirect walking MOVES MAGNITUDE BETWEEN
+// THE TWO AXES, and the game then shrinks each axis independently -- so the
+// direction that comes out is not the direction we sent. Modelling the game as
+// out = (|a| - d) / (1 - d) reproduces the logged sent-vs-received pairs exactly,
+// seven for seven:
+//
+//     sent  -72.0 -> predicted -83.4, logged -83.4
+//     sent  -74.7 -> predicted -87.0, logged -87.0
+//     sent  +78.6 -> predicted +90.0, logged +90.0     <- forward lane ZEROED
+//     sent +162.1 -> predicted +173.5, logged +173.6
+//     sent  -13.6 -> predicted  -0.8, logged  -0.8
+//
+// The +-90.0 saturation is the signature: once the forward component falls under
+// 0.225 it is zeroed outright and the walk collapses to pure strafe. The residual
+// clusters at +-11 degrees, inverts with direction, and is worst near 90 where
+// the forward component is smallest -- exactly the reported
+// "turning the controller 90 degrees causes me to walk 10-20 diagonal".
+//
+// ⚠ THIS WAS NEVER A TERM WE FAILED TO CANCEL. R is algebraically exact and
+// always was; the distortion happens AFTER the value leaves us. Three builds of
+// refining the cancellation could not have touched it. When a correction is
+// provably exact and the symptom survives, stop refining the correction and go
+// and measure what the other side actually received.
+//
+// THE INVERSE. For a desired direction u (unit) and magnitude m:
+//
+//     send_i = sign(u_i) * ( |u_i| * m * (1 - d) + d )
+//
+// after which the game recovers exactly u_i * m -- direction exact, magnitude
+// exact. A zero component stays zero, so a pure-forward push is untouched.
+//
+// WHY NOT JUST EDIT User.ini. Those are binding lines carrying several bindings
+// each -- XENON_LTHUMB_XAXIS also holds `Axis xLean DeadZone=0.4` -- the file has
+// multiple binding sections, and the game rewrites it at exit. String surgery
+// there risks breaking the controls outright, for a value we can simply invert.
+static void PrecompStickDeadzone(float* px, float* py)
+{
+    if (!g_cfg.stickPrecomp) return;
+
+    const float d = g_cfg.gameStickDeadzone;
+    if (d <= 0.0f || d >= 0.95f) return;
+
+    float x = *px, y = *py;
+    const float mag = sqrtf(x * x + y * y);
+    if (mag < 1e-4f) return;                    // centred; leave it alone
+
+    // Direction and magnitude are treated separately, because only the direction
+    // is being corrupted -- the magnitude is what the player asked for and must
+    // survive. Magnitude above 1 was already handled by the clamp above.
+    const float ux = x / mag, uy = y / mag;
+    const float m = (mag > 1.0f) ? 1.0f : mag;
+
+    const float sx = (fabsf(ux) < 1e-4f) ? 0.0f
+        : (ux < 0.0f ? -1.0f : 1.0f) * (fabsf(ux) * m * (1.0f - d) + d);
+    const float sy = (fabsf(uy) < 1e-4f) ? 0.0f
+        : (uy < 0.0f ? -1.0f : 1.0f) * (fabsf(uy) * m * (1.0f - d) + d);
+
+    *px = sx; *py = sy;
+}
+
+// The movement-stick angle this detour last handed the game, in degrees, in the
+// game's own (forward, strafe) convention. Read from CalcView by WalkDriftProbe.
+//
+// GAME THREAD both ends in practice -- the detour is called from the game's own
+// input poll -- but seq-locked anyway, because "in practice" is how the last
+// cross-thread bug in this file got in.
+static volatile long g_sentSeq = 0;
+static float         g_sentDeg = 0.0f;
+
+static void PublishSentStickAngle(float mx, float my)
+{
+    // mx is the STRAFE lane (sThumbLX) and my the FORWARD lane (sThumbLY), so the
+    // angle is atan2(strafe, forward) -- the same convention ReceivedStickAngle
+    // reads out of aStrafe/aForward, or the two would not be comparable. A pure
+    // forward push rotated by R comes out of this as exactly R.
+    float d = 0.0f;
+    if (fabsf(mx) + fabsf(my) > 0.001f)
+        d = atan2f(mx, my) * (180.0f / 3.14159265f);
+
+    _InterlockedIncrement(&g_sentSeq);
+    MemoryBarrier();
+    g_sentDeg = d;
+    MemoryBarrier();
+    _InterlockedIncrement(&g_sentSeq);
+}
+
+bool Input_GetSentStickAngle(float* outDeg)
+{
+    if (!outDeg) return false;
+    for (int t = 0; t < 8; ++t)
+    {
+        const long s0 = g_sentSeq;
+        if (s0 & 1) continue;
+        MemoryBarrier();
+        const float v = g_sentDeg;
+        MemoryBarrier();
+        if (g_sentSeq == s0) { *outDeg = v; return true; }
+    }
+    return false;
+}
+
+static inline float TurnResponse(float v)
+{
+    const float dead = g_cfg.stickDeadzone;
+    const float a = fabsf(v);
+    if (a <= dead) return 0.0f;
+
+    // Renormalise so the curve spans the USABLE range. Without this the exponent
+    // would be applied to a value that never reaches 0 at the bottom.
+    float t = (a - dead) / (1.0f - dead);
+    if (t > 1.0f) t = 1.0f;
+
+    if (g_cfg.turnAxisExp != 1.0f) t = powf(t, g_cfg.turnAxisExp);
+
+    const float out = t * g_cfg.turnAxisMax;
+    return (v < 0.0f) ? -out : out;
+}
 
 static inline SHORT ToAxis(float v)
 {
@@ -752,40 +962,105 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     {
         float mx = s.moveX, my = s.moveY;
 
-        // GATING. Head-relative rotation is for LOCOMOTION only. The radial
-        // wheels and menus read this same stick as a screen-relative direction
-        // -- rotating it there means stick-up stops selecting the top entry
-        // whenever your head is turned. Theater and non-gameplay contexts get
-        // the raw stick too.
-        // AND NOT WHEN THE AIM ALREADY CARRIES THE HEAD. This rotation exists to
-        // make "forward" mean "where I am looking" while the aim field carries
-        // the CONTROLLER. The moment the aim carries the head instead -- movement
-        // mode 0, or empty hands -- the head is already in the walk direction and
-        // doing it again applies it TWICE. Measured as "turning 90 degrees left
-        // almost moves you backwards": 90 twice is 180.
+        // ---- MOVEMENT MODE: ROTATE THE STICK, NEVER THE AIM FIELD -----------
+        // The game measures the walk direction from the aim field and then
+        // applies the stick angle, so adding R to the stick redirects walking
+        // while leaving aim, the weapon trace and forced-move sequences alone:
         //
-        // Asking CameraHook rather than re-deriving it here is deliberate: the
-        // two halves of this must never disagree about which source is live.
-        const bool headRelOk =
-            (g_cfg.movementMode == 1) &&
-            !CameraHook_AimUsesHead() &&
+        //     walk = aimFieldYaw + stickAngle + R
+        //
+        // R IS NOT COMPUTED HERE ANY MORE, and that is the fix for a residual
+        // coupling the tester measured as "subtle, and inverse of where you are
+        // pointing". It used to be built from the head yaw and the controller's
+        // offset, on the assumption that the aim field holds their SUM. It does
+        // not: the field is written by ComposeHeadLocal, a basis multiplication,
+        // whose yaw depends on the pitch as well. The error was zero only when
+        // the controller was perfectly level.
+        //
+        // CameraHook now computes R at the write site, from the rotators it
+        // actually wrote, and publishes one number. It cancels the composition
+        // by construction at any pitch, and the mode table lives next to the
+        // values it is about. See the banner above PublishWalkRotation.
+        //
+        // WHY THIS IS NOT GRAVEYARD ENTRY 13. That entry says no arrangement of
+        // Controller.Rotation separates view, weapon trace and walk direction.
+        // True -- and this arranges nothing: the field is never written here. It
+        // binds AIM. Locomotion was always separable and mode 3 has been doing it
+        // by this exact mechanism since HeadRelativeMove shipped.
+        //
+        // GATING. This is for LOCOMOTION only. The radial wheels and menus read
+        // this same stick as a SCREEN-relative direction -- rotating it there
+        // means stick-up stops selecting the top entry whenever your head is
+        // turned. Theater and non-gameplay contexts get the raw stick too. These
+        // gates used to apply to mode 1 alone; all four need them.
+        const bool stickRotOk =
             g_cfg.headTracking &&
             !menuUp &&
             !gripLOn && !gripROn &&
             !GameState_Theater();
 
-        if (headRelOk)
+        bool rotated = false;
+        if (stickRotOk && g_cfg.movementMode != 1)
         {
-            float hy = 0.0f;
-            if (CameraHook_GetHeadYawOffset(&hy))
+            float R = 0.0f;
+            if (CameraHook_GetWalkRotation(&R))
             {
-                const float r = hy * 0.01745329f;      // deg -> rad
+                const float r = R * 0.01745329f;      // deg -> rad
                 const float c = cosf(r), sn = sinf(r);
                 const float nx = mx * c + my * sn;
                 const float ny = -mx * sn + my * c;
                 mx = nx; my = ny;
+
+                // ---- KEEP THE SPEED THE PLAYER ASKED FOR --------------------
+                // ToAxis() clamps each component to +-1 INDEPENDENTLY, so the
+                // pair the game receives is a SQUARE while this rotation is
+                // circular. A full diagonal push has magnitude 1.41; rotate it
+                // onto an axis and that component is clipped back to 1.0, and
+                // how much gets clipped depends on the angle. Reported as
+                // "you speed up when the controller is turned in certain
+                // directions".
+                //
+                // Scaling by 1/max preserves the DIRECTION and caps speed
+                // uniformly, which is the honest reading of the stick. Clipping
+                // would change the direction as well as the speed.
+                //
+                // PREDATES THE FOUR MODES: HeadRelativeMove has rotated the
+                // stick this way since it shipped and had the same artifact.
+                const float ax = fabsf(mx), ay = fabsf(my);
+                const float peak = (ax > ay) ? ax : ay;
+                if (peak > 1.0f)
+                {
+                    const float k = 1.0f / peak;
+                    mx *= k; my *= k;
+                }
+
+                rotated = true;
             }
         }
+
+        // ---- PUBLISH THE ANGLE WE INTEND THE GAME TO WALK AT ---------------
+        // For WalkDriftProbe, which lives in CalcView and cannot see the stick.
+        // Without this it had to assume the player was pushing exactly forward,
+        // and that assumption was worth +-7 degrees of noise -- as large as the
+        // drift being hunted.
+        //
+        // BEFORE the deadzone pre-compensation on purpose. This is the direction
+        // we WANT, so `recv - sent` reads as the error the game introduced --
+        // which is the whole point of the probe, and is what proves the
+        // compensation worked rather than merely changed something.
+        //
+        // The game's axes are (forward, strafe) and its yaw grows from +X toward
+        // +Y, so the stick angle is atan2(strafe, forward) with forward = my.
+        // Published even when centred, as 0, so a stale value cannot masquerade
+        // as a push.
+        PublishSentStickAngle(mx, my);
+
+        // ONLY WHEN WE ROTATED. With no rotation the game's own square deadzone
+        // acts on an unrotated stick exactly as it always has, which is the
+        // vanilla feel the player already knows -- compensating there would
+        // change something that is not broken. The distortion only appears once
+        // rotation moves magnitude between the two axes.
+        if (rotated) PrecompStickDeadzone(&mx, &my);
         out->Gamepad.sThumbLX = ToAxis(mx);
         out->Gamepad.sThumbLY = ToAxis(my);
     }
@@ -814,7 +1089,7 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
         const bool modOwnsTurn =
             (g_cfg.snapTurn || g_cfg.modYaw) && !ScriptedQol();
 
-        out->Gamepad.sThumbRX = modOwnsTurn ? 0 : ToAxis(s.turnX);
+        out->Gamepad.sThumbRX = modOwnsTurn ? 0 : ToAxis(TurnResponse(s.turnX));
     }
 
     // Right-stick Y is normally DROPPED (HeadAimMode=2 erases injected pitch).

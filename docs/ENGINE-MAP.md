@@ -318,6 +318,43 @@ generalise that to scripted sequences; the M7-S4 latch was real.
 The engine's own pose is what a reference capture must read, so every capture is
 gated on `ScaleLooksNormal` — a cluster mid-hide reads back **our** zeroes.
 
+### Confirmed by a second source
+
+An independently developed mod against the same game records the *same* map,
+value for value: wrists 6 and 27, clusters 6–21 and 27–44, both five-bone sleeve
+sets, weapon attach 43, 47 bones, 48-byte transform, skeleton at `+0x3FC`.
+Neither project copied the other.
+
+### Bone 43 → 44 is the barrel axis — MEASURED 2026-08-11
+
+Bone 43 is the weapon attach point and 44 is the tip of that chain, so **the gun
+barrel and the wrench head are the same read**. That collapsed two planned
+cycles into one.
+
+Measured on the machine gun: the separation holds a rigid length of **24.40**
+across every dump while the components rotate (`17.5, 12.9, 11.1` → `12.6, 7.7,
+-19.4`), which is what one bone in a live array looks like.
+
+> **This DISAGREES with the second source**, which recorded *"bone 44 muzzle-ish
+> tip at x = +71"*. Ours is nowhere near 71 in any lane. Use the measurement,
+> not the prediction — and treat the length, not the components, as the invariant.
+
+### The bone-name map — offset confirmed, element type still open
+
+`SkeletonInstance + 0x08` → `SharedSkeletonData`, `+0xAC` → an array, read as a
+TArray `{data, count, max}`. Measured: `count 47, max 78`, and **47 is exactly
+the bone count located by the independent `+0x4C` route** — that agreement is
+what makes the offset trustworthy.
+
+**The element type is not 4-byte `FName`s.** Read that way the entries come back
+`-1, 26659, 0, 0 / -1, 35607, 0, 1 / -1, 17127, 0, 2` — a period-4 pattern whose
+last lane counts up, i.e. ≥16-byte records with an index field, read four bytes
+at a time. The probe now dumps raw bytes instead of assuming.
+
+Resolving indices to *text* additionally needs the global name table, which is a
+separate locate. The indices alone are enough for an identity check, since two
+different skeletons cannot share all 47.
+
 ---
 
 ## Storefront divergence
@@ -382,6 +419,66 @@ Rows observed adjacent to the property accessors, in order: `execGotoState`,
 This is a **general** mechanism, not a one-off: any native the engine registers
 can be reached the same way, by its `int<Class>exec<Func>` name. Locate by that
 string, never by the row's RVA — the row moves between storefronts (table above).
+
+### The class prefix is part of the needle — `A` for actors, `U` for objects
+
+`UObject` subclasses register as `intU<Class>exec<Func>`; **`AActor` subclasses
+register as `intA<Class>exec<Func>`**. `LevelInfo` is an actor, so its natives
+are `intALevelInfoexec…`. Two rows were first written with `U`, and both came
+back `NOT FOUND — no symbol string` — a *stage 1* miss, so the four property
+accessors located normally in the same run and nothing looked broken.
+
+### Validate a needle offline before spending a headset cycle on it
+
+The whole table is enumerable from the shipped executable: **1,823**
+`int…exec…` UTF-16 strings in `.rdata`. Scanning for one takes seconds and
+answers exactly the question a failed run would. Measured in
+`Build/Final/BioshockHD.exe` (Steam, 21,214,720 bytes):
+
+| File offset | Symbol |
+|---|---|
+| `0x00E06638` | `intALevelInfoexecGetFlashGUIController` |
+| `0x00E064E0` | `intALevelInfoexecFlashGUIControllerExists` |
+
+### The Flash interface API
+
+`UFlashGUIController` registers **51** natives. Located and confirmed live:
+
+| Native | RVA (Steam) |
+|---|---|
+| `GetFlashGUIController` (on `ALevelInfo`) | `0x3A4B30` |
+| `FlashGUIControllerExists` (on `ALevelInfo`) | `0x3A4B80` |
+| `GetTopPlayingMovie` | `0x43E270` |
+| `HideMovie` | `0x43DAC0` |
+| `IsPausedInterfaceActive` | `0x43B200` |
+
+**Neither getter needs calling.** Both are four-instruction field walks, decoded
+from their own code bytes — see `docs/modules/gamestate.md` and the
+`M6-S5: WHICH INTERFACE SCREEN IS UP` banner in `Game/GameState.cpp`:
+
+```
+GetFlashGUIController, this = LevelInfo:
+  [this+0xFC] -> +0x5C -> +0x4C -> (bail if [+0x48] == 0) -> +0x44 -> deref -> +0x7C
+
+GetTopPlayingMovie, this = FlashGUIController:
+  count = [this+0x15C]   data = [this+0x158]   top = data[count-1]
+```
+
+`Actor::Level` is `+0xF8`, self-referential — see *Pause / full-menu detection*.
+
+### `AWeapon::GetPerfectFireStart` — vtable slot `+0x304`
+
+Returns the shot origin and rotation, which **answers M4-S3 by asking instead of
+inferring**. Read off the held weapon's vtable, so no hardcoded RVA and no
+storefront exposure.
+
+Measured 2026-08-11: slot `+0x304` → `0x0FB96840`, module base `0x0F970000`, so
+**rva `0x226840`** — *exactly* the figure an independently developed mod recorded
+for the same function. Two projects, no shared code, same address. Valid MSVC
+prologue `55 8B EC 83 EC 18 53 56`.
+
+**Located, never called.** A `__thiscall` returning a struct by hidden pointer is
+the shape that unbalanced the stack in that other project.
 
 ## CalcView call sites
 

@@ -69,7 +69,7 @@ of stale shim duplicates once survived.
 
 ## Modules
 
-### `Core/dllmain.cpp` (243) — entry point and logging
+### `Core/dllmain.cpp` (304) — entry point and logging
 Finds a writable place for the log (harder than it sounds), and runs the init
 thread that loads config, syncs the game ini and arms the hooks.
 **Owns the build stamp** (`dllmain build:`) — a hand-written label plus
@@ -77,20 +77,20 @@ thread that loads config, syncs the game ini and arms the hooks.
 will not advance for a change in another file and the log will identify the
 wrong build.
 
-### `Core/Config.h` / `Core/Config.cpp` (214 / 481) — every setting, one struct
+### `Core/Config.h` / `Core/Config.cpp` (394 / 670) — every setting, one struct
 ~139 settings in `struct VrConfig`, one instance `g_cfg`, read from
 `BioshockVR.ini` and echoed at startup. That echo is the authority on what
 actually took effect. Replaced 138 loose globals and 161 duplicated `extern`
 declarations across the consumers.
 → **`docs/modules/config.md`** when adding a setting or chasing a default mismatch.
 
-### `Render/Hooks.cpp` (719) — D3D11 acquisition and frame orchestration
+### `Render/Hooks.cpp` (821) — D3D11 acquisition and frame orchestration
 Creates a throwaway device+swapchain to read the shared vtable, MinHooks
 `Present` (slot 8), and routes each frame between the stereo and mono paths.
 Owns the deferred install of the draw hooks.
 → **`docs/modules/render.md`**
 
-### `Render/XRSession.cpp` (1241) — OpenXR session, swapchains, submission
+### `Render/XRSession.cpp` (1456) — OpenXR session, swapchains, submission
 Session lifecycle, view location, projection layer, crosshair quad, HUD quad,
 menu/mono path, and the per-call timing breakdown that solved the frame-pacing
 work. Publishes head pose to the game thread via seqlock.
@@ -100,7 +100,7 @@ were recoverable after the marker key turned out to be dead. Keep a logging path
 if the sweep is ever optimised.
 → **`docs/modules/render.md`**
 
-### `Camera/CameraHook.cpp` (2525) — the camera seam ⚠️ largest file
+### `Camera/CameraHook.cpp` (3759) — the camera seam ⚠️ largest file
 Finds `APlayerController::eventPlayerCalcView` by an FName/string chain (never a
 hardcoded RVA), hooks it, and writes the camera the engine actually renders.
 Also owns the eye FIFO, the latched-pose channel, motion aim, head aim, snap
@@ -112,7 +112,7 @@ a line number: `module scan`, `the six stages`, `basis math`, `motion aim state`
 `delta scan`, `install`.
 → **`docs/modules/camera.md`** for anything touching view, aim, or turning.
 
-### `Hud/DrawHook.cpp` (1893) — draw classification and HUD capture ⚠️ second largest
+### `Hud/DrawHook.cpp` (2161) — draw classification and HUD capture ⚠️ second largest
 Hooks `DrawIndexed`/`Draw`/instanced variants and `OMSetRenderTargets`.
 Classifies draws, redirects the interface run to a private render target with
 its own D24S8, repairs HUD alpha, suppresses the reticle and cutscene bars.
@@ -125,14 +125,14 @@ Banners: `the classifier`, `capture surfaces`, `ALPHA REPAIR`,
 `menu detection`, `ANCHOR list`.
 → **`docs/modules/hud.md`** — mandatory before changing anything in the capture path.
 
-### `Input/InputHook.cpp` (1200) — OpenXR actions → synthetic XInput
+### `Input/InputHook.cpp` (1655) — OpenXR actions → synthetic XInput
 Producer on the render thread (one action set, synced per XR frame, published
 through a seqlock); consumer is the `XInputGetState` detour. Owns hand poses,
 the d-pad modifier, pause/help chords, head-relative movement, grip
 threshold/hysteresis.
 → **`docs/modules/input.md`**
 
-### `Game/GameState.cpp` (2093) — the game's own state, and the signals that work
+### `Game/GameState.cpp` (2560) — the game's own state, and the signals that work
 **This file now owns the project's working scripted-event detection.** Three
 Tier 0 signals, all measured, all read-only, all published through the same
 interlocked channel as `g_paused`:
@@ -163,7 +163,7 @@ DETECTION`, `PAWN FRESHNESS`, `FLOAT SNAPSHOT / DIFF PROBE`, `FOV AUTO-DIFF`.
 `GameState_Observe` is also where `EngineBridge_Tick` is driven.
 → **`docs/modules/gamestate.md`** — read before any cutscene-detection idea.
 
-### `Game/EngineBridge.cpp` (553) — the native call bridge (Tier 1)
+### `Game/EngineBridge.cpp` (718) — the native call bridge (Tier 1)
 **Locate only. Nothing here calls into the engine.** Finds the engine's native
 property accessors by their `int<Class>exec<Func>` registration symbol: the wide
 string appears once in `.rdata`, exactly one 12-byte row in `.data` points at
@@ -176,14 +176,14 @@ Banners: `module`, `the targets`, `stage 1`…`stage 4`, `the dump`, `the sessio
 → **`docs/modules/enginebridge.md`** before calling anything, and before
 assuming the signature — it takes an `FFrame`, not a string.
 
-### `Hands/HandsProbe.cpp` (1489) — pawn/hands/weapon discovery
+### `Hands/HandsProbe.cpp` (2046) — pawn/hands/weapon discovery
 Three-stage positional identification: pawn by proximity to the camera, Hands by
 matching camera position *and* view rotator simultaneously. Per-weapon grip and
 cursor offsets, live numpad tuning that saves back to the INI, weapon-slot and
 plasmid-mode detection.
 → **`docs/modules/hands.md`**
 
-### `Hands/ArmHide.cpp` (527) — sleeve/hand suppression, motion, whole-actor hide
+### `Hands/ArmHide.cpp` (1321) — sleeve/hand suppression, motion, whole-actor hide
 Collapses ten sleeve bones to zero scale at the skeleton, leaving the 34
 hand/finger bones and the weapon attachment alone. Fail-closed: two vtables
 verified, skeleton ownership checked, bone count must be exactly 47.
@@ -198,14 +198,14 @@ so hiding by bone would freeze the very bone the motion sampler reads. That
 combination produced a bistable latch once already.
 → **`docs/modules/hands.md`**
 
-### `Input/Swing.cpp` (193) — physical wrench gesture
+### `Input/Swing.cpp` (222) — physical wrench gesture
 Head-relative hand velocity → synthetic right-trigger pulse, composed with the
 physical trigger. Borrows the stock melee system whole; does not simulate
 collision. Gated on `HandsProbe_WeaponSlot() == 0`, so it is dead if the hands
 probe is disabled.
 → **`docs/modules/hands.md`**
 
-### `Game/EngineExec.cpp` (242) — the Unreal `Exec` seam
+### `Game/EngineExec.cpp` (274) — the Unreal `Exec` seam
 Runs console commands through `UGameEngine::Exec`. `set` writes the class
 default, so it survives respawn, level change and save reload — which is why the
 reticle kill uses it. **Now also reads**: per-slot output-device thunks, with
@@ -215,12 +215,31 @@ instance state — which is what `EngineBridge` exists to get past. Three absolu
 addresses, INI-overridable, vtable-verified.
 → **`docs/modules/gamestate.md`**
 
-### `Game/GameIni.cpp` (191) — game config synchronisation
+### `Game/ExecQueue.cpp` (146) — one owner for "tell the engine to do something"
+
+Wraps `EngineExec_Run` with the **thread rule**, which is the reason it exists:
+`ExecQueue_Tick()` drains one command per frame on the **game thread** (from
+`GameState_Observe`, beside `Reticle_Tick`); `ExecQueue_Post()` is the only entry
+point safe from **any** thread and merely copies into a fixed 16-slot ring.
+`ExecQueue_RunStartupCommands()` fires the ini's `ExecCommand1..8` once.
+
+Load `docs/modules/gamestate.md` when a feature needs to issue a console command,
+especially from a detection made on the XR thread.
+
+### `Input/Zone.h` (68) — arm / fire / re-arm, header-only
+
+A threshold with hysteresis that cannot re-fire until the measurement has left and
+come back, plus a `dt` guard that **drops** a sample across a tracking gap rather
+than measuring through it. `Swing.cpp` implements the same pattern by hand;
+holsters and two-handed grip are the intended consumers. Stateless across
+instances — each consumer owns a `Zone` by value.
+
+### `Game/GameIni.cpp` (234) — game config synchronisation
 Pushes FOV and viewport size into the game's `Bioshock.ini` so the mod's reported
 FOV and the rendered image can never drift. Writes five keys, touches nothing else.
 → **`docs/modules/packaging.md`**
 
-### `Core/Keybinds.cpp` (217) — rebindable keys ⚠️ **dead code, and it bites**
+### `Core/Keybinds.cpp` (256) — rebindable keys ⚠️ **dead code, and it bites**
 Complete and correct, with **zero callers — `Key_Init` is never invoked**, so
 every binding resolves to VK 0 and `Key_Down`/`Key_Fired` always return false.
 Every key check in the codebase is a raw `GetAsyncKeyState`, which is why the
@@ -232,7 +251,7 @@ zero presses for a full headset cycle, with no error anywhere. Bind with
 fix, not deleting it — it also ships rebinding for users with no numpad.
 → **`docs/modules/input.md`**
 
-### `OpenXRShim/src/` (1840 across 3 files + header) — OpenXR over OpenVR
+### `OpenXRShim/src/` (2039 across 3 files + header) — OpenXR over OpenVR
 A separate project producing `openxr_loader.dll`. Implements exactly the 36
 OpenXR exports the mod imports (see `OpenXRShim/exports.def`), backed by
 SteamVR, because SteamVR's own OpenXR runtime has no 32-bit support. Projection
@@ -240,7 +259,7 @@ layers are re-composited as textured quads at 50 m using the real HMD frustum.
 Generates its own SteamVR action manifest and per-controller bindings.
 → **`docs/modules/shim.md`** — mandatory before adding any OpenXR call.
 
-### `dxgiproxy/` (191) — the loader
+### `dxgiproxy/` (220) — the loader
 Minimal `dxgi.dll` proxy: the game imports `CreateDXGIFactory1` from `DXGI.dll`,
 Windows checks the exe's own folder first, so this wins and pulls in
 `BioshockVR.dll` before handing the call to the real system DXGI. Loading happens
@@ -261,6 +280,9 @@ code does not keep, and two of them have already cost a session.
 | **`GameState_Reset`** | **Nothing calls it.** So the "clear cached state at level load and save reload" story is not actually wired anywhere — the only lifetime reset that runs is the per-consumer one. Check this before trusting any "reset at boundaries" claim. |
 | `GameState_ScriptedSequence`, `GameState_RadialOpen` | Providers with no consumers. "Everything downstream is built and waiting" is true of the *features*, not of these two predicates — nothing would light up even if the scan locked. |
 | `EngineBridge_GetPropertyTextByName`, `EngineBridge_GetPropertyText` | **Deliberate, and the deliberateness expires.** M3-S1 ships the address with no caller on purpose — locating and calling have different risk profiles. M3-S2 is what gives them one. If S2 has come and gone and these are still uncalled, something was dropped. |
+| **`CameraHook_OwnsAimField`** | **Became dead on 2026-08-11 and should be reviewed, not assumed.** It was InputHook's gate until the walk rotation moved to the aim write site, where the same question is answered by *which call site fires*. The concept is still load-bearing; the exported function is not. Delete it or give it a caller — do not leave it looking like a live gate. |
+| `Input_Pulse` | **Deliberate seam, expires like the M3 rows below.** First and only haptic call in the tree; holsters, two-handing and the wrench are the intended callers. If those land and this is still uncalled, it was forgotten. |
+| `ExecQueue_Post` | Same: the any-thread entry exists for a holster detection on the XR thread that does not exist yet. `ExecQueue_Tick` and `_RunStartupCommands` are both wired. |
 | `EngineExec_GetLastOutput` | The console read channel works; nothing reads its result programmatically. |
 | `DrawHook_CutsceneBarsActive` | Cutscene-bar detection with no consumer. |
 | `Hooks_Remove`, `DrawHook_Remove`, `CameraHook_Remove`, `XR_Shutdown` | **There is no teardown path at all.** The mod is never cleanly unloaded; the process just exits. Fine today, relevant the moment anything wants to re-init. |

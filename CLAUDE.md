@@ -46,8 +46,8 @@ to and why.
 search across many files would actually help. A cold subagent re-derives context
 you already hold; it is the most expensive move available here.
 
-Avoid whole-file reads over ~400 lines — `CameraHook.cpp` (2263) and
-`DrawHook.cpp` (1893) are ~45k tokens together. Grep the banner anchor and read a
+Avoid whole-file reads over ~400 lines — `CameraHook.cpp` (3759) and
+`DrawHook.cpp` (2161) are ~60k tokens together. Grep the banner anchor and read a
 window. If the window genuinely isn't enough, read more; under-reading is worse.
 
 **Current arc:** live state → cutscene detection → QOL. Findings and design in
@@ -76,7 +76,11 @@ this file so the check costs nothing.
 10. **`AimSource=2`** cannot exist — the game's heading freezes permanently.
 11. **Body-follow yaw servo** — ported from the reference mod; did not feel right.
 12. **`ModYaw` alone** — zeroing `sThumbRX` freezes `Controller.Rotation`, which forced-move sequences steer by. The opening bathysphere walks into the back wall.
-13. **The coupling is structural** — `Controller.Rotation` (`+0x1E4`) drives view, weapon trace *and* walk direction. No arrangement of that one field separates them.
+13. **The coupling is structural — TRUE OF AIM ONLY.** `Controller.Rotation` (`+0x1E4`) drives view, weapon trace *and* walk direction, and no arrangement of that one field separates the first two. **Locomotion was always separable** and is now solved: rotate the movement *stick*, never the field. Do not cite entry 13 against a locomotion idea.
+
+*Walking:*
+14. **Refining the stick rotation** to remove the residual walk drift. `R` was algebraically exact from the first attempt; the distortion was the game's own **square (per-axis) deadzone of 0.225** applied after the value left us, reproduced seven for seven. Fixed by pre-compensation. **When a correction is provably exact and the symptom survives, go and measure what the other side received.**
+15. **`WalkFromPawnYaw`** — the pawn's rotator tracks the aim field exactly, 60 of 62 samples at `+0.0` under a held 76° offset.
 
 *HUD:* the scene-sampling leak guard, `DrawHook_NoWorldRender()`,
 `g_gameplayConfirmed`, `MenuMaxIndexed=0` — all dead. The square was solved by one

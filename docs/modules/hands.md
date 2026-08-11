@@ -94,6 +94,36 @@ no single value serves both.
 `ArmHide_Reset()` deliberately does **not** restore first — by the time a reset is
 reported the old actor may already be destroyed and its address reused.
 
+### The motion gate, and the bone it is allowed to sample
+
+Arms and hands appear during a scripted sequence only while the rig is actually
+*animating*, because the script has no usable flag for it (`ArmHide.h` lists the
+falsified ones). `ArmHide_HandMotion()` answers it by differencing one wrist
+bone's position and rotation between calls.
+
+**Which wrist is not a constant, and must not become one again.** It is the wrist
+of the cluster the free-hand drive is **not** writing:
+
+| Free hand being driven | Bone sampled |
+|---|---|
+| right (a plasmid is equipped) | 6, the left wrist |
+| left, or nothing driven | 27, the right wrist |
+
+It was fixed at 27 until 2026-08-11, which is inside the right cluster — the
+driven one during every plasmid scene. The gate was measuring the mod's own
+writes, `raw` read **exactly** `0.0000` for 189 consecutive samples, and the arms
+stayed hidden for the whole balcony scene. Little Sister was unaffected because a
+weapon is equipped there, so the *left* hand is the free one and bone 27 stays
+the engine's.
+
+The opposite wrist was chosen over bones 0–2 (the only ones outside every cluster
+and sleeve set) because those are root and spine and may not move during a *hand*
+animation at all — which is the entire signal. The motion history resets on every
+switch, since the distance between two different bones is not motion.
+
+`>>> SCRIPTED: motion` prints the bone it sampled, because a run of zeros is only
+interpretable if you know whether it came from a bone we were writing.
+
 ## Animation
 
 `IdleAnimMode=1` suppresses the wrench slap while keeping a normal fidget. More

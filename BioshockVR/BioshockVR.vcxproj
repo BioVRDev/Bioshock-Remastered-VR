@@ -149,6 +149,7 @@
     <ClCompile Include="Hud\DrawHook.cpp" />
     <ClCompile Include="Game\EngineBridge.cpp" />
     <ClCompile Include="Game\EngineExec.cpp" />
+    <ClCompile Include="Game\ExecQueue.cpp" />
     <ClCompile Include="Game\GameIni.cpp" />
     <ClCompile Include="Game\GameState.cpp" />
     <ClCompile Include="Hands\HandsProbe.cpp" />
@@ -165,6 +166,7 @@
     <ClInclude Include="Hud\DrawHook.h" />
     <ClInclude Include="Game\EngineBridge.h" />
     <ClInclude Include="Game\EngineExec.h" />
+    <ClInclude Include="Game\ExecQueue.h" />
     <ClInclude Include="Game\GameIni.h" />
     <ClInclude Include="Game\GameState.h" />
     <ClInclude Include="Hands\HandsProbe.h" />
@@ -172,6 +174,7 @@
     <ClInclude Include="Input\InputHook.h" />
     <ClInclude Include="Core\Keybinds.h" />
     <ClInclude Include="Input\Swing.h" />
+    <ClInclude Include="Input\Zone.h" />
     <ClInclude Include="Render\XRSession.h" />
   </ItemGroup>
   <ItemGroup>

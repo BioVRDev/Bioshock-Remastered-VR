@@ -222,17 +222,55 @@ static Accessor g_acc[] =
     // LevelInfo declares the getter as a NATIVE:
     //     native final function FlashGUIController GetFlashGUIController();
     // and M3-S1 proved ANY registered native is findable by its
-    // int<Class>exec<Func> string. So this row costs nothing but a needle.
+    // int<prefix><Class>exec<Func> string. So this row costs nothing but a
+    // needle -- provided the needle is spelled right, which cost a cycle.
+    //
+    // THE PREFIX IS PART OF THE NEEDLE, AND IT IS THE CLASS'S OWN. UObject
+    // subclasses take U; ACTOR subclasses take A. LevelInfo is an Actor. Both
+    // rows below were written with U and both came back "NOT FOUND -- no symbol
+    // string" in Run 1 -- a stage-1 miss, which is why the four accessors above
+    // located normally in the same run and nothing looked broken.
+    //
+    // VERIFY A NEEDLE OFFLINE BEFORE SPENDING A HEADSET CYCLE ON IT. The whole
+    // table is 1,823 int<..>exec<..> wide strings in .rdata; scanning the
+    // shipped exe for one takes seconds and answers exactly this question.
+    // Measured 2026-08-11 in Build/Final/BioshockHD.exe (Steam):
+    //     0x00E06638  intALevelInfoexecGetFlashGUIController
+    //     0x00E064E0  intALevelInfoexecFlashGUIControllerExists
     //
     // WE DO NOT NEED TO CALL IT, which matters because calling still needs a
     // constructed bytecode frame (M3-S2, never run). A getter this simple just
     // loads a field off `this` -- so DUMP ITS CODE and read the offset straight
     // out of the instruction. Static analysis of four instructions, the same
     // move that located these functions in the first place.
-    { L"intULevelInfoexecGetFlashGUIController", "GetFlashGUIController",
+    { L"intALevelInfoexecGetFlashGUIController", "GetFlashGUIController",
       nullptr, 0, nullptr, 0, nullptr, 0, true },
-    { L"intULevelInfoexecFlashGUIControllerExists", "FlashGUIControllerExists",
+    { L"intALevelInfoexecFlashGUIControllerExists", "FlashGUIControllerExists",
       nullptr, 0, nullptr, 0, nullptr, 0, true },
+
+    // ---- THE MOVIE API -- M6-S5's real target, and a CUTSCENE lead --------
+    // Found while checking the two rows above: UFlashGUIController registers 51
+    // natives, and the interface is driven entirely through named Flash movies.
+    //
+    // GetTopPlayingMovie is literally "which screen is up". HideMovie is the
+    // mechanism STATE.md lead 3 has been suspecting since M1-S2 falsified
+    // bHideHUD: the HUD demonstrably hides while that bit never moves, and
+    // ShockPlayer.uc calls exactly this during the Little Sister rescue.
+    // IsPausedInterfaceActive answers pause without the draw-signature
+    // heuristic that flipped 12 times in one spot during gameplay.
+    //
+    // LOCATE ONLY. CALLED: NONE. Every one of these is an exec native taking an
+    // FFrame, so calling any of them is M3-S2 -- which has a second-source
+    // negative and is not attempted here. Their addresses are worth having
+    // before there is anything to do with them, because the locate is free and
+    // proves the needles while a run is happening anyway.
+    { L"intUFlashGUIControllerexecGetTopPlayingMovie", "GetTopPlayingMovie",
+      nullptr, 0, nullptr, 0, nullptr, 0, true },
+    { L"intUFlashGUIControllerexecHideMovie", "HideMovie",
+      nullptr, 0, nullptr, 0, nullptr, 0, false },
+    { L"intUFlashGUIControllerexecIsPausedInterfaceActive",
+      "IsPausedInterfaceActive",
+      nullptr, 0, nullptr, 0, nullptr, 0, false },
 };
 static const int kAccessors = (int)(sizeof(g_acc) / sizeof(g_acc[0]));
 
