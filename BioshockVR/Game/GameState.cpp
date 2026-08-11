@@ -473,6 +473,7 @@ static void ForcedMoveReset();
 static void ScriptedAnimTick();
 static void BathysphereTick();
 static void ForcedMoveFlagTick(const uint8_t* controller);
+static void ScriptedWindowProbe(const uint8_t* controller);
 
 // ---- WORLD FOV CEILING ---------------------------------------------------
 // MEASURED: a vita chamber respawn drives controller+0x45C from 75 to 139.9,
@@ -960,6 +961,10 @@ void GameState_Observe(void* playerController)
 
     // M7-S6. The forced-move window -- the entry stall.
     ForcedMoveFlagTick((const uint8_t*)playerController);
+
+    // Which signal separates a scripted sequence you can WALK THROUGH from one
+    // that owns you. Read-only, throttled, and silent outside the window.
+    ScriptedWindowProbe((const uint8_t*)playerController);
 
     // M7-S1. Differential probe for a scripted-event flag. Read-only, gates
     // nothing, and default-off -- it is the only periodic diff in the mod.
@@ -2140,6 +2145,75 @@ static void ForcedMoveFlagTick(const uint8_t* controller)
             ? "*** the game is moving the player -- aim released ***"
             : "--- forced move done ---");
     }
+}
+
+// ============================================================================
+//  A SCRIPTED SEQUENCE YOU CAN WALK THROUGH
+//
+// REPORTED, full opening playthrough: the Big Daddy kills a splicer, the player
+// is meant to walk around freely for it, and instead got head aim and a
+// rotation that felt locked.
+//
+// The mechanism is understood. That scene sets the M7 scripted-animation bit,
+// so ScriptedAimReleased() fires and the mod stops writing Controller.Rotation
+// -- correct for a sequence that owns you, wrong for one that does not. With the
+// aim released, head-look stops steering and walking follows the game's own
+// heading, which is exactly what "moving around was very strange" describes.
+//
+// So M7's signal answers "is a scripted animation playing". What is needed is
+// "is the player still in control". Until this scene those were the same
+// question.
+//
+// THE TESTER'S OWN OBSERVATION IS THE LEAD: the health and EVE meters were up
+// the whole time, and they are not up in the sequences that do own you. That
+// signal already exists -- DrawHook counts interface draws every frame.
+//
+// This probe prints the candidates side by side so the choice is made from a
+// log rather than from an argument. The raw input axes are in here as the other
+// honest candidate: they are what you ASKED the game for, and geometry cannot
+// false-fire them.
+// ============================================================================
+
+static const size_t kAForwardOff = 0x5C0;   // PlayerController.aForward
+static const size_t kAStrafeOff = 0x5C8;   // PlayerController.aStrafe
+
+bool DrawHook_HudCaptured();               // DrawHook.cpp, render thread
+
+static void ScriptedWindowProbe(const uint8_t* controller)
+{
+    if (!g_cfg.scriptedProbe) return;
+
+    // Silent outside the window it exists to describe.
+    const bool scripted = GameState_ScriptedAnim();
+    static bool wasScripted = false;
+    if (!scripted)
+    {
+        if (wasScripted) Log(">>> SCRIPTEDPROBE: window ended.");
+        wasScripted = false;
+        return;
+    }
+    if (!wasScripted)
+    {
+        wasScripted = true;
+        Log(">>> SCRIPTEDPROBE: window began.");
+    }
+
+    static DWORD last = 0;
+    const DWORD now = GetTickCount();
+    if (now - last < 1000) return;
+    last = now;
+
+    float aFwd = 0.0f, aStr = 0.0f;
+    if (controller && Readable(controller + kAForwardOff, 4))
+        aFwd = *(const float*)(controller + kAForwardOff);
+    if (controller && Readable(controller + kAStrafeOff, 4))
+        aStr = *(const float*)(controller + kAStrafeOff);
+
+    Log(">>> SCRIPTEDPROBE: hud=%d  forced=%d  bathy=%d  aForward=%.1f aStrafe=%.1f",
+        DrawHook_HudCaptured() ? 1 : 0,
+        GameState_ForcedMove() ? 1 : 0,
+        GameState_Bathysphere() ? 1 : 0,
+        aFwd, aStr);
 }
 
 static const size_t kPawnFlagsB = 0x464;

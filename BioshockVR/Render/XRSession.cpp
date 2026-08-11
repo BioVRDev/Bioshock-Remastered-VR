@@ -24,6 +24,7 @@ extern void LogFile(const char* msg);
 
 bool HandsProbe_AbilityMode();          // HandsProbe.cpp
 bool HandsProbe_Armed();                // HandsProbe.cpp -- holding anything?
+bool GameState_ScriptedAnim();          // GameState.cpp -- published for us
 bool CameraHook_GetAimOffset(float* dYawDeg, float* dPitchDeg);
 bool CameraHook_GetLatchedPose(float quat[4], float pos[3]);   // CameraHook.cpp
 void CameraHook_OffsetQuat(const float in[4], const float pyr[3], float out[4]);
@@ -836,10 +837,22 @@ static void SubmitPair(ID3D11Texture2D* leftImg, ID3D11Texture2D* rightImg)
             // CurrentHoldable every frame. Both null is empty. A plasmid counts
             // as armed -- you aim those.
             //
+            // AND NOT DURING A SCRIPTED SEQUENCE. Tying it to empty hands was
+            // expected to cover cutscenes wherever the game unequips; a full
+            // playthrough of the opening says it does not, so the sequence is
+            // named directly.
+            //
+            // Deliberately the SAME signal the rest of that window uses --
+            // hands+0x594 bit 2, M7 -- rather than a second predicate of its
+            // own. If a sequence ever should show a crosshair, that is one thing
+            // to fix, not two. It is published through the same interlocked
+            // channel CameraHook_LateHandsWrite already reads from here.
+            //
             // Skipping the layer is safe by construction: the HUD quad below
             // indexes by layerCount precisely because this one may or may not
             // have claimed its slot.
-            if (g_cfg.crosshair && g_xhReady && HandsProbe_Armed())
+            const bool xhScripted = g_cfg.scriptedQol && GameState_ScriptedAnim();
+            if (g_cfg.crosshair && g_xhReady && HandsProbe_Armed() && !xhScripted)
             {
                 uint32_t xi = 0;
                 XrSwapchainImageAcquireInfo xai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };

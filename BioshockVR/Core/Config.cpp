@@ -280,6 +280,7 @@ void Config_Load(const char* iniPath)
 
     // aiming / crosshair
     g_cfg.aimSource = CfgInt("AimSource", 0);
+    g_cfg.headAimUnarmed = CfgIntRange("HeadAimWhenUnarmed", 1, 0, 1);
     g_cfg.aimClampDeg = CfgFloat("AimClampDeg", g_cfg.aimClampDeg, 1.f, 80.f);
     g_cfg.plasmidAimPitch = CfgFloat("PlasmidAimPitch", g_cfg.plasmidAimPitch, -90.f, 90.f);
     g_cfg.aimSmooth = CfgFloat("AimSmoothing", g_cfg.aimSmooth, 0.f, 0.95f);
@@ -329,6 +330,8 @@ void Config_Load(const char* iniPath)
     g_cfg.freezeGameRot = CfgIntRange("FreezeGameRotation", 0, 0, 1);
     g_cfg.freezeGameplayRot = CfgIntRange("FreezeGameplayRotation", 1, 0, 1);
     g_cfg.scriptedRotFollow = CfgIntRange("ScriptedRotationFollow", 1, 0, 1);
+    g_cfg.controllableScripted = CfgIntRange("ControllableScriptedFix", 0, 0, 1);
+    g_cfg.scriptedProbe = CfgBool("ScriptedWindowProbe", true);
     g_cfg.scriptedHandsMotion =
         CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
     g_cfg.modYaw = CfgIntRange("ModYaw", 0, 0, 1);
@@ -444,6 +447,10 @@ void Config_Load(const char* iniPath)
         g_cfg.scriptedRotFollow ? "(cutscenes turn you)"
         : "(view holds still; turn yourself)");
     CfgEcho("ScriptedHandsMotionThreshold", "%.4f", g_cfg.scriptedHandsMotion);
+    CfgEcho("ControllableScriptedFix", "%d  %s", g_cfg.controllableScripted,
+        g_cfg.controllableScripted ? "(a sequence with the HUD up keeps your aim)"
+        : "(off)");
+    CfgEcho("ScriptedWindowProbe", "%d", (int)g_cfg.scriptedProbe);
     CfgEcho("DeltaClamp", "%d  %s", g_cfg.deltaClamp,
         (g_cfg.deltaClamp == 2) ? "(BOTH worlds, one advance per eye pair)"
         : (g_cfg.deltaClamp == 1) ? "(player world only)" : "(off, one per eye)");
@@ -499,6 +506,7 @@ void Config_Load(const char* iniPath)
     Log("[aim]");
     CfgEcho("AimSource", "%d  %s", g_cfg.aimSource,
         g_cfg.aimSource == 1 ? "(right controller)" : "(head)");
+    CfgEcho("HeadAimWhenUnarmed", "%d", g_cfg.headAimUnarmed);
     CfgEcho("AimClampDeg", "%.0f", g_cfg.aimClampDeg);
     CfgEcho("PlasmidAimPitch", "%.0f deg", g_cfg.plasmidAimPitch);
     for (int s = 0; s < 9; ++s)

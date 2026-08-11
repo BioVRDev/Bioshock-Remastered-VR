@@ -137,6 +137,11 @@ struct VrConfig
 
     // aiming / crosshair ---------------------------------------------------------
     int   aimSource = 0;        // 0 head, 1 right controller
+
+    // With nothing equipped there is no crosshair, so nothing shows where the
+    // controller points -- look at a thing to pick it up instead. Moves ONLY the
+    // aim direction, never the view, and never during scripted sequences.
+    int   headAimUnarmed = 1;
     float aimClampDeg = 20.0f;
     float aimSmooth = 0.35f;
     float plasmidAimPitch = -50.0f;   // deg added to the plasmid hand's aim pitch
@@ -227,6 +232,12 @@ struct VrConfig
     // animations, FORCED MOVES and BATHYSPHERE RIDES, all three measured. Now on
     // by default; the exclusions it was waiting for exist.
     int   freezeGameplayRot = 1;
+
+    // A scripted sequence the player can still WALK THROUGH keeps the aim.
+    // Default OFF until a headset log shows the HUD signal separates those from
+    // the sequences that own you -- scriptedProbe is what prints that.
+    int   controllableScripted = 0;
+    bool  scriptedProbe = true;
     // COMFORT. 1 = the scripted camera turns you to face the action (default,
     // and what makes cutscenes read correctly). 0 = the view holds still and you
     // turn yourself with the right stick, for people the automatic motion makes

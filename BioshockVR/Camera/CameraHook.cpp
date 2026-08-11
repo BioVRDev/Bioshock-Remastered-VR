@@ -109,10 +109,43 @@ static bool ScriptedQol()
 // so the arms and hands must keep using the motion signal; making them follow
 // this would show them during boarding, when nothing is animating. Two
 // questions, two predicates, and they must not be merged.
+// ---- A SCRIPTED SEQUENCE YOU CAN WALK THROUGH ---------------------------
+bool DrawHook_HudCaptured();   // DrawHook.cpp -- did the interface draw?
+
+// The interface is up, held for half a second so a per-frame draw count cannot
+// chatter. Same peak-hold shape as ScriptedHandsMoving, and for the same reason.
+static bool HudIsUp()
+{
+    static DWORD lastDrew = 0;
+    const DWORD now = GetTickCount();
+    if (DrawHook_HudCaptured()) lastDrew = now;
+    return lastDrew != 0 && (now - lastDrew) < 500;
+}
+
+// TRUE for a scripted animation the player can still walk through -- the Big
+// Daddy killing a splicer, where the meters stay up and you keep control.
+//
+// See the SCRIPTED SEQUENCE YOU CAN WALK THROUGH banner in GameState.cpp for
+// why the HUD is the candidate. Default OFF until a log says it separates the
+// two cases; the probe there prints what it is being judged on.
+static bool ScriptedButInControl()
+{
+    return g_cfg.controllableScripted && GameState_ScriptedAnim() && HudIsUp();
+}
+
 static bool ScriptedAimReleased()
 {
-    return g_cfg.scriptedQol &&
-        (GameState_ScriptedAnim() || GameState_ForcedMove());
+    if (!g_cfg.scriptedQol) return false;
+
+    // KEEP THE AIM when the sequence is one you can move in. Releasing it is
+    // what leaves head-look unable to steer and walking following the game's own
+    // heading -- right for a sequence that owns you, wrong for one that does not.
+    //
+    // Deliberately NOT extended to a forced move: that genuinely is the game
+    // moving you, and M7-S6 measured the entry stall it fixes.
+    if (ScriptedButInControl() && !GameState_ForcedMove()) return false;
+
+    return GameState_ScriptedAnim() || GameState_ForcedMove();
 }
 
 // One predicate, four call sites. Cheap: a cached pointer and two strcmps.
@@ -2752,10 +2785,29 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 {
                     // Motion aim feeds the CONTROLLER direction here while the
                     // view above keeps the head. That split is the whole feature.
-                    const double aimY = (g_cfg.aimSource == 1 && g_aimHandValid)
-                        ? g_aimHandYaw : g_headYaw;
-                    const double aimP = (g_cfg.aimSource == 1 && g_aimHandValid)
-                        ? g_aimHandPitch : g_headPitch;
+                    //
+                    // EMPTY HANDS AIM WITH THE HEAD. With nothing equipped there
+                    // is no crosshair -- so there is nothing on screen saying
+                    // where the controller points, and reaching for the radio at
+                    // the start of the game becomes a guess. Looking at a thing
+                    // to pick it up is the natural fallback.
+                    //
+                    // DELIBERATELY THE NARROWEST POSSIBLE CHANGE, because it was
+                    // asked for with "don't tie this to anything else": ONLY the
+                    // direction written into the aim field moves. The view
+                    // composition below and at the head-aim branch still read
+                    // g_cfg.aimSource directly, so nothing about how the world is
+                    // presented changes as you pick a weapon up or put it down.
+                    //
+                    // Not extended to scripted sequences even though the
+                    // crosshair is hidden there too: M7 already releases the aim
+                    // in that window on purpose, and reaching into it for a
+                    // convenience is how a working thing gets broken.
+                    const bool handAim = (g_cfg.aimSource == 1) && g_aimHandValid &&
+                        !(g_cfg.headAimUnarmed && !HandsProbe_Armed());
+
+                    const double aimY = handAim ? g_aimHandYaw : g_headYaw;
+                    const double aimP = handAim ? g_aimHandPitch : g_headPitch;
 
                     want = ComposeHeadLocal(g_aimBase, aimY, aimP,
                         g_cfg.headAimMode >= 2);
