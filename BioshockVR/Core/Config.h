@@ -405,6 +405,22 @@ struct VrConfig
     int   hapticRecoilMs = 45;
     float hapticRecoilAmp = 1.0f;
 
+    // Per weapon slot, because a wrench swing and a pistol shot are nothing like
+    // the same size of movement. All on by default -- the wrench included, since
+    // its impact is exactly the thing worth feeling.
+    int   hapticRecoilSlot[9] = {};
+
+    // ---- LET THE GAME HAVE THE OFF HAND BACK FOR A REAL ANIMATION -------
+    // A syringe injection is a Hands STATE, not a scripted sequence, so nothing
+    // in M7 brackets it and our tracking sits on top of the animation. This
+    // yields the hand when the engine pushes hard enough on it.
+    //
+    // EXPERIMENTAL, DEFAULT OFF: the failure mode is your tracked hand dropping
+    // out mid-play, so the threshold is high and the hold is short.
+    int   offHandYield = 0;
+    int   offHandYieldMinDeg = 25;
+    int   offHandYieldMs = 900;
+
     // Which slots can be two-handed, like HideInactiveHandN. The shotgun (2) and
     // the Tommy gun (5) are the ones the game itself animates two-handed.
     int   twoHandable[9] = {};

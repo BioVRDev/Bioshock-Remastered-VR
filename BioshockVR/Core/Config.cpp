@@ -257,6 +257,15 @@ void Config_Load(const char* iniPath)
     g_cfg.hapticRecoilMinDeg = CfgIntRange("HapticRecoilMinDeg", 6, 1, 180);
     g_cfg.hapticRecoilMs = CfgIntRange("HapticRecoilMs", 45, 1, 500);
     g_cfg.hapticRecoilAmp = CfgFloat("HapticRecoilAmp", 1.0f, 0.f, 1.f);
+    for (int s4 = 0; s4 < 9; ++s4)
+    {
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "HapticRecoilSlot%d", s4);
+        g_cfg.hapticRecoilSlot[s4] = CfgIntRange(key, 1, 0, 1);
+    }
+    g_cfg.offHandYield = CfgIntRange("OffHandYield", 0, 0, 1);
+    g_cfg.offHandYieldMinDeg = CfgIntRange("OffHandYieldMinDeg", 25, 1, 180);
+    g_cfg.offHandYieldMs = CfgIntRange("OffHandYieldMs", 900, 50, 5000);
     g_cfg.twoHandToggle = CfgIntRange("TwoHandToggle", 0, 0, 1);
     g_cfg.twoHandProbe = CfgIntRange("TwoHandProbe", 1, 0, 1);
     for (int s2 = 0; s2 < 9; ++s2)
@@ -632,6 +641,9 @@ void Config_Load(const char* iniPath)
     CfgEcho("HapticRecoil", "%d  %s", g_cfg.hapticRecoil,
         g_cfg.hapticRecoil ? "(kick on the weapon hand when the gun fires -- from "
         "the recoil animation, so it needs WeaponHandDrive=1)" : "(off)");
+    CfgEcho("OffHandYield", "%d  %s", g_cfg.offHandYield,
+        g_cfg.offHandYield ? "(hand back to the game for a real animation -- "
+        "EXPERIMENTAL)" : "(off; the off hand always tracks)");
     CfgEcho("WeaponHandBone43Rot", "%d  %s", g_cfg.bone43Rot,
         g_cfg.bone43Rot ? "(the GUN is frozen to the hand -- attach bone rotation "
         "written; set 0 if the gun breaks)"

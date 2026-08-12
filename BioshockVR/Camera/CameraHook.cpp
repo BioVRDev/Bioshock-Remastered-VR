@@ -2756,16 +2756,34 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
         //
         // Rate-limited to the pulse length so an automatic weapon rattles rather
         // than queueing a pulse per frame.
+        // PER HAND, not just the weapon hand, and that one change covers three
+        // of the things asked for at once:
+        //   - PLASMIDS kick the LEFT hand, because in ability mode the left hand
+        //     IS the weapon hand -- the code is written in roles, so it was
+        //     already true and only the loop makes it visible.
+        //   - THE WRENCH kicks on its swing/impact animation like any other
+        //     weapon, gated per slot below so it can be tuned separately.
+        //   - THE OFF HAND kicks whenever the game animates it, which is what a
+        //     syringe injection is.
         if (g_cfg.hapticRecoil && !ArmHide_PoseSettling())
         {
-            const float imp = ArmHide_HandImpulseDeg(weaponHand);
-            static DWORD lastKick = 0;
             const DWORD nowK = GetTickCount();
-            if (imp >= (float)g_cfg.hapticRecoilMinDeg &&
-                nowK - lastKick >= (DWORD)g_cfg.hapticRecoilMs)
+            static DWORD lastKick[2] = { 0, 0 };
+            for (int h = 0; h < 2; ++h)
             {
-                lastKick = nowK;
-                Input_Pulse(weaponHand, g_cfg.hapticRecoilAmp, g_cfg.hapticRecoilMs);
+                // Per slot, because a wrench swing and a pistol shot are not the
+                // same size of movement and should not share a threshold.
+                const int ws = HandsProbe_WeaponSlot();
+                if (h == weaponHand && ws >= 0 && ws <= 8 &&
+                    !g_cfg.hapticRecoilSlot[ws]) continue;
+
+                const float imp = ArmHide_HandImpulseDeg(h);
+                if (imp >= (float)g_cfg.hapticRecoilMinDeg &&
+                    nowK - lastKick[h] >= (DWORD)g_cfg.hapticRecoilMs)
+                {
+                    lastKick[h] = nowK;
+                    Input_Pulse(h, g_cfg.hapticRecoilAmp, g_cfg.hapticRecoilMs);
+                }
             }
         }
     }
@@ -3015,8 +3033,40 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             ArmHide_SetAnimAllowed(g_cfg.handAnim != 0 &&
                 (wslot >= 0 && wslot <= 8) && g_cfg.handAnimSlot[wslot] != 0);
 
+            // ---- LET GO WHEN THE GAME REALLY WANTS THIS HAND ---------------
+            // REPORTED: syringes *"just appear in your hand for a second while
+            // healing instead of doing the injection animation."* The cause is
+            // known and is not the animation system: an injection is a Hands
+            // STATE (`InjectingEve`), and `+0x594` bit 2 -- the scripted-sequence
+            // bracket everything else keys off -- is documented as NOT covering
+            // it. So `ScriptedQol()` never fires, `DriveHands` keeps running, and
+            // our tracking holds the off hand at your controller while the game
+            // tries to animate an injection on it.
+            //
+            // HandAnim cannot fix this: it adopts the animation's SHAPE into the
+            // reference, but the wrist is still placed at your controller, so you
+            // would get a syringe-shaped hand in mid-air rather than an injection.
+            // The hand has to be handed back outright for the duration.
+            //
+            // The signal is the impulse already measured for HandAnim: while we
+            // drive a cluster it reports how hard the ENGINE is trying to move it,
+            // which is exactly "there is an animation here you are sitting on".
+            //
+            // EXPERIMENTAL AND DEFAULT OFF. The failure mode is the tracked hand
+            // dropping out during ordinary play, so the threshold is deliberately
+            // high and the hold short.
+            static DWORD s_yieldUntil = 0;
+            if (g_cfg.offHandYield)
+            {
+                const float imp = ArmHide_HandImpulseDeg(g_freeHand);
+                if (imp >= (float)g_cfg.offHandYieldMinDeg)
+                    s_yieldUntil = GetTickCount() + (DWORD)g_cfg.offHandYieldMs;
+            }
+            const bool yielding = g_cfg.offHandYield &&
+                s_yieldUntil && GetTickCount() < s_yieldUntil;
+
             const bool thSlot = g_cfg.twoHandGrip && TwoHandableSlot(wslot);
-            g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 &&
+            g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 && !yielding &&
                 (hideHand || (thSlot && !CameraHook_TwoHandGripped() &&
                               !ArmHide_PoseSettling()));
 
