@@ -1634,6 +1634,22 @@ static void Bone43Watch(int hand, const ClusterSpec& c)
 static const void* g_wpPoseKey = nullptr;
 static DWORD       g_wpKeyChanged = 0;
 static bool        g_wpSettling = false;
+static DWORD       g_wpLastMoved = 0;
+static float       g_wpPrevWrist[3] = {};
+static bool        g_wpHavePrev = false;
+
+// How still the rig has to be, and for how long, before a pose counts as
+// settled. A FIXED TIMER WAS NOT ENOUGH: 600 ms suited the shotgun and not the
+// wrench, whose draw runs longer -- reported as *"when switching to the wrench
+// one of the times the wrench model location was super off, but it fixed it
+// cycling through the weapons."* That is a pose captured mid-draw.
+//
+// WeaponSwitchSettleMs is now the CEILING rather than the duration, so a weapon
+// that settles fast is picked up fast and a slow one is still waited for.
+static const float kSettleStillUnits = 0.05f;   // model units per frame
+static const DWORD kSettleStillMs = 150;
+
+bool ArmHide_PoseSettling() { return g_wpSettling; }
 
 bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
 {
@@ -1656,8 +1672,38 @@ bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
     }
     if (g_wpSettling)
     {
-        if ((now - g_wpKeyChanged) < (DWORD)g_cfg.weaponSwitchSettleMs) return false;
+        // WAIT FOR THE RIG TO STOP MOVING, not for a fixed number of
+        // milliseconds. Sample the wrist the engine is animating and call it
+        // settled once it has been still briefly -- or once the ceiling expires,
+        // so a permanently-moving rig cannot wedge this open.
+        const ClusterSpec cs2 = SpecFor(hand);
+        if (g_bones && cs2.wrist < g_boneCount)
+        {
+            BoneTransform w = {};
+            if (SafeRead(&g_bones[cs2.wrist], &w, sizeof(w)))
+            {
+                if (g_wpHavePrev)
+                {
+                    const float dx = w.position[0] - g_wpPrevWrist[0];
+                    const float dy = w.position[1] - g_wpPrevWrist[1];
+                    const float dz = w.position[2] - g_wpPrevWrist[2];
+                    if (sqrtf(dx * dx + dy * dy + dz * dz) > kSettleStillUnits)
+                        g_wpLastMoved = now;
+                }
+                memcpy(g_wpPrevWrist, w.position, sizeof(g_wpPrevWrist));
+                g_wpHavePrev = true;
+            }
+        }
+
+        const bool still = g_wpLastMoved && (now - g_wpLastMoved) >= kSettleStillMs;
+        const bool timedOut =
+            (now - g_wpKeyChanged) >= (DWORD)g_cfg.weaponSwitchSettleMs;
+        if (!still && !timedOut) return false;
+
         g_wpSettling = false;
+        g_wpHavePrev = false;
+        Log(">>> WEAPONHAND: pose settled after %u ms (%s) -- freezing from here.",
+            (unsigned)(now - g_wpKeyChanged), still ? "rig went still" : "ceiling");
     }
 
     // THE FREE HAND WINS EVERY TIE. g_freeHand is the mirror of the weapon hand
@@ -1736,7 +1782,25 @@ bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3])
         }
     }
 
-    if (!g_anchorValid[hand]) return false;
+    if (!g_anchorValid[hand])
+    {
+        // THE LATCH NEEDS A WINDOW WHERE THE ENGINE OWNS THE CLUSTER, and if the
+        // caller never yields one this is silent forever. It was: Build Z tracked
+        // the off hand from the first frame, so g_clDriven never went false, the
+        // anchor was never taken, and the whole two-hand state machine returned
+        // early with ZERO probe lines in a full session.
+        static DWORD lastMoan = 0;
+        const DWORD now = GetTickCount();
+        if (now - lastMoan >= 5000)
+        {
+            lastMoan = now;
+            Log("!!! TWOHAND: no grab point yet for cluster %d -- the engine has "
+                "not owned it since the last weapon change. %s", hand,
+                g_clDriven[hand] ? "We are driving it; the caller must stand down "
+                                   "during the settle window." : "Waiting.");
+        }
+        return false;
+    }
     memcpy(outModel, g_anchorPos[hand], sizeof(float) * 3);
     return true;
 }
@@ -1765,6 +1829,8 @@ void ArmHide_ReleaseWeaponHand()
     // capturing a pose the engine has not finished writing, and a release is the
     // only moment that can be true. So it belongs here, where every release goes.
     g_wpKeyChanged = GetTickCount();
+    g_wpLastMoved = g_wpKeyChanged;
+    g_wpHavePrev = false;
     g_wpSettling = true;
 }
 

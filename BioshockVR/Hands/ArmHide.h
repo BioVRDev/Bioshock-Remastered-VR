@@ -159,3 +159,8 @@ void ArmHide_ReleaseWeaponHand();
 //
 // Read-only, and safe whether the cluster is frozen or free.
 bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3]);
+
+// TRUE while the rig is still settling after a change of held object. Callers
+// that drive a cluster MUST stand down while this is set, or the engine never
+// owns the bones and the grab point above can never be latched.
+bool ArmHide_PoseSettling();

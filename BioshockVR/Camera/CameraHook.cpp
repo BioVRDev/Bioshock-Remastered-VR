@@ -2962,9 +2962,16 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // there. Two-handing wants the opposite: track while you are REACHING
             // for the gun, and stop once you have hold of it -- because stopping
             // is what lets the authored pose put the hand back on the fore-end.
+            // AND IT MUST STAND DOWN WHILE THE POSE IS SETTLING. The grab point
+            // is latched only from frames the ENGINE owns the cluster, so a
+            // tracker that starts on the first frame after an equip starves it
+            // forever: Build Z did exactly that and logged ZERO probe lines in a
+            // whole session, with the grip never engaging once. Yielding the
+            // settle window is what gives the latch its opportunity.
             const bool thSlot = g_cfg.twoHandGrip && TwoHandableSlot(wslot);
             g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 &&
-                (hideHand || (thSlot && !CameraHook_TwoHandGripped()));
+                (hideHand || (thSlot && !CameraHook_TwoHandGripped() &&
+                              !ArmHide_PoseSettling()));
 
             // Visible, and nobody else's: not hidden by the inactive-hand pass
             // and not driven by the tracker. On those slots the game poses this

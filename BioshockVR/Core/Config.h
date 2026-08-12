@@ -346,8 +346,20 @@ struct VrConfig
     int   twoHandProbe = 1;      // Cycle 1's distance log. Read-only
 
     // 1 == while a grabbable weapon is up, the off-hand grip NEVER opens the
-    // plasmid wheel, in or out of the grab zone. Plasmids still switch by button.
-    int   twoHandBlockRadial = 1;
+    // plasmid wheel, in or out of the grab zone.
+    //
+    // DEFAULT 0, AND THE REASON IS A REGRESSION IT CAUSED. Shipping this on took
+    // away the only route to plasmids on those weapons: *"when a two handed
+    // weapon is equiped, plasmid wheel doesnt come up, but it also doesnt let me
+    // switch to plasmids at all."* The wheel IS the plasmid switch, so blocking
+    // it blocks the feature.
+    //
+    // The problem it was meant to solve -- a near-miss opening the wheel -- is
+    // better solved by the grab radius, which is now 40 cm rather than the 25 that
+    // provoked the complaint. Proximity gating means a near-miss now lands INSIDE
+    // the zone and is suppressed anyway. Left in for anyone who binds plasmids
+    // elsewhere and wants the grip reserved outright.
+    int   twoHandBlockRadial = 0;
 
     // Which slots can be two-handed, like HideInactiveHandN. The shotgun (2) and
     // the Tommy gun (5) are the ones the game itself animates two-handed.

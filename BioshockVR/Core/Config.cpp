@@ -238,7 +238,7 @@ void Config_Load(const char* iniPath)
     g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
     g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 40, 1, 200);
     g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 55, 1, 300);
-    g_cfg.twoHandBlockRadial = CfgIntRange("TwoHandBlockRadial", 1, 0, 1);
+    g_cfg.twoHandBlockRadial = CfgIntRange("TwoHandBlockRadial", 0, 0, 1);
     g_cfg.twoHandToggle = CfgIntRange("TwoHandToggle", 0, 0, 1);
     g_cfg.twoHandProbe = CfgIntRange("TwoHandProbe", 1, 0, 1);
     for (int s2 = 0; s2 < 9; ++s2)
@@ -593,8 +593,9 @@ void Config_Load(const char* iniPath)
     if (g_cfg.twoHandGrip)
         CfgEcho("TwoHandBlockRadial", "%d  %s", g_cfg.twoHandBlockRadial,
             g_cfg.twoHandBlockRadial
-            ? "(the grip never opens the plasmid wheel on a grabbable weapon)"
-            : "(the wheel still opens outside the grab zone)");
+            ? "(the grip NEVER opens the plasmid wheel -- and so cannot switch "
+              "plasmids either, on a grabbable weapon)"
+            : "(the wheel opens normally outside the grab zone)");
     CfgEcho("WeaponHandBone43Rot", "%d  %s", g_cfg.bone43Rot,
         g_cfg.bone43Rot ? "(the GUN is frozen to the hand -- attach bone rotation "
         "written; set 0 if the gun breaks)"
