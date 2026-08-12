@@ -1430,6 +1430,11 @@ static inline double YawDeg(int32_t r)
     return (double)(short)(r & 0xFFFF) / 182.0444;
 }
 
+// Declared up here because the edge report below prints the manual total. The
+// machinery that maintains them is under the SCRIPTED RECENTRE banner.
+static int   g_scriptedManualYaw = 0;    // rotator units, signed
+static int   g_scriptedCancelled = 0;    // how much has been spent, for the log
+
 static void ScriptedEdgeReport(const FRotator* aim)
 {
     if (!g_edgePending) return;
@@ -1446,7 +1451,7 @@ static void ScriptedEdgeReport(const FRotator* aim)
 
     Log(">>> SCRIPTED %s: aim y %+8.2f p %+7.2f %s| base y %+8.2f | head y %+7.2f"
         " | hand y %+7.2f valid %d | pawn %9.1f %9.1f %9.1f ok %d | forced %d"
-        " anim %d | %lu ms since the last edge",
+        " anim %d | manual y %+7.2f | %lu ms since the last edge",
         which == 1 ? "ENTRY" : "EXIT ",
         aim ? YawDeg(aim->yaw) : 0.0,
         aim ? YawDeg(aim->pitch) : 0.0,
@@ -1457,7 +1462,85 @@ static void ScriptedEdgeReport(const FRotator* aim)
         p[0], p[1], p[2], havePos ? 1 : 0,
         GameState_ForcedMove() ? 1 : 0,
         GameState_ScriptedAnim() ? 1 : 0,
+        g_scriptedManualYaw / 182.0444,
         (unsigned long)since);
+}
+
+// ============================================================================
+//  SCRIPTED RECENTRE -- the scene reaches its OWN framing
+//
+// THE PROBLEM, reported after the balcony arc closed. The right stick still
+// turns you during a scripted sequence (M7-S3, and that is deliberate -- it is
+// the comfort option for people who do not want the camera moved for them). But
+// the scene's own rotation then lands ON TOP of wherever you turned to, so a
+// scene that means to face you at something faces you at something-plus-your-
+// offset instead.
+//
+// THE FIX. Track what the PLAYER added to g_aimBase during the window, then
+// spend it back down as the scene rotates. Two sites add player yaw and both are
+// already isolated -- the stick-look block below (grep MOD-SIDE SMOOTH YAW) and
+// snap turn. Nothing else touches the base from input.
+//
+//   1  WASH OUT. Each frame the scene turns by |d|, up to |d| of the manual
+//      offset is cancelled. A large authored turn lands exactly on the framing;
+//      a small one gets partway; a scene that never turns you leaves your offset
+//      completely alone. Invisible in motion, because the view is already moving.
+//   2  DROP IT. The whole offset goes the first frame the scene turns at all.
+//      Exact, but it lands as a visible jerk.
+//
+// ⚠ THIS IS NOT THE PITCH SERVO (graveyard 4). That one read a value back out of
+// the engine and drove toward it, which is a feedback loop, and it froze the
+// view. This spends down a quantity WE accumulated ourselves, is clamped to what
+// remains, and can only ever reach zero. It never reads engine state and cannot
+// overshoot.
+//
+// ONLY ARTIFICIAL TURNING. The head is never in this accumulator and never
+// cancelled -- the view stays 1:1 with the player's neck under every setting.
+// Taking head look away to hit a framing is a nausea trigger, not a feature.
+//
+// It lives with the camera follow because after Build J that block is the single
+// source of scripted yaw, so it is the only place the scene's rotation arrives.
+// ============================================================================
+
+// g_scriptedManualYaw and g_scriptedCancelled are declared above the edge
+// report, which prints the running total.
+
+// Called from the two player-input sites. Silent and free when the setting is
+// off or no sequence is running.
+static void ScriptedManualYaw(int units, bool scriptedAim)
+{
+    if (scriptedAim && g_cfg.scriptedRecentre) g_scriptedManualYaw += units;
+}
+
+static void ScriptedRecentre(int d)
+{
+    if (!g_cfg.scriptedRecentre || d == 0 || g_scriptedManualYaw == 0) return;
+
+    int cancel;
+    if (g_cfg.scriptedRecentre >= 2)
+    {
+        cancel = g_scriptedManualYaw;            // all of it, on the first turn
+    }
+    else
+    {
+        const int budget = (d < 0) ? -d : d;     // spend |d| of it this frame
+        const int have = (g_scriptedManualYaw < 0) ? -g_scriptedManualYaw
+            : g_scriptedManualYaw;
+        const int take = (budget < have) ? budget : have;
+        cancel = (g_scriptedManualYaw < 0) ? -take : take;
+    }
+
+    g_aimBase.yaw -= cancel;
+    g_scriptedManualYaw -= cancel;
+    g_scriptedCancelled += (cancel < 0) ? -cancel : cancel;
+
+    if (g_scriptedManualYaw == 0 && g_scriptedCancelled)
+    {
+        Log(">>> SCRIPTED: recentred -- %.1f deg of your own turning handed back "
+            "to the scene (mode %d)",
+            g_scriptedCancelled / 182.0444, g_cfg.scriptedRecentre);
+        g_scriptedCancelled = 0;
+    }
 }
 
 // ---- PAIR LOCK (§14): the two eyes of a pair must be rendered from the SAME
@@ -2835,7 +2918,15 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // Both edges, because a scene must open from where it actually starts
             // rather than from wherever the last one ended.
             static bool s_wasScriptedAim = false;
-            if (s_wasScriptedAim != scriptedAim) g_cineHave = false;
+            if (s_wasScriptedAim != scriptedAim)
+            {
+                g_cineHave = false;
+
+                // Same rule, same reason: an offset that spans two windows is an
+                // arbitrary jump into the second one. Both edges.
+                g_scriptedManualYaw = 0;
+                g_scriptedCancelled = 0;
+            }
 
             // Re-arm on the way out, or the base is stale by however far the
             // sequence turned you and the view snaps. Same reason the cutscene
@@ -3080,6 +3171,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                                 const int d =
                                     (int)(short)(cleanRot.yaw - g_cinePrev);
                                 g_aimBase.yaw += d;
+
+                                ScriptedRecentre(d);
                             }
                             g_cinePrev = cleanRot.yaw;
                             g_cineHave = true;
@@ -3140,8 +3233,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     {
                         const float curve = (tx < 0.0f) ? -(mag * mag)
                             : (mag * mag);
-                        g_aimBase.yaw +=
+                        const int32_t step =
                             (int32_t)(curve * g_cfg.modYawSpeed * dt * 182.0444f);
+                        g_aimBase.yaw += step;
+
+                        // Player-added yaw, so ScriptedRecentre can hand it back
+                        // to the scene. Same value, one place.
+                        ScriptedManualYaw(step, scriptedAim);
                     }
                 }
             }
@@ -3341,7 +3439,9 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     {
                         snapArmed = false;
                         const int step = (int)(g_cfg.snapTurnDeg * 182.0444f);
-                        g_aimBase.yaw += (stx > 0.0f) ? step : -step;
+                        const int signed_ = (stx > 0.0f) ? step : -step;
+                        g_aimBase.yaw += signed_;
+                        ScriptedManualYaw(signed_, scriptedAim);
                         Log(">>> SNAP TURN: %+.0f deg", (stx > 0.0f)
                             ? g_cfg.snapTurnDeg : -g_cfg.snapTurnDeg);
                     }

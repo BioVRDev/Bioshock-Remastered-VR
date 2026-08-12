@@ -239,6 +239,15 @@ struct VrConfig
     // field we follow, and head aim was overwriting the one it was on.
     int   scriptedCameraFollow = 1;
 
+    // Let a scripted scene reach its OWN framing even after you have turned
+    // yourself with the right stick during it. Tracks the yaw the PLAYER added
+    // and spends it back down as the scene rotates.
+    //   0  off      the scene's rotation lands on top of your offset
+    //   1  wash out cancelled degree for degree as the scene turns
+    //   2  drop it  the whole offset goes the first frame the scene turns
+    // Never touches the head: the view stays 1:1 with your neck in all three.
+    int   scriptedRecentre = 0;
+
     // ScriptedEntryHeading lived here and is GONE -- falsified in a headset,
     // 2026-08-11. It substituted a heading into the aim field as a scripted
     // window opened, on the theory that a forced move steers by whatever we last

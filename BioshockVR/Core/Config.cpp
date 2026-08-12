@@ -351,6 +351,7 @@ void Config_Load(const char* iniPath)
     g_cfg.turnRateProbe = CfgIntRange("TurnRateProbe", 1, 0, 1);
     g_cfg.scriptedRotProbe = CfgIntRange("ScriptedRotProbe", 1, 0, 1);
     g_cfg.scriptedCameraFollow = CfgIntRange("ScriptedCameraFollow", 1, 0, 1);
+    g_cfg.scriptedRecentre = CfgIntRange("ScriptedRecentre", 0, 0, 2);
     g_cfg.walkDriftProbe = CfgIntRange("WalkDriftProbe", 1, 0, 1);
     g_cfg.gameTurnSpeed = CfgIntRange("GameTurnSpeed", 70, -1, 100);
 
@@ -645,6 +646,12 @@ void Config_Load(const char* iniPath)
     CfgEcho("ScriptedCameraFollow", "%d  %s", g_cfg.scriptedCameraFollow,
         g_cfg.scriptedCameraFollow ? "(scripted scenes turn you from the "
         "game's camera)" : "(off -- aim field only)");
+    CfgEcho("ScriptedRecentre", "%d  %s", g_cfg.scriptedRecentre,
+        g_cfg.scriptedRecentre == 0 ? "(off -- scene rotation lands on top of "
+        "your own turning)"
+        : g_cfg.scriptedRecentre == 1 ? "(your own turning washes out as the "
+        "scene turns)"
+        : "(your own turning is dropped the moment the scene turns)");
     CfgEcho("WalkDriftProbe", "%d", g_cfg.walkDriftProbe);
     CfgEcho("GameTurnSpeed", "%d  %s", g_cfg.gameTurnSpeed,
         g_cfg.gameTurnSpeed < 0 ? "(leave the game's own value alone)"
