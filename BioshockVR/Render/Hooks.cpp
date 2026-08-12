@@ -667,13 +667,22 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     }
     else
     {
-        // MirrorIntervalMs, default 17 == just under 60 Hz, the lowest refresh
-        // worth designing for. TUNABLE because the right answer depends on what
-        // the desktop image is FOR: 17 is right for glancing at, and too slow
-        // for recording, where a 60 Hz capture of a 90 Hz session beats against
-        // itself and reads as judder. Lower it to present more often -- 8 for
-        // ~120 -- and pay for it in Present time, which the counters report.
-        const double kMirrorMs = (double)g_cfg.mirrorIntervalMs;
+        // 17 ms ~= just under 60 Hz, the lowest refresh worth designing for.
+        //
+        // THIS IS A CONSTANT AND NOT A SETTING, and the reason is worth having
+        // here so it is not made tunable again. It WAS `MirrorIntervalMs`, and
+        // the tester lowered it to get a faster desktop image; nothing changed.
+        // The call below hands origPresent the GAME'S OWN SyncInterval, so the
+        // desktop present is vsynced to the monitor -- asking for frames faster
+        // than the refresh cannot produce them, whatever this number says. Only
+        // raising it does anything, and "a slower mirror" is not a feature.
+        //
+        // What people actually want from a faster mirror is the HEADSET image on
+        // the monitor, not a quicker copy of the game's flat frame. That is the
+        // blit, and it needs a shader rather than a CopyResource: the eye target
+        // is portrait (2750x2850) and the backbuffer is landscape, so dimensions
+        // and aspect both differ. MirrorPresentEvery is the real control here.
+        static const double kMirrorMs = 17.0;
         static LARGE_INTEGER lastMirror = {};
         LARGE_INTEGER nowM;
         QueryPerformanceCounter(&nowM);

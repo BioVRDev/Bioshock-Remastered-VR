@@ -74,3 +74,19 @@ bool CameraHook_GetWalkRotation(float* outDeg);
 // Direction the shot ACTUALLY goes, in XR head-local axes. False until the
 // head-aim write has run at least once.
 bool CameraHook_GetShotDir(float out[3]);
+
+// ---- M6-S2: THE TWO-HANDED GRIP -----------------------------------------
+// ELIGIBLE means the off hand is inside the grab zone at the weapon's fore-end.
+// InputHook reads it to suppress LB, because the plasmid radial and the grab
+// share the same grip button and proximity is what disambiguates them.
+bool CameraHook_TwoHandEligible();
+
+// GRIPPED means the off hand is actually holding the weapon. The ARMS block
+// reads it: not gripped tracks your controller so you can reach for the gun,
+// gripped leaves the hand frozen on the fore-end where the game drew it.
+bool CameraHook_TwoHandGripped();
+
+// TRUE while a two-handable weapon is equipped and TwoHandBlockRadial is on, so
+// the off-hand grip is reserved for grabbing the gun and never opens the plasmid
+// wheel. Not proximity-gated: a near-miss should do nothing, not open a menu.
+bool CameraHook_TwoHandBlocksRadial();

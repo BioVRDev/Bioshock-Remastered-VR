@@ -67,6 +67,16 @@ static void Log(const char* fmt, ...);   // defined just below
 // the number is tunable in a headset instead of guessed at here.
 static bool ScriptedHandsMoving()
 {
+    // BLIND MEANS VISIBLE, NOT HIDDEN. -1 is "both clusters are ours, so every
+    // hand bone reports our own transform" -- C1 made that reachable. Returning
+    // true routes to arms VISIBLE. The graveyard entry is arms hidden for a whole
+    // scene off a bone we were writing; there is no matching entry for arms shown
+    // for one frame, so that is the safe direction to guess in.
+    //
+    // The release in the ARMS block should make this unreachable. It is here
+    // because "should" is how that bug happened the first time.
+    if (ArmHide_MotionBone() < 0) return true;
+
     float smoothed = 0.0f, raw = 0.0f;
     if (!ArmHide_HandMotion(&smoothed, &raw)) return false;
 
@@ -2158,6 +2168,13 @@ static void WatchGunDistance(const FVector& camLoc, const void* handsObj)
 // same CalcView, the ARMS block first, so this is sequencing rather than
 // sharing -- the decision and its use cannot disagree within a frame.
 static bool g_leftTrackOn = false;
+
+// TRUE when the off hand is VISIBLE and the ENGINE is animating it -- i.e. the
+// two-handed weapons, where both hands belong on the gun so neither hiding nor
+// tracking it is right. With the weapon cluster frozen, an engine-animated hand
+// beside it reads as detached, which is exactly what the shotgun and Tommy gun
+// showed. The freeze covers both clusters when this is set.
+static bool g_offHandLoose = false;
 static int  g_freeHand = HAND_LEFT;
 
 // A rotation matrix straight to a quaternion. Deliberately NOT built out of
@@ -2202,6 +2219,239 @@ static Vec3 IntoBasis(const Basis& b, double x, double y, double z)
     return { x * b.forward.x + y * b.forward.y + z * b.forward.z,
              x * b.right.x + y * b.right.y + z * b.right.z,
              x * b.up.x + y * b.up.y + z * b.up.z };
+}
+
+// ---- CONTROLLER -> MODEL SPACE, THE ONE COPY OF IT ----------------------
+// Room-yaw -> world -> actor-local -> model lanes, exactly as the weapon hand is
+// converted, which is why the two hands never drift apart in the maths.
+//
+// `offsetFrame` is the frame the per-hand tuning offset is expressed in: the
+// hand's own orientation when we have it, and the player's heading when we do
+// not. Passing null asks for the raw controller point with no tuning applied --
+// which is what a DISTANCE TEST wants, since the tuning describes where the
+// wrist BONE sits relative to your grip, not where your hand is.
+//
+// FACTORED FOR THE TWO-HAND GRIP, whose whole premise is comparing your real off
+// hand against the authored hand on the fore-end. Two independent conversions
+// would be two chances to disagree; docs/INVARIANTS.md already records what that
+// costs when HandsProbe re-derived the free-hand selection separately.
+static bool FreeHandModelPos(int hand, const FRotator& want,
+    double ax, double ay, double az,
+    const FVector& camLoc, const float headPos[3], double cs, double sn,
+    const Basis* offsetFrame, const float* offCfg, float outModel[3])
+{
+    HandPose hp = {};
+    if (!Input_GetHandPose(hand, &hp)) return false;
+    if (!hp.aimValid && !hp.gripValid) return false;
+
+    const Basis A = RotatorToBasis(want);
+
+    const float* P = hp.gripValid ? hp.gripPos : hp.aimPos;
+    const double relRight = ((double)P[0] - headPos[0]) * 100.0;
+    const double relUp = ((double)P[1] - headPos[1]) * 100.0;
+    const double relFwd = -((double)P[2] - headPos[2]) * 100.0;
+
+    double lx = camLoc.x + (relFwd * cs - relRight * sn);
+    double ly = camLoc.y + (relFwd * sn + relRight * cs);
+    double lz = camLoc.z + relUp;
+
+    // ---- THE OFFSET MUST NOT LIVE IN THE ACTOR'S FRAME ------------------
+    // REPORTED, first tuned session: with the right hand still the left hand
+    // tracked almost perfectly, but MOVING the right hand dragged the left one
+    // about. This offset used to be added in actor-local space, and the actor is
+    // rotated by the RIGHT controller, so a tuned 8 cm correction swung through
+    // 16 cm as the right wrist turned. Everything else here cancels the actor out
+    // algebraically -- world = actorLoc + A * A^T * (P - actorLoc) = P -- so the
+    // offset was the only term that COULD couple the two hands, and it did.
+    if (offCfg && (offCfg[0] || offCfg[1] || offCfg[2]))
+    {
+        const double o0 = offCfg[0], o1 = offCfg[1], o2 = offCfg[2];
+        const Basis O = offsetFrame ? *offsetFrame
+            : Basis{ { cs, sn, 0.0 }, { -sn, cs, 0.0 }, { 0.0, 0.0, 1.0 } };
+        lx += O.forward.x * o0 + O.right.x * o1 + O.up.x * o2;
+        ly += O.forward.y * o0 + O.right.y * o1 + O.up.y * o2;
+        lz += O.forward.z * o0 + O.right.z * o1 + O.up.z * o2;
+    }
+
+    // World offset from the actor origin (which sits at the eye), then into the
+    // actor's own axes. The bones live in the actor's frame, not the world's.
+    const Vec3 local = IntoBasis(A, lx - ax, ly - ay, lz - az);
+
+    // DrawScale scales the whole mesh, skeleton included, so a bone moved by N
+    // model units renders as N * scale centimetres. HandsScale 0 means "leave
+    // DrawScale alone", i.e. 1.
+    const double s = (g_cfg.handsScale > 0.01f) ? (double)g_cfg.handsScale : 1.0;
+    const double al[3] = { local.x / s, local.y / s, local.z / s };
+
+    // Actor axes -> model lanes, per the ini. 1 fwd, 2 right, 3 up, signed.
+    for (int i = 0; i < 3; ++i)
+    {
+        const int sel = g_cfg.leftHandAxis[i];
+        const int a = (sel < 0 ? -sel : sel) - 1;
+        outModel[i] = (float)((sel < 0) ? -al[a] : al[a]);
+    }
+    return true;
+}
+
+// ===========================================================================
+//  M6-S2: THE TWO-HANDED GRIP
+//
+// Shoulder the shotgun or the Tommy gun with your real off hand and have the
+// weapon steady against both.
+//
+// THE GRAB POINT COSTS NOTHING, which is what makes this cheap. On slots 2 and 5
+// the game already animates the off hand onto the fore-end; that authored
+// position IS where your hand should go, and ArmHide_FreeHandAnchor reads it
+// straight out of the cluster reference. No tuning, no new offset, no guess.
+//
+// THE DISTANCE TEST IS DONE IN MODEL SPACE, not world, and deliberately so: the
+// obvious direction (convert the bone to world) needs a model->world inverse
+// nobody has written, while the opposite direction is a conversion the free-hand
+// drive already performs every frame. FreeHandModelPos is now that one copy, so
+// the two numbers are in the same frame BY CONSTRUCTION rather than by care.
+//
+// > ### GRIPPED IS THE DO-NOTHING CASE, AND BUILD W ALREADY SHIPS IT
+// > The weapon-hand freeze now covers the off hand on exactly these slots
+// > (`g_offHandLoose`), so a gripped hand is simply a hand we leave frozen at its
+// > authored pose -- on the gun, rigid with it. Two-handing therefore adds the
+// > OTHER state: while you are NOT gripping, the hand tracks your controller so
+// > you can reach for the weapon. The freeze condition reads `!g_leftTrackOn`,
+// > so the two compose without either knowing about the other.
+// ===========================================================================
+static bool TwoHandableSlot(int slot)
+{
+    return (slot >= 0 && slot <= 8) && g_cfg.twoHandable[slot] != 0;
+}
+
+static bool g_thEligible = false;    // in the zone -- InputHook reads this
+static bool g_thGripped = false;     // actually two-handing
+
+bool CameraHook_TwoHandEligible() { return g_thEligible; }
+bool CameraHook_TwoHandGripped() { return g_thGripped; }
+
+// TRUE while a grabbable weapon is up and the grip is reserved for grabbing it.
+// Deliberately NOT gated on proximity -- see the note at the LB suppression.
+bool CameraHook_TwoHandBlocksRadial()
+{
+    return g_cfg.twoHandGrip && g_cfg.twoHandBlockRadial &&
+        !HandsProbe_AbilityMode() && TwoHandableSlot(HandsProbe_WeaponSlot());
+}
+
+static void TwoHandTick(void* handsActor, const FRotator& want,
+    double ax, double ay, double az,
+    const FVector& camLoc, const float headPos[3], double cs, double sn)
+{
+    if (!g_cfg.twoHandGrip || HandsProbe_AbilityMode() ||
+        !TwoHandableSlot(HandsProbe_WeaponSlot()) ||
+        GameState_Cutscene() || ScriptedQol() || ViewHeldForUi())
+    {
+        g_thEligible = false;
+        g_thGripped = false;
+        return;
+    }
+
+    float anchor[3], ctrl[3];
+    if (!ArmHide_FreeHandAnchor(handsActor, g_freeHand, anchor)) return;
+
+    // THE TUNING OFFSET BELONGS IN THIS COMPARISON, and Cycle 1 proved it by
+    // leaving it out. MEASURED, 177 samples: with the tester's hand ON the visible
+    // grip the distance bottomed out at 16.5 cm and never approached zero, because
+    // the anchor is the WRIST BONE while the raw controller point is the grip
+    // pose. LeftHandOffset (-6, 4, 0) is exactly the vector between them, so
+    // excluding it biased every reading by its own length.
+    const float* const offCfg = (g_freeHand == HAND_RIGHT)
+        ? g_cfg.rightHandOffset : g_cfg.leftHandOffset;
+    if (!FreeHandModelPos(g_freeHand, want, ax, ay, az, camLoc, headPos, cs, sn,
+                          nullptr, offCfg, ctrl))
+        return;
+
+    const double s = (g_cfg.handsScale > 0.01f) ? (double)g_cfg.handsScale : 1.0;
+    const double dx = (double)ctrl[0] - anchor[0];
+    const double dy = (double)ctrl[1] - anchor[1];
+    const double dz = (double)ctrl[2] - anchor[2];
+    const double dCm = sqrt(dx * dx + dy * dy + dz * dz) * s;
+
+    // HYSTERESIS: a larger radius to let go than to grab, so a hand resting right
+    // at the boundary does not chatter the state every frame.
+    const bool wasEligible = g_thEligible;
+    g_thEligible = g_thGripped ? (dCm < g_cfg.twoHandRelease)
+                               : (dCm < g_cfg.twoHandGrab);
+
+    // YOU CANNOT SEE WHERE TO GRAB, so tell the hand instead. Reported after
+    // Cycle 1: "I couldnt see a third hand on the grips" -- correct, because
+    // while you are reaching the off hand is tracking YOUR controller, so nothing
+    // is drawn at the anchor to aim for. A pulse on entering the zone replaces the
+    // missing visual with something you feel, which is better in VR anyway.
+    //
+    // This is the first caller of Input_Pulse in the project; the action was
+    // created and bound long ago and has never fired.
+    if (g_thEligible && !wasEligible)
+        Input_Pulse(g_freeHand, 0.35f, 40);
+
+    const bool grip = Input_GripDown(g_freeHand);
+    static bool prevGrip = false;
+    const bool rising = grip && !prevGrip;
+    prevGrip = grip;
+
+    if (g_cfg.twoHandToggle)
+    {
+        if (rising && (g_thGripped || g_thEligible)) g_thGripped = !g_thGripped;
+    }
+    else
+    {
+        if (!g_thGripped && g_thEligible && rising) g_thGripped = true;
+        if (g_thGripped && (!grip || dCm > g_cfg.twoHandRelease)) g_thGripped = false;
+    }
+
+    // CYCLE 1 IS THIS LINE. Falsifiable and it gates everything above: with the
+    // shotgun up, put your real hand on the hand you can SEE. If this does not
+    // fall towards zero, the grab point is not where it looks and the rest of the
+    // feature is built on sand.
+    if (g_cfg.twoHandProbe)
+    {
+        static DWORD lastLog = 0;
+        const DWORD now = GetTickCount();
+        if (now - lastLog >= 500)
+        {
+            lastLog = now;
+            Log(">>> TWOHAND: off hand %.1f cm from the authored grip  "
+                "(grab %d, release %d)  %s%s",
+                dCm, g_cfg.twoHandGrab, g_cfg.twoHandRelease,
+                g_thEligible ? "ELIGIBLE" : "far",
+                g_thGripped ? " -- GRIPPED" : "");
+        }
+    }
+}
+
+// ---- M6-S2 CYCLE 3: THE WEAPON LIES ALONG BOTH HANDS --------------------
+// Room-local pitch/yaw of the rear-hand -> front-hand axis, in degrees, in the
+// SAME frame HeadQuatToDeg produces -- which is why the two substitutions below
+// are single assignments rather than conversions.
+//
+// The convention matches BasisToRotator exactly (asin(fwd.z), atan2(fwd.y,
+// fwd.x)), so this is consistent with every other rotator this file builds.
+static bool TwoHandAngles(double* pitchDeg, double* yawDeg)
+{
+    HandPose F = {}, R = {};                 // front hand, rear hand
+    if (!Input_GetHandPose(g_freeHand, &F)) return false;
+    if (!Input_GetHandPose(g_freeHand == HAND_LEFT ? HAND_RIGHT : HAND_LEFT, &R))
+        return false;
+    if (!F.gripValid || !R.gripValid) return false;
+
+    // XR local (+x right, +y up, -z forward) -> UE (x forward, y right, z up).
+    const double fx = -((double)F.gripPos[2] - R.gripPos[2]);
+    const double fy = ((double)F.gripPos[0] - R.gripPos[0]);
+    const double fz = ((double)F.gripPos[1] - R.gripPos[1]);
+    const double n = sqrt(fx * fx + fy * fy + fz * fz);
+
+    // HANDS TOGETHER IS NOT AN AXIS. Below ~5 cm the direction is noise, and a
+    // weapon snapping to a random heading is worse than one that simply does not
+    // two-hand. The caller keeps its one-handed answer.
+    if (n < 0.05) return false;
+
+    *yawDeg = atan2(fy, fx) * 57.2957795;
+    *pitchDeg = asin(fz / n) * 57.2957795;
+    return true;
 }
 
 static void DriveFreeHand(void* handsActor, int hand, const FRotator& want,
@@ -2277,61 +2527,14 @@ static void DriveFreeHand(void* handsActor, int hand, const FRotator& want,
         }
     }
 
-    // ---- position: same conversion as the right hand above, deliberately ----
-    const float* P = lp.gripValid ? lp.gripPos : lp.aimPos;
-    const double relRight = ((double)P[0] - headPos[0]) * 100.0;
-    const double relUp = ((double)P[1] - headPos[1]) * 100.0;
-    const double relFwd = -((double)P[2] - headPos[2]) * 100.0;
-
-    double lx = camLoc.x + (relFwd * cs - relRight * sn);
-    double ly = camLoc.y + (relFwd * sn + relRight * cs);
-    double lz = camLoc.z + relUp;
-
-    // ---- THE OFFSET MUST NOT LIVE IN THE ACTOR'S FRAME ------------------
-    // REPORTED, first tuned session: with the right hand still the left hand
-    // tracked almost perfectly, but MOVING the right hand dragged the left one
-    // about. The cause is here and it is exact: this offset used to be added in
-    // actor-local space, and the actor is rotated by the RIGHT controller. A
-    // tuned 8 cm correction therefore swung through 16 cm as the right wrist
-    // turned. Everything else in this function cancels the actor out
-    // algebraically -- world = actorLoc + A * A^T * (P - actorLoc) = P -- so the
-    // offset was the only term that could couple the two hands, and it did.
-    //
-    // It belongs in the frame it describes: the offset from the controller's
-    // grip point to the wrist bone is fixed relative to YOUR HAND. In rotation
-    // mode that frame is known exactly. In position mode there is no hand
-    // orientation, so fall back to the player's heading -- which the right hand
-    // does not turn either.
-    const double o0 = offCfg[0];
-    const double o1 = offCfg[1];
-    const double o2 = offCfg[2];
-    if (o0 || o1 || o2)
-    {
-        const Basis O = haveT ? T
-            : Basis{ { cs, sn, 0.0 }, { -sn, cs, 0.0 }, { 0.0, 0.0, 1.0 } };
-        lx += O.forward.x * o0 + O.right.x * o1 + O.up.x * o2;
-        ly += O.forward.y * o0 + O.right.y * o1 + O.up.y * o2;
-        lz += O.forward.z * o0 + O.right.z * o1 + O.up.z * o2;
-    }
-
-    // World offset from the actor origin (which sits at the eye), then into the
-    // actor's own axes. The bones live in the actor's frame, not the world's.
-    const Vec3 local = IntoBasis(A, lx - ax, ly - ay, lz - az);
-
-    // DrawScale scales the whole mesh, skeleton included, so a bone moved by N
-    // model units renders as N * scale centimetres. Divide to ask for a real
-    // distance. HandsScale 0 means "leave DrawScale alone", i.e. 1.
-    const double s = (g_cfg.handsScale > 0.01f) ? (double)g_cfg.handsScale : 1.0;
-    const double al[3] = { local.x / s, local.y / s, local.z / s };
-
-    // Actor axes -> model lanes, per the ini. 1 fwd, 2 right, 3 up, signed.
+    // ---- position: factored out, because TWO callers need this exact algebra --
+    // The two-hand probe compares your real off hand against where the game's own
+    // animation puts that hand. Both numbers have to be in the same frame, and
+    // the only way to guarantee that is for one piece of code to produce both.
     float target[3];
-    for (int i = 0; i < 3; ++i)
-    {
-        const int sel = g_cfg.leftHandAxis[i];
-        const int a = (sel < 0 ? -sel : sel) - 1;
-        target[i] = (float)((sel < 0) ? -al[a] : al[a]);
-    }
+    if (!FreeHandModelPos(hand, want, ax, ay, az, camLoc, headPos, cs, sn,
+                          haveT ? &T : nullptr, offCfg, target))
+        return;
 
     ArmHide_DriveFreeHand(handsActor, hand, target, quatPtr);
 
@@ -2340,10 +2543,12 @@ static void DriveFreeHand(void* handsActor, int hand, const FRotator& want,
     if (now - lastLog >= 2000)
     {
         lastLog = now;
-        Log(">>> FREEHAND: %s  model %+7.1f %+7.1f %+7.1f   (actor-local %+6.1f fwd "
-            "%+6.1f right %+6.1f up cm)",
+        // The actor-local triple that used to be printed here lived inside the
+        // conversion, which is now FreeHandModelPos. The model lanes are the same
+        // numbers under the identity axis map, which is what ships.
+        Log(">>> FREEHAND: %s  model %+7.1f %+7.1f %+7.1f",
             hand == HAND_RIGHT ? "right" : "left ",
-            target[0], target[1], target[2], local.x, local.y, local.z);
+            target[0], target[1], target[2]);
     }
 }
 
@@ -2376,6 +2581,21 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
 
     double cp, cy, cr;
     HeadQuatToDeg(qFinal, cp, cy, cr);
+
+    // ---- M6-S2 CYCLE 3: THE MODEL FOLLOWS BOTH HANDS, ALWAYS -------------
+    // Unconditional, unlike the aim below. The weapon visibly lying along both
+    // hands is correct in every movement mode, and the weapon hand rotating with
+    // it is correct too -- your real wrist does exactly that when you shoulder a
+    // gun with your other hand.
+    //
+    // ROLL IS DELIBERATELY LEFT ALONE. `cr` still comes from the rear controller,
+    // which is your wrist, which is what rolls a real weapon. The per-slot rotSlot
+    // trim also survives, because it is composed onto the quaternion above this.
+    if (g_thGripped)
+    {
+        double thP, thY;
+        if (TwoHandAngles(&thP, &thY)) { cp = thP; cy = thY; }
+    }
 
     FRotator want = ComposeHeadLocal(g_aimBase, cy, cp, g_cfg.headAimMode >= 2);
     // Roll restored. The game tick erases it, so CameraHook_LateHandsWrite
@@ -2474,6 +2694,39 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     // between them.
     if (g_leftTrackOn && (g_cfg.offHandTracked == 1 || g_cfg.offHandTracked == 2))
         DriveFreeHand(obj, g_freeHand, want, wx, wy, wz, camLoc, headPos, cs, sn);
+
+    // ---- M6-S2: DECIDE THE TWO-HAND STATE ------------------------------
+    // Here at the end, because `want` and wx/wy/wz are the actor transform this
+    // function has just settled -- the same frame the anchor is expressed in.
+    // It runs BEFORE the freeze calls below so the state they read is this
+    // frame's, not last frame's.
+    TwoHandTick(obj, want, wx, wy, wz, camLoc, headPos, cs, sn);
+
+    // ---- C1: AND THE HAND THAT IS HOLDING THE WEAPON ---------------------
+    // The mirror of g_freeHand, and it needs nothing from this function's
+    // arithmetic -- the freeze replays that cluster's own captured pose, so the
+    // actor transform decided above already carries it to the controller. That
+    // is deliberate: deriving a second wrist from the pose and handsGrip would be
+    // a second frame conversion that can only disagree with the actor write.
+    //
+    // Everything that gates DriveHands gates this too, by being inside it:
+    // ScriptedQol, ViewHeldForUi, the cutscene check and sixDofHands.
+    // The pose key is WHAT YOU ARE HOLDING, not which slot: the slot does not
+    // move when one plasmid is swapped for another, and in ability mode the
+    // driven cluster is posed around the plasmid.
+    if (g_cfg.weaponHandDrive)
+    {
+        const void* poseKey = HandsProbe_ActiveHeld();
+        const int weaponHand = HandsProbe_AbilityMode() ? HAND_LEFT : HAND_RIGHT;
+        ArmHide_FreezeWeaponHand(obj, weaponHand, poseKey);
+
+        // AND THE OTHER HAND, when the game is the one animating it. The weapon
+        // hand must be frozen FIRST: the pose-key check inside the freeze is what
+        // releases and starts the settle window, and both hands have to sit on
+        // the same side of that decision.
+        if (g_offHandLoose)
+            ArmHide_FreezeWeaponHand(obj, g_freeHand, poseKey);
+    }
 
     static bool announced = false;
     if (!announced)
@@ -2632,6 +2885,21 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // directions in two scenes -- see the falsification banner in
             // GameState.cpp. Motion answers the question the flags cannot.
             const bool inScripted = ScriptedQol();
+
+            // ---- C1: THE WEAPON CLUSTER STANDS DOWN BEFORE WE MEASURE ----
+            // ORDER IS THE WHOLE POINT. The motion gate on the very next line
+            // samples the wrist of a cluster we are NOT driving, and with both
+            // driven there is no such wrist. The free hand's release lives ~80
+            // lines below this, so on the FIRST frame of a scripted window the
+            // driven flags still describe the previous frame -- which is exactly
+            // one frame per window with nothing honest to measure.
+            //
+            // Releasing the new driver here, above the measurement, restores the
+            // invariant this file has always relied on: at most one cluster is
+            // ours whenever motion is read. Cheap, and it makes the blind guard
+            // inside ScriptedHandsMoving() unreachable rather than load-bearing.
+            if (inScripted) ArmHide_ReleaseWeaponHand();
+
             const bool animating = inScripted && ScriptedHandsMoving();
 
             // Still, mid-sequence: hide the WHOLE actor -- arms, hands and
@@ -2689,7 +2957,20 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // cluster -- permanently out of reach of the cluster write.
             const bool handsFree = g_cfg.sixDofHands && !theater && !inScripted &&
                 !GameState_Paused();
-            g_leftTrackOn = handsFree && hideHand && g_cfg.offHandTracked > 0;
+            // M6-S2 INVERTS THIS FOR THE TWO-HANDED WEAPONS. They keep both
+            // hands, so `hideHand` is false and the off hand has never tracked
+            // there. Two-handing wants the opposite: track while you are REACHING
+            // for the gun, and stop once you have hold of it -- because stopping
+            // is what lets the authored pose put the hand back on the fore-end.
+            const bool thSlot = g_cfg.twoHandGrip && TwoHandableSlot(wslot);
+            g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 &&
+                (hideHand || (thSlot && !CameraHook_TwoHandGripped()));
+
+            // Visible, and nobody else's: not hidden by the inactive-hand pass
+            // and not driven by the tracker. On those slots the game poses this
+            // hand onto the weapon, so freezing it with the weapon keeps the two
+            // together instead of leaving one animated against a rigid gun.
+            g_offHandLoose = handsFree && !hideHand && !g_leftTrackOn;
 
             // Which hand is free is the mirror of which one is working. The
             // plasmid lives in the LEFT hand and the actor is posed from the left
@@ -2714,6 +2995,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 ArmHide_SweepFreeHand(handsActor, g_freeHand);
             else if (!g_leftTrackOn)
                 ArmHide_ReleaseFreeHand();
+
+            // ---- C1: THE SAME STAND-DOWN, FOR THE WEAPON CLUSTER ---------
+            // DriveHands has several early returns -- theater, a UI panel, a
+            // pause, no hands actor -- and every one of them leaves the freeze
+            // un-refreshed. Release on the same conditions rather than leaving a
+            // cluster flagged as ours that nothing is writing; a stale driven
+            // flag is what makes MotionBone lie.
+            //
+            // The scripted case is released FURTHER UP, above the motion
+            // measurement, because there the ordering is load-bearing. This one
+            // catches everything else, where it is not.
+            //
+            // KNOWN AND ACCEPTED FOR THIS CYCLE: behind a composed-frame UI panel
+            // the freeze stands down, so the gun animates again while the world
+            // holds still. Nothing here can freeze it and hold the actor still at
+            // the same time -- DriveHands is the only writer and it is gated off.
+            if (!g_cfg.weaponHandDrive || !handsFree || ViewHeldForUi())
+                ArmHide_ReleaseWeaponHand();
         }
         else ArmHide_Reset();
     }
@@ -2838,6 +3137,24 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
                 double ap, ay, ar;
                 HeadQuatToDeg(qAim, ap, ay, ar);
+
+                // ---- M6-S2 CYCLE 3: AND THE SHOT, BUT ONLY IN THE MODES
+                // WHERE THE CONTROLLER OWNS THE AIM ---------------------------
+                // In mode 0 the aim field carries the HEAD by contract, and
+                // overriding it would break the mode the tester called "pretty
+                // solid, fully decoupled".
+                //
+                // SUBSTITUTED AT THE ABSOLUTE ANGLES, which is the whole trick:
+                // everything below -- the head-relative offset, the per-axis
+                // AimClampDeg, the smoothing, the g_aimOff publish the crosshair
+                // reads -- is untouched and keeps working. Substituting at `want`
+                // instead would bypass the clamp and the crosshair would then
+                // disagree with the shot.
+                if (g_thGripped && !ModeUsesHead())
+                {
+                    double thP, thY;
+                    if (TwoHandAngles(&thP, &thY)) { ap = thP; ay = thY; }
+                }
 
                 // PALM AIM. The runtime's aim pose points where an extended
                 // index finger would -- correct for a gun, wrong for a plasmid

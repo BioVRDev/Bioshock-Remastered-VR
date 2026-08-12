@@ -119,6 +119,38 @@ feel and is not broken.
 > file has multiple binding sections, and the game rewrites it at exit. String
 > surgery there risks breaking the controls outright, for a value we can invert.
 
+## The grip is shared with the two-handed grab
+
+The off-hand grip opens the plasmid radial **and** grabs a two-handable weapon.
+Proximity disambiguates them, and two details are load-bearing:
+
+- **Suppression is gated on ELIGIBLE, not on GRIPPED.** `FillFromPad` emits
+  `XI_LSHOULDER` the moment the grip crosses its threshold, while the two-hand
+  state machine only reacts on the next `CalcView` — so gating on *gripped* leaks
+  one frame of LB and flickers the radial open on every grab.
+- **`Input_GripDown` publishes the hysteresised state** rather than letting the
+  state machine re-threshold the raw axis. A second test would engage on a
+  different frame from the radial and reintroduce the same leak.
+
+**`TwoHandBlockRadial` (default 1) goes further:** while a grabbable weapon is up,
+the grip never opens the wheel at all, in or out of the zone. A near-miss should
+do nothing rather than throw a menu at you, and removing that cost is what allows
+a generous grab radius. One-handed weapons keep the proximity-gated behaviour.
+
+## Every `xr*` call must be exported by the shim
+
+`BioshockVR.dll` statically imports `openxr_loader.dll`, which on the SteamVR path
+**is** the shim — so calling a function it does not export makes Windows refuse to
+load the mod, reported as `FAIL: BioshockVR.dll not found beside dxgi.dll` for a
+file that is present.
+
+**The trap is the CALL, not the function.** `Input_Pulse` sat compiled and unused
+from M6 until 2026-08-12; with no call site the linker never emitted the import,
+and adding the first call broke the launch. Audit the built binary, not the
+source. Resolve anything outside the shim's export table through
+`xrGetInstanceProcAddr` and treat null as "feature absent" — which is what
+`Input_Pulse` now does, so haptics are silently unavailable rather than fatal.
+
 ## Physical wrench
 
 `Swing.cpp` is a **gesture-to-button adapter**, not collision: head-relative hand

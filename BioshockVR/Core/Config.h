@@ -272,10 +272,107 @@ struct VrConfig
     // size alone.
     float arrowDrawScale = 0.0f;
 
-    // How often the desktop mirror is presented, in ms. 17 ~= 60 Hz and is the
-    // right default for a window nobody is watching; lower it for recording.
-    // Costs real Present time, which is why it is not simply "every frame".
-    int   mirrorIntervalMs = 17;
+    // ---- C1/C2: THE SKELETAL HAND DRIVE ---------------------------------
+    // 1 == freeze the WEAPON hand's bone cluster at its own authored pose, so
+    // the game's idle animation stops moving the gun underneath the actor
+    // transform. This is the sway fix, and it is what makes aim-down-sight
+    // possible: a gun that breathes cannot have a crosshair calibrated to it.
+    // Ships OFF -- new behaviour always does.
+    int   weaponHandDrive = 0;
+
+    // 0 == the reference is frozen at capture: rigid hand, no sway.
+    // 1 == adopt the engine's pose whenever it restamps the array, so reloads,
+    //      idles and the drill play on a hand that still follows your
+    //      controller. Costs one cluster read-back per driven cluster per frame,
+    //      which is why it is only paid for when it is on.
+    int   handAnim = 0;
+
+    // HandAnim=1 only. How much the wrist must move in one frame before it counts
+    // as an ANIMATION rather than idle breathing.
+    //
+    // Sway and a reload arrive through the same baked bone array, so "adopt what
+    // the engine wrote" adopts both -- which is why HandAnim=1 still swayed. They
+    // separate cleanly by SIZE: measured idle drift is 1-5 deg, while a reload or
+    // a weapon switch peaks at 41-135. 12 sits in that gap.
+    int   handAnimMinDeg = 12;
+
+    // ...and how long an animation keeps the engine's pose once it has started.
+    // Without this a reload would snap back to rigid after its first big frame,
+    // because the frames that follow are small deltas again.
+    int   handAnimHoldMs = 1200;
+
+    // 1 == the weapon attach bone's ROTATION is frozen along with the rest of the
+    // cluster, so the gun is rigid with the hand instead of swaying inside it.
+    //
+    // MEASURED before it was written: with the cluster frozen and this off, bone
+    // 43 drifted 1-5 deg at idle with peaks of 41, 77, 126 and 135 -- it was the
+    // only bone in 27-44 the engine still animated, and it carried the whole of
+    // the remaining sway.
+    //
+    // DEFAULT ON, and revertible from the ini without a rebuild. The write is
+    // refused unless the quaternion is unit length: what is fatal on this bone is
+    // a divide-by-scale in the attachment path, and a denormal quaternion is that
+    // hazard's rotational shape.
+    int   bone43Rot = 1;
+
+    // How long the hand is handed back to the engine after you switch what you
+    // are holding, so the equip animation plays before the pose is captured.
+    // Capturing on the change frame freezes a half-drawn weapon.
+    int   weaponSwitchSettleMs = 600;
+
+    // ---- M6-S2: THE TWO-HANDED GRIP -------------------------------------
+    // Bring your off hand to the fore-end of a two-handed weapon and squeeze the
+    // grip to hold it there. New behaviour, so it ships off.
+    int   twoHandGrip = 0;
+    // MEASURED, not guessed. Cycle 1 logged 177 samples: with the tester's hand
+    // on the visible grip the distance floored at 16.5 cm against an 18 cm radius,
+    // so it qualified exactly ONCE in a whole session. Part of that was a bias now
+    // fixed (the tuning offset was excluded from the comparison); the rest is real
+    // -- the anchor is a bone inside the mesh and your controller is outside it.
+    // 25 leaves room for both without being grabbable by accident.
+    // MEASURED TWICE, and the second run is what set these. With the tester
+    // actually holding the weapon the distance sat at 21-23 cm against a 25 cm
+    // radius -- working, but with 2 cm of margin, which is why it read as *"the
+    // grab point is still super small"*. Their closest possible approach was
+    // 13 cm; hand-at-side is 60-90. So 40 is generous against the hand they are
+    // reaching with and still nowhere near the hand at rest.
+    //
+    // A GENEROUS RADIUS IS CHEAP NOW, and it was not before: with
+    // TwoHandBlockRadial the cost of a near-miss is nothing at all, where it used
+    // to be a plasmid wheel in your face.
+    int   twoHandGrab = 40;      // cm to engage
+    int   twoHandRelease = 55;   // cm to let go -- LARGER on purpose, hysteresis
+    int   twoHandToggle = 0;     // 0 hold, 1 press to grab and press to let go
+    int   twoHandProbe = 1;      // Cycle 1's distance log. Read-only
+
+    // 1 == while a grabbable weapon is up, the off-hand grip NEVER opens the
+    // plasmid wheel, in or out of the grab zone. Plasmids still switch by button.
+    int   twoHandBlockRadial = 1;
+
+    // Which slots can be two-handed, like HideInactiveHandN. The shotgun (2) and
+    // the Tommy gun (5) are the ones the game itself animates two-handed.
+    int   twoHandable[9] = {};
+
+    // ---- M6-S3 TIER 0: LEFT-HANDED MODE ---------------------------------
+    // 1 == the weapon, both radials, fire, the sticks, the stick clicks and the
+    // d-pad modifier all move to the left hand; plasmids move to the right.
+    //
+    // A STARTUP SETTING, AND IT CANNOT BE OTHERWISE. Suggested bindings are
+    // submitted in Input_XrCreate, before the session exists, and action sets
+    // attach to a session exactly once. Changing this needs a full game restart,
+    // not a level reload -- the startup echo says so for the same reason.
+    //
+    // The hand holding the gun is anatomically a RIGHT hand (thumb on the far
+    // side): this tier moves the CONTROLS, not the model. Tiers 1 and 2 are what
+    // change what the hand looks like, and neither is built yet.
+    int   leftHanded = 0;
+
+    // Follows the master switch. 0 keeps movement on the physical left stick for
+    // anyone who wants the gun swapped but the locomotion where it was.
+    int   leftHandedSwapSticks = 1;
+
+    // MirrorIntervalMs was here and is RETIRED -- see the kMirrorMs constant in
+    // Render/Hooks.cpp for why lowering it could never work.
 
     // 1 == the desktop mirror presents only one eye's image. Present fires twice
     // per stereo pair with a DIFFERENT eye each time, so mirroring both makes the

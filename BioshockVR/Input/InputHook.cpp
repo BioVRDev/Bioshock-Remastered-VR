@@ -285,6 +285,16 @@ static XrAction g_aHapticL = XR_NULL_HANDLE, g_aHapticR = XR_NULL_HANDLE;
 static XrSpace  g_spAimL = XR_NULL_HANDLE, g_spAimR = XR_NULL_HANDLE;
 static XrSpace  g_spGripL = XR_NULL_HANDLE, g_spGripR = XR_NULL_HANDLE;
 
+// The hysteresised grip state, per hand, as FillFromPad decided it. Published
+// rather than recomputed: the two-handed grip must engage on exactly the frame
+// the radial would have, or the LB suppression below leaks a press.
+static bool g_gripOnPub[2] = { false, false };
+
+bool Input_GripDown(int hand)
+{
+    return (hand == HAND_LEFT || hand == HAND_RIGHT) ? g_gripOnPub[hand] : false;
+}
+
 static XrPath P(const char* s)
 {
     XrPath p = XR_NULL_PATH;
@@ -360,6 +370,26 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
     MakeAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic_l", "Left Haptic", &g_aHapticL);
     MakeAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic_r", "Right Haptic", &g_aHapticR);
 
+    // ---- M6-S3 TIER 0: WHICH PHYSICAL CONTROLLER BACKS A LOGICAL SIDE ----
+    //
+    // FLIP AT THE SOURCE, ONCE. Everywhere else in the mod "right hand" means
+    // THE WEAPON HAND; this is the single place that decides which real
+    // controller that is, which is exactly why nothing downstream needs to know.
+    //
+    // > ### DO NOT ALSO EDIT THE HAND-ROLE TERNARIES
+    // > There are five of them -- DriveHands' poseHand, the ARMS block's
+    // > g_freeHand, MOTION AIM's aimHand, XRSession's crosshair hand, and the
+    // > ArmHide_UpdateInactiveHand call written with raw 0/1. Editing any of them
+    // > applies the flip TWICE, which is the same double-application MovementMode
+    // > was built to fix. The rig never moves; only the controller feeding it
+    // > does, so per-cluster tuning stays attached to the cluster it was tuned
+    // > against.
+    //
+    // Work it through the tightest case. With a weapon, g_freeHand stays
+    // HAND_LEFT, so the mod reads pose HAND_LEFT -- now your physical RIGHT
+    // controller -- and drives rig cluster left with leftHandOffset. Your right
+    // hand moves the model's left hand using the left-tuned trim. Correct, and
+    // nothing was re-tuned.
     // ---- Touch bindings -------------------------------------------------
     // Note the asymmetry, it is not a mistake: Touch has ONE application menu
     // button and it is on the LEFT controller. The right controller's system
@@ -368,6 +398,10 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
     // FillFromPad().
     {
         XrActionSuggestedBinding b[] = {
+            // PLAIN, AND LEFT-HANDED MODE DOES NOT TOUCH THIS TABLE. See the
+            // banner above SwapHandsForLeftHanded(): the flip is applied to the
+            // ACTION HANDLES after this, because the SteamVR shim discards
+            // suggested bindings entirely and a table-based flip is inert there.
             { g_aMove,      P("/user/hand/left/input/thumbstick") },
             { g_aTurn,      P("/user/hand/right/input/thumbstick") },
             { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
@@ -420,6 +454,64 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
         sb.countSuggestedBindings = (uint32_t)(sizeof(b) / sizeof(b[0]));
         sb.suggestedBindings = b;
         xrSuggestInteractionProfileBindings(g_inst, &sb);   // best effort
+    }
+
+    // ---- M6-S3 TIER 0: THE FLIP, AND WHY IT IS NOT IN THE TABLE ABOVE ----
+    //
+    // The first attempt swapped the SUGGESTED BINDINGS, and it did nothing at
+    // all. MEASURED, 2026-08-12: the log said `bindings suggested [LEFT-HANDED]`
+    // while `openxr_shim.log` said, of the very same call,
+    //
+    //     xrSuggestInteractionProfileBindings profile='.../touch_controller'
+    //     count=21 (noted; shim authors its own SteamVR bindings)
+    //
+    // **This runtime discards suggested bindings.** The shim carries its own
+    // hardcoded SteamVR manifests (kBindingsTouch, kBindingsKnuckles,
+    // kBindingsVive, kBindingsWmr in OpenXRShim/src/shim_input.cpp) and binds by
+    // ACTION NAME. So no arrangement of the table above can flip anything here.
+    //
+    // SWAP THE ACTION HANDLES INSTEAD, which is the same "flip once at the
+    // source" idea moved one step later -- to the read rather than the bind.
+    // After this, g_aTrigL holds the action NAMED "trigger_r", and every
+    // consumer that asks for the left trigger gets the right controller without
+    // knowing anything happened.
+    //
+    // AND IT IS RUNTIME-INDEPENDENT, which the table never was: a real OpenXR
+    // runtime binds per the (now unflipped) table and this swap does the flip;
+    // the shim binds by name and this swap does the flip. One mechanism, one
+    // place, both runtimes. Doing BOTH would apply it twice and cancel out --
+    // which is exactly why the table above was reverted to plain paths.
+    //
+    // The five hand-role ternaries in CameraHook/XRSession still must not change,
+    // for the same reason as before: they would apply it a second time.
+    if (g_cfg.leftHanded)
+    {
+        auto swapAct = [](XrAction& a, XrAction& b) { XrAction t = a; a = b; b = t; };
+
+        swapAct(g_aTrigL,     g_aTrigR);
+        swapAct(g_aGripL,     g_aGripR);
+        swapAct(g_aThumbL,    g_aThumbR);
+        swapAct(g_aRestL,     g_aRestR);
+        swapAct(g_aAimPoseL,  g_aAimPoseR);
+        swapAct(g_aGripPoseL, g_aGripPoseR);
+        swapAct(g_aHapticL,   g_aHapticR);
+
+        // Face buttons swap BY PAIR: a/b live on the right controller and x/y on
+        // the left, so the pairing is what moves, not a prefix.
+        swapAct(g_aA, g_aX);
+        swapAct(g_aB, g_aY);
+
+        // MENU DOES NOT MOVE. Touch has exactly one application menu button and
+        // it is on the left controller; the right one's counterpart is the
+        // system button and belongs to the runtime.
+
+        if (g_cfg.leftHandedSwapSticks) swapAct(g_aMove, g_aTurn);
+
+        Log(">>> INPUT: LEFT-HANDED -- action handles swapped%s. The gun is in "
+            "your left hand and plasmids in your right.",
+            g_cfg.leftHandedSwapSticks ? "" : " (sticks left alone)");
+        Log(">>> INPUT: LeftHanded is a STARTUP setting -- changing it needs a "
+            "full game restart, not a level reload.");
     }
 
     // ---- ATTACH. One shot for the lifetime of the session. --------------
@@ -556,8 +648,36 @@ void Input_Pulse(int hand, float amplitude, int ms)
     hi.action = a;
     hi.subactionPath = XR_NULL_PATH;
 
+    // RESOLVED AT RUNTIME, NOT STATICALLY LINKED. See the banner at the top of
+    // this file: the shim does NOT export xrApplyHapticFeedback, and a static
+    // import of a symbol it lacks makes Windows refuse to load BioshockVR.dll at
+    // all -- reported by the loader as "not found beside dxgi.dll", which sends
+    // you hunting for a file that is sitting right there.
+    //
+    // MEASURED AGAIN, 2026-08-12, and the banner had already called it: the very
+    // first CALL to Input_Pulse in this project's life turned a dead import into a
+    // live one and the game stopped launching. The function had existed unused
+    // since M6, so nothing had ever pulled the symbol in.
+    //
+    // A null return here is harmless -- haptics are silently absent and every
+    // gesture still works. That is the whole reason this is the prescribed shape.
+    typedef XrResult(XRAPI_PTR* PFN_ApplyHaptic)(
+        XrSession, const XrHapticActionInfo*, const XrHapticBaseHeader*);
+    static PFN_ApplyHaptic pfnHaptic = nullptr;
+    static bool haveLooked = false;
+    if (!haveLooked)
+    {
+        haveLooked = true;
+        if (xrGetInstanceProcAddr(g_inst, "xrApplyHapticFeedback",
+                (PFN_xrVoidFunction*)&pfnHaptic) != XR_SUCCESS)
+            pfnHaptic = nullptr;
+        Log(">>> INPUT: haptics %s", pfnHaptic
+            ? "available" : "NOT offered by this runtime -- pulses are silent");
+    }
+    if (!pfnHaptic) return;
+
     const XrResult r =
-        xrApplyHapticFeedback(g_sess, &hi, (const XrHapticBaseHeader*)&v);
+        pfnHaptic(g_sess, &hi, (const XrHapticBaseHeader*)&v);
 
     if (r != XR_SUCCESS)
     {
@@ -912,6 +1032,12 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     gripLOn = gripLOn ? (s.gripL > offT) : (s.gripL > onT);
     gripROn = gripROn ? (s.gripR > offT) : (s.gripR > onT);
 
+    // Published for the two-handed grip, which needs the SAME hysteresised
+    // answer this function acts on -- a second threshold test against the raw
+    // axis would engage and release on different frames from the radial.
+    g_gripOnPub[HAND_LEFT] = gripLOn;
+    g_gripOnPub[HAND_RIGHT] = gripROn;
+
     // Was DrawHook_MenuUp(), the legacy draw-signature detector. MEASURED: it
     // reads TRUE through normal gameplay -- its MenuMaxIndexed rule fires on any
     // low-geometry frame -- so it silently disabled the d-pad modifier the
@@ -1212,7 +1338,27 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     // every d-pad press would come with a stray R3 / LB. Same for one rebound
     // to jump: without this, every jump would also zoom.
     if (s.thumbR && g_cfg.dpadModifier != 2 && !g_cfg.jumpOnR3) btn |= XI_RTHUMB;
-    if (gripLOn && g_cfg.dpadModifier != 3) btn |= XI_LSHOULDER;
+    // SUPPRESSED ON ELIGIBLE, NOT ON GRIPPED, and that is not a detail. This runs
+    // the moment the grip crosses its threshold, while the two-hand state machine
+    // only reacts on the NEXT CalcView -- so gating on "gripped" would leak one
+    // frame of LB and flicker the plasmid radial open every time you grab the gun.
+    // Eligible is already true before the press, so the press never reaches the
+    // game at all.
+    // TwoHandBlockRadial: on a weapon you can actually grab, the off-hand grip
+    // stops being a radial button ENTIRELY -- not just inside the grab zone.
+    //
+    // REQUESTED, and the reasoning is the tester's: *"if you dont get the grab
+    // exactly right the plasmid wheel comes up which is annoying."* Gating on
+    // proximity means every near-miss is a wheel in your face, and a near-miss is
+    // the common case when you cannot see the grab point. You still switch to
+    // plasmids with a button; you just cannot summon the wheel with the hand that
+    // is reaching for the fore-end.
+    //
+    // Eligibility still suppresses it on non-blocked slots, which is what keeps
+    // the one-handed weapons behaving exactly as they do today.
+    if (gripLOn && g_cfg.dpadModifier != 3 &&
+        !CameraHook_TwoHandEligible() && !CameraHook_TwoHandBlocksRadial())
+        btn |= XI_LSHOULDER;
     if (gripROn)                           btn |= XI_RSHOULDER;
 
     out->Gamepad.wButtons = btn;

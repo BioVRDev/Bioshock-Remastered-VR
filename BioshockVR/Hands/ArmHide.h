@@ -51,9 +51,18 @@ void ArmHide_ReleaseInactiveHand();
 //
 // Returns false until the skeleton is locked. `outRaw` is the un-smoothed
 // per-call value, logged for threshold calibration.
+//
+// ALSO RETURNS FALSE WHEN BOTH CLUSTERS ARE DRIVEN, which C1 made possible for
+// the first time. There is then no engine-owned wrist and any number this could
+// return would be a guaranteed zero. The caller must treat that as "cannot
+// answer" and fail in the direction that SHOWS the arms -- the graveyard entry
+// is arms hidden for a whole scene, and there is no matching entry for arms
+// shown for one frame.
 bool ArmHide_HandMotion(float* outSmoothed, float* outRaw);
 
-// Which bone the call above is currently measuring. For the log line only.
+// Which bone the call above is currently measuring, or -1 when both clusters
+// are ours and no honest bone exists. For the log line, and for the caller's
+// blind-guard test.
 int ArmHide_MotionBone();
 
 // ---- M7-S4: HIDE THE WHOLE ACTOR ----------------------------------------
@@ -115,3 +124,38 @@ bool ArmHide_SweepFreeHand(void* handsActor, int hand);
 // before ArmHide_HandMotion is trusted. Also called on a hand switch, so the
 // cluster we walk away from is not left holding a pose we forced on it.
 void ArmHide_ReleaseFreeHand();
+
+// ---- C1: THE WEAPON HAND, RIGID -----------------------------------------
+// The same rigid transform, pointed at the cluster that IS holding the weapon,
+// with the target set to that cluster's own captured wrist. qDelta comes out
+// identity, so the authored pose is replayed exactly where it already was: the
+// hand stops breathing and the gun stops swaying, and nothing else moves.
+//
+// This is what unblocks aim-down-sight. A gun that sways cannot have a
+// crosshair calibrated against it.
+//
+// WHY IT IS A SEPARATE ROLE RATHER THAN A SECOND CALL TO DriveFreeHand: both
+// clusters can now be driven at once, so the reference buffers, the driven flags
+// and the release paths are per hand, and each role tracks which hand it owns.
+// The free hand wins any tie -- M6-S1 is signed off and must not change.
+//
+// THE CALLER OWES ONE THING: release this BEFORE ArmHide_HandMotion is consumed
+// on a scripted frame. With both clusters driven there is no engine-owned wrist
+// left and the motion gate has nothing honest to measure. See MotionBone().
+// `poseKey` is HandsProbe_ActiveHeld() -- the identity of whatever is in your
+// hand. When it changes the authored pose changed with it, so the cluster is
+// released, the engine is allowed to animate the equip, and the freeze
+// re-captures once WeaponSwitchSettleMs has passed. Without this the pose
+// captured for the first weapon is replayed onto every later one, which is
+// exactly what Build U did through seven switches.
+bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey);
+void ArmHide_ReleaseWeaponHand();
+
+// ---- M6-S2: THE TWO-HANDED GRAB POINT -----------------------------------
+// The cluster's reference wrist in MODEL space -- where the game's own animation
+// puts that hand. On the shotgun and the Tommy gun that is the fore-end grip,
+// which is the entire basis of the two-handed feature: the grab point is not a
+// tuned constant, it is the pose the game already draws.
+//
+// Read-only, and safe whether the cluster is frozen or free.
+bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3]);

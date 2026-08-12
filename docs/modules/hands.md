@@ -168,6 +168,55 @@ Four things it inherited or learned, none of which should be rediscovered:
   + A·Aᵀ·(P − actorLoc) = P` — so the offset was the only term that could couple
   the two hands, and it did. It belongs in the frame it describes: the hand's own.
 
+## The weapon hand is frozen too — C1, 2026-08-12
+
+The gun swayed because the game animates the skeleton **underneath** the actor
+transform `DriveHands` writes. The free hand never swayed, and that was an
+accident of policy rather than a design: `CaptureClusterRef` freezes its reference
+while driving, and a frozen reference replayed every frame is a rigid hand.
+
+`ArmHide_FreezeWeaponHand` points the same machinery at the weapon cluster with
+the target set to **that cluster's own captured wrist**, so `qDelta` comes out
+identity and the authored pose is replayed exactly where it already was. No new
+maths, no second frame conversion, and every per-slot grip offset stays valid.
+
+**State is per hand as of this work** — `g_clRef[2]`, `g_clRefValid[2]`,
+`g_clDriven[2]`, plus `g_freezeOwns[2]` for the freeze role, which can own both
+clusters at once. A shared buffer would have made each driver re-capture its
+reference from the other's write, silently degrading the freeze into a
+sway-follower with nothing in the log to say so.
+
+**Bone 43's rotation is now written**, behind `WeaponHandBone43Rot`. It was the
+only bone in 27–44 the engine still animated under the freeze, and it carried the
+whole of the remaining sway — measured 1–5° idle with peaks to 135°. See
+`docs/ENGINE-MAP.md` for the three lanes and why only scale is fatal.
+
+**The off hand is frozen alongside it** whenever it is visible and nobody else's
+(`g_offHandLoose`) — the two-handed weapons, where the game poses that hand onto
+the gun and an engine-animated hand beside a rigid gun reads as detached.
+
+**Re-capture is keyed on what is in your hand**, not on the weapon slot, and a
+settle window lets the equip animation play before the pose is taken. The window
+applies after **any** release, because the hazard is capturing a pose the engine
+has not finished writing and a release is the only moment that can be true.
+
+## The two-handed grab point is the game's own hand — M6-S2
+
+On slots 2 and 5 the game already animates the off hand onto the fore-end, so
+`ArmHide_FreeHandAnchor` reads that position rather than inventing one.
+
+**It is a LATCH, and that is load-bearing.** It cannot be read through
+`CaptureClusterRef`: that function early-outs while the cluster is driven and
+returns *our* pose, so the anchor would become whatever we last froze. The latch
+refreshes only on frames the engine owns the cluster and is dropped on a change of
+held object. Getting this wrong put the hand 6–12 inches below the grip on every
+grab. `.planning/DECISIONS.md`, 2026-08-12.
+
+The distance test runs in **model space**, comparing against the controller
+position produced by `FreeHandModelPos` — the one shared copy of the
+controller→model conversion, factored out of `DriveFreeHand`. Two independent
+conversions would be two chances to disagree.
+
 ## A split was considered and rejected
 
 See `.planning/DECISIONS.md`. `g_hands`, `g_pawn` and `g_gun` are used across the

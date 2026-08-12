@@ -163,6 +163,100 @@ handoff disagree, this file wins.
   3) at one run per mode. `MovementMode` rotates a stick and cannot reach the
   bone array; mode 2 was simply the run with more controller motion. The
   sampled bone is now chosen against the driven cluster.
+
+  **Third form, 2026-08-12: "against the driven cluster" runs out of clusters.**
+  C1 drives the weapon hand as well as the free hand, so for the first time
+  *both* may be ours and there is no engine-owned wrist left to sample. Two rules
+  came out of it and both are structural rather than advisory:
+
+  - **A driver that can occupy the last honest bone must stand down ABOVE the
+    measurement, not below it.** The ARMS block consumes motion on the line after
+    `inScripted` is computed, while the free hand's release is ~80 lines further
+    down — so an ordering that had been harmless for as long as one cluster was
+    always free would have measured a bone we were writing on the entry frame of
+    every scripted window. Proximity in a file is not ordering; read the path.
+  - **"I cannot answer" must fail towards SHOWING the arms.** `MotionBone()`
+    returns `-1` when every hand bone is ours, and the caller treats that as
+    *moving*. The graveyard entry is arms hidden for a whole scene off a bone we
+    were writing; there is no matching entry for arms shown for one frame, so
+    that is the direction to guess in.
+
+- **Calling an `xr*` function the shim does not export stops the game launching,
+  and the error message points at the wrong thing.** `BioshockVR.dll` statically
+  imports `openxr_loader.dll`, which on the SteamVR path **is** the shim — so an
+  unsatisfied import makes Windows refuse to load the mod entirely, and
+  `dxgi.dll` reports `FAIL: BioshockVR.dll not found beside dxgi.dll` for a file
+  that is sitting right there.
+
+  This is written in the banner at the top of `Input/InputHook.cpp`, where it
+  records that `xrGetCurrentInteractionProfile` once cost an evening. **It
+  happened again on 2026-08-12** with `xrApplyHapticFeedback`, and the second
+  instance sharpens the rule in a way the first did not:
+
+  > **A function can be written, compiled and shipped for weeks without its import
+  > existing.** `Input_Pulse` was built in M6 and had **zero call sites**, so the
+  > linker never emitted the symbol. Adding the first *call* — not the function,
+  > the call — turned a dead import live and broke the launch. **Auditing the
+  > source for `xr*` calls is therefore not enough; audit the built binary.**
+
+  ```
+  dumpbin /imports BioshockVR.dll     vs     dumpbin /exports openxr_loader.dll
+  ```
+
+  The fix is the one the banner already prescribes: resolve at runtime through
+  `xrGetInstanceProcAddr` and treat a null as "feature absent". A null return is
+  harmless; a missing static import is fatal.
+
+- **The SteamVR shim discards `xrSuggestInteractionProfileBindings`, so the
+  suggested-binding table cannot change any mapping on the shipping runtime.**
+  MEASURED 2026-08-12, both sides of the same call: `BioshockVR.log` reported
+  `touch_controller bindings suggested` while `openxr_shim.log` reported
+  *"count=21 (noted; shim authors its own SteamVR bindings)"*. The shim carries
+  hardcoded SteamVR manifests (`kBindingsTouch`, `kBindingsKnuckles`,
+  `kBindingsVive`, `kBindingsWmr` in `OpenXRShim/src/shim_input.cpp`) and binds by
+  **action name**.
+
+  Left-handed mode's first design flipped that table and the tester reported it
+  *"doesn't appear to work at all"* — correctly, because the table is decorative
+  here. **Anything that needs to change which physical control feeds a logical
+  action must swap the ACTION HANDLES after the actions are created**, which the
+  shim and a real OpenXR runtime both honour because both bind by name. Doing
+  both applies the flip twice and cancels out.
+
+  **A log line saying a call succeeded is not evidence the call did anything.**
+  `xrSuggestInteractionProfileBindings` returned `XR_SUCCESS` every time.
+
+- **A frozen reference is only correct for the pose it was captured from.**
+  `CaptureClusterRef` freezes while driving, which is what makes the hand rigid —
+  and it means the captured pose is replayed onto whatever you pick up next.
+  Build U froze on the pistol and replayed that pose through **seven weapon
+  switches**; the log shows `WEAPONHAND: cluster released` firing six times, each
+  1 ms after a `PAUSE: PAUSED`, and **never on a switch**. Pausing appeared to
+  "fix" the misalignment only because the pause released and the unpause
+  re-captured.
+
+  The function's own comment predicted it — *"The authored pose changes on a
+  weapon switch, and a reference from the wrong weapon would put the fingers in
+  the wrong shape"* — and it was still missed, because the free hand never
+  exposed it: the idle off-hand pose barely differs between weapons.
+
+  **Two rules.** Key the capture on **what is in the hand**
+  (`CurrentHoldable`/`CurrentAbility` identity, compared for change and never
+  dereferenced), not on the weapon slot — the slot does not move when one plasmid
+  is swapped for another. And **do not re-capture on the change frame**: the
+  engine is mid-equip, and freezing there saves a half-drawn pose, which is the
+  same bug wearing a different hat. Release, let the authored draw play, capture
+  when it has settled.
+
+- **A shared reference buffer cannot serve two bone drivers, and the failure is
+  silent.** `g_clRef`/`g_clRefValid`/`g_clDriven` were one set with a `g_clHand`
+  tag. With two drivers alternating, `CaptureClusterRef`'s early-out misses every
+  frame and each driver **re-captures its reference from the pose the other one
+  just wrote** — the rigid drive degrades back into a sway-follower with nothing
+  in the log to say so. `ScaleLooksNormal` does not catch it, because the cluster
+  drive never writes scale. State is per hand as of C1, and the early-out is per
+  hand for a second reason: `DriveHands` runs **once per eye**, so without it the
+  second eye captures the first eye's write.
 - **When a differential probe shares a log budget with noisy windows, the noisy
   windows eat it.** M7-S1's 200-transition cap was consumed in six seconds by the
   controller and pawn windows (117/256 and 206/288 fields non-zero and churning),

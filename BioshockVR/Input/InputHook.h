@@ -104,3 +104,9 @@ void Input_Tick();
 
 void Input_Remove();
 bool Input_WeaponWheelHeld();
+
+// The hysteresised grip state for one hand, exactly as the pad synthesis decided
+// it this frame. Published so the two-handed grip engages on the same frame the
+// plasmid radial would have -- a second threshold test against the raw axis
+// would disagree by a frame and leak an LB press.
+bool Input_GripDown(int hand);

@@ -72,4 +72,17 @@ bool HandsProbe_AbilityMode();
 // that never locks leaves the crosshair exactly as it was.
 bool HandsProbe_Armed();
 
+// WHICH object is in your hand right now -- the weapon (CurrentHoldable,
+// hands+0x45C) or the plasmid (CurrentAbility, +0x454), weapon first when both
+// are set. Both pointers are already read every frame, so this costs nothing.
+//
+// AN IDENTITY, NEVER A TARGET. It is compared for CHANGE and never dereferenced,
+// which is what makes it safe to hand out: a freed and reused address is still a
+// correct answer to "is this a different thing from last frame".
+//
+// Preferred over HandsProbe_WeaponSlot() as a "the authored pose changed" signal,
+// because the slot does not move when one plasmid is swapped for another -- and
+// in ability mode the driven cluster is posed around the plasmid.
+const void* HandsProbe_ActiveHeld();
+
 void HandsProbe_Reset();

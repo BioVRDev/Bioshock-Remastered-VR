@@ -1288,6 +1288,11 @@ static void PollHandsModeKeys(const void* hands)
 // towards the old behaviour, never towards a permanently missing reticle.
 static bool g_handsArmed = true;
 
+// The object currently in hand. IDENTITY ONLY -- compared for change, never
+// followed. The cluster freeze uses it to know the authored pose it captured is
+// no longer the pose of the thing you are holding.
+static const void* g_activeHeld = nullptr;
+
 static void UpdateHandMode(const void* hands)
 {
     if (!hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return;   // Hands-relative only
@@ -1318,6 +1323,18 @@ static void UpdateHandMode(const void* hands)
         Log(">>> HANDMODE: hands are now %s", armed ? "HOLDING something" : "EMPTY");
     }
 
+    // WHICH object is in your hand, as an IDENTITY. Free -- both pointers are
+    // already read above, and this is never dereferenced, only compared for
+    // change. Set here rather than after the early return below, which fires on
+    // almost every frame.
+    //
+    // The weapon wins when both are set, because the weapon is what the driven
+    // cluster is posed around. Mid-equip both are briefly null, which reads as a
+    // change and is CORRECT for the one consumer: a null key restarts the
+    // settle window, so the freeze waits for the new pose rather than grabbing a
+    // half-finished one.
+    g_activeHeld = hold ? hold : abil;
+
     const bool ability = (abil != nullptr) && (hold == nullptr);
     if (ability == g_abilityMode) return;
 
@@ -1329,6 +1346,7 @@ static void UpdateHandMode(const void* hands)
 
 bool HandsProbe_AbilityMode() { return g_abilityMode; }
 bool HandsProbe_Armed() { return g_handsArmed; }
+const void* HandsProbe_ActiveHeld() { return g_activeHeld; }
 
 // ---- WHICH WEAPON IS EQUIPPED --------------------------------------------
 // ShockPawn: var config array< Class<Weapon> > AllPossibleWeaponClasses;

@@ -227,6 +227,28 @@ void Config_Load(const char* iniPath)
     // both still lets the current name win.
     g_cfg.offHandTracked = CfgIntRange("LeftHandTracked", 0, 0, 3);
     g_cfg.offHandTracked = CfgIntRange("OffHandTracked", g_cfg.offHandTracked, 0, 3);
+    g_cfg.weaponHandDrive = CfgIntRange("WeaponHandDrive", 0, 0, 1);
+    g_cfg.leftHanded = CfgIntRange("LeftHanded", 0, 0, 1);
+    g_cfg.leftHandedSwapSticks = CfgIntRange("LeftHandedSwapSticks", 1, 0, 1);
+    g_cfg.handAnim = CfgIntRange("HandAnim", 0, 0, 1);
+    g_cfg.handAnimMinDeg = CfgIntRange("HandAnimMinDeg", 12, 0, 180);
+    g_cfg.handAnimHoldMs = CfgIntRange("HandAnimHoldMs", 1200, 0, 10000);
+    g_cfg.bone43Rot = CfgIntRange("WeaponHandBone43Rot", 1, 0, 1);
+    g_cfg.weaponSwitchSettleMs = CfgIntRange("WeaponSwitchSettleMs", 600, 0, 5000);
+    g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
+    g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 40, 1, 200);
+    g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 55, 1, 300);
+    g_cfg.twoHandBlockRadial = CfgIntRange("TwoHandBlockRadial", 1, 0, 1);
+    g_cfg.twoHandToggle = CfgIntRange("TwoHandToggle", 0, 0, 1);
+    g_cfg.twoHandProbe = CfgIntRange("TwoHandProbe", 1, 0, 1);
+    for (int s2 = 0; s2 < 9; ++s2)
+    {
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "TwoHandable%d", s2);
+        // Slots 2 and 5 are the two-handed weapons -- the only ones the game
+        // itself poses the off hand onto -- so they are the default yes.
+        g_cfg.twoHandable[s2] = CfgIntRange(key, (s2 == 2 || s2 == 5) ? 1 : 0, 0, 1);
+    }
     CfgAxisMap("LeftHandAxisMap", g_cfg.leftHandAxis);
     CfgVec3("LeftHandOffset", g_cfg.leftHandOffset);
     CfgVec3("LeftHandRot", g_cfg.leftHandRot);
@@ -456,7 +478,6 @@ void Config_Load(const char* iniPath)
     g_cfg.arrowUnparentRot = CfgIntRange("ArrowUnparentRot", 0, 0, 1);
     g_cfg.arrowProbe = CfgIntRange("ArrowProbe", 1, 0, 1);
     g_cfg.arrowDrawScale = CfgFloat("ArrowDrawScale", 0.0f, 0.0f, 20.0f);
-    g_cfg.mirrorIntervalMs = CfgIntRange("MirrorIntervalMs", 17, 4, 100);
     g_cfg.mirrorOneEye = CfgIntRange("MirrorOneEye", 1, 0, 1);
     g_cfg.arrowHideScripted = CfgIntRange("ArrowHideScripted", 1, 0, 1);
     g_cfg.arrowLevel = CfgIntRange("ArrowLevel", 1, 0, 2);
@@ -546,6 +567,40 @@ void Config_Load(const char* iniPath)
         g_cfg.offHandTracked == 0 ? "(off)" :
         g_cfg.offHandTracked == 1 ? "(position)" :
         g_cfg.offHandTracked == 2 ? "(position + rotation)" : "(AXIS SWEEP)");
+    CfgEcho("LeftHanded", "%d  %s", g_cfg.leftHanded,
+        g_cfg.leftHanded ? "(gun in the LEFT hand -- RESTART REQUIRED to change)"
+        : "(right-handed)");
+    CfgEcho("LeftHandedSwapSticks", "%d  %s", g_cfg.leftHandedSwapSticks,
+        g_cfg.leftHandedSwapSticks ? "(move and turn follow the flip)"
+        : "(movement stays on the physical left stick)");
+    CfgEcho("WeaponHandDrive", "%d  %s", g_cfg.weaponHandDrive,
+        g_cfg.weaponHandDrive ? "(the weapon hand is FROZEN -- no gun sway)"
+        : "(off; the game animates the weapon hand)");
+    CfgEcho("HandAnim", "%d  %s", g_cfg.handAnim,
+        g_cfg.handAnim ? "(adopt the engine's animation when it restamps)"
+        : "(rigid; reference frozen at capture)");
+    if (g_cfg.handAnim)
+        CfgEcho("HandAnim tuning", "min %d deg, hold %d ms  (below the threshold "
+            "is breathing and stays rigid)",
+            g_cfg.handAnimMinDeg, g_cfg.handAnimHoldMs);
+    CfgEcho("TwoHandGrip", "%d  %s", g_cfg.twoHandGrip,
+        g_cfg.twoHandGrip ? "(off-hand grip near the fore-end two-hands the weapon)"
+        : "(off)");
+    if (g_cfg.twoHandGrip || g_cfg.twoHandProbe)
+        CfgEcho("TwoHand tuning", "grab %d cm, release %d cm, %s, probe %d",
+            g_cfg.twoHandGrab, g_cfg.twoHandRelease,
+            g_cfg.twoHandToggle ? "TOGGLE" : "hold", g_cfg.twoHandProbe);
+    if (g_cfg.twoHandGrip)
+        CfgEcho("TwoHandBlockRadial", "%d  %s", g_cfg.twoHandBlockRadial,
+            g_cfg.twoHandBlockRadial
+            ? "(the grip never opens the plasmid wheel on a grabbable weapon)"
+            : "(the wheel still opens outside the grab zone)");
+    CfgEcho("WeaponHandBone43Rot", "%d  %s", g_cfg.bone43Rot,
+        g_cfg.bone43Rot ? "(the GUN is frozen to the hand -- attach bone rotation "
+        "written; set 0 if the gun breaks)"
+        : "(attach bone rotation left to the engine -- the gun will sway)");
+    CfgEcho("WeaponSwitchSettleMs", "%d ms  (equip animation plays, then the pose "
+        "is captured)", g_cfg.weaponSwitchSettleMs);
     CfgEcho("LeftHandAxisMap", "%d,%d,%d   (1 fwd, 2 right, 3 up; signed)",
         g_cfg.leftHandAxis[0], g_cfg.leftHandAxis[1], g_cfg.leftHandAxis[2]);
     CfgEcho("LeftHandOffset", "%.1f fwd, %.1f right, %.1f up (cm)",
@@ -712,8 +767,6 @@ void Config_Load(const char* iniPath)
     CfgEcho("MirrorOneEye", "%d  %s", g_cfg.mirrorOneEye,
         g_cfg.mirrorOneEye ? "(one eye -- no flicker on the monitor)"
         : "(both eyes, as before -- the monitor will flicker)");
-    CfgEcho("MirrorIntervalMs", "%d   (~%d fps on the desktop; one eye only)",
-        g_cfg.mirrorIntervalMs, 1000 / g_cfg.mirrorIntervalMs);
     CfgEcho("ArrowDrawScale", "%.2f  %s", g_cfg.arrowDrawScale,
         g_cfg.arrowDrawScale > 0.f ? "" : "(size left alone)");
     CfgEcho("ArrowLevel", "%d  %s", g_cfg.arrowLevel,

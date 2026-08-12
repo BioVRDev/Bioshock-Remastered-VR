@@ -35,7 +35,7 @@
 #include "Core/Config.h"
 
 static void MotionReset();        // defined with the M7-S4 block below
-static void LeftClusterReset();   // defined with the M6-S1 block below
+static void ClusterStateReset();  // defined with the M6-S1 block below
 
 extern void LogFile(const char* msg);
 
@@ -268,7 +268,7 @@ static bool LocateSkeleton(void* hands)
         ClearSaved();
         ClearHandSaved();
         MotionReset();      // the previous sample described a different rig
-        LeftClusterReset(); // and so did the reference pose
+        ClusterStateReset(); // and so did the reference poses
         Log(">>> ARMHIDE: skeleton locked: actor=0x%08X skel=0x%08X bones=0x%08X count=%d",
             (unsigned)(uintptr_t)hands, (unsigned)(uintptr_t)skel,
             (unsigned)(uintptr_t)bones, count);
@@ -289,8 +289,16 @@ static const float    kHiddenScale = 0.0001f;      // NEVER exactly zero
 // Which cluster the free-hand drive is writing, if any. Declared here rather
 // than beside the rest of the cluster state because the motion sampler below is
 // the first thing that needs them.
-static bool g_clDriven = false;
-static int  g_clHand = -1;         // which hand the cluster reference describes
+// PER CLUSTER, indexed by hand. HAND_LEFT is 0 and HAND_RIGHT is 1, so the hand
+// IS the index and there is no separate "which hand" tag to keep in step.
+//
+// IT USED TO BE ONE SET, and that was correct while exactly one cluster could be
+// driven. C1 drives the weapon hand as well, and two callers sharing one buffer
+// do something worse than fight over it: CaptureClusterRef's early-out would miss
+// every frame, so each caller would re-capture its reference from a pose the
+// OTHER one had just written. The rigid drive silently degrades back into a
+// sway-follower, and nothing logs a complaint.
+static bool g_clDriven[2] = { false, false };
 
 // ===========================================================================
 //  WHICH BONE THE MOTION GATE SAMPLES -- AND WHY IT CANNOT BE A CONSTANT
@@ -320,10 +328,23 @@ static int  g_clHand = -1;         // which hand the cluster reference describes
 // This is docs/INVARIANTS.md's "you cannot hide by bone and measure by bone at
 // the same time", second instance. The rule was written about hiding; DRIVING
 // has exactly the same effect and the wording now covers both.
+//
+// C1 CAN DRIVE BOTH CLUSTERS, so for the first time there may be NO honest bone
+// to return. Say so (-1) rather than handing back one of ours -- a caller that
+// believes a driven bone reads exactly 0.0000 forever, which is the whole
+// failure this function exists to prevent. The caller's job is to treat -1 as
+// "cannot answer" and fail in the safe direction.
+//
+// The un-driven wrist stays honest even when that hand is HIDDEN: HideBone pins
+// each cluster bone at the wrist's own position, so the wrist's write is a no-op
+// and its rotation is never touched. A collapsed inactive hand still carries the
+// engine's pose on the one bone this reads.
 // ===========================================================================
 static int MotionBone()
 {
-    return (g_clDriven && g_clHand == HAND_RIGHT) ? kLeftWrist : kRightWrist;
+    if (!g_clDriven[HAND_RIGHT]) return kRightWrist;
+    if (!g_clDriven[HAND_LEFT])  return kLeftWrist;
+    return -1;                    // both are ours -- no honest bone exists
 }
 
 int ArmHide_MotionBone() { return MotionBone(); }
@@ -344,6 +365,22 @@ static void MotionReset()
 bool ArmHide_HandMotion(float* outSmoothed, float* outRaw)
 {
     const int bone = MotionBone();
+    if (bone < 0)
+    {
+        // Both clusters are ours, so every hand bone reports our own transform.
+        // Refuse rather than return a number that is guaranteed to be zero.
+        // Throttled because the caller's structural guard should make this
+        // unreachable -- if it ever prints, that guard has been broken.
+        static DWORD lastBlind = 0;
+        const DWORD now = GetTickCount();
+        if (now - lastBlind >= 5000)
+        {
+            lastBlind = now;
+            Log("!!! MOTION: both clusters driven -- no engine-owned wrist to "
+                "measure. The scripted-window release is not standing down.");
+        }
+        return false;
+    }
     if (!g_bones || bone >= g_boneCount) return false;
 
     BoneTransform cur = {};
@@ -1051,11 +1088,51 @@ struct ClusterBone
     float rotation[4];
 };
 
-static ClusterBone g_clRef[kClusterMax] = {};
-static bool  g_clRefValid = false;
-// g_clDriven and g_clHand are declared UP with the motion sampler instead --
-// ArmHide_HandMotion has to know which cluster we are writing before it picks a
-// bone to measure, and it runs ~700 lines above here.
+static ClusterBone g_clRef[2][kClusterMax] = {};
+static bool  g_clRefValid[2] = { false, false };
+// g_clDriven is declared UP with the motion sampler instead -- ArmHide_HandMotion
+// has to know which clusters we are writing before it picks a bone to measure,
+// and it runs ~700 lines above here.
+
+// ---- WHICH ROLE OWNS WHICH CLUSTER --------------------------------------
+// Two drivers now: the tracked free hand (M6-S1) and the weapon hand's rigid
+// freeze (C1). A role holds a hand, or -1. This is what g_clHand used to be,
+// split in two -- and it is the piece that stops one role releasing the other's
+// cluster when the free hand changes sides on a plasmid equip.
+//
+// THE FREE HAND WINS EVERY TIE, BY CONSTRUCTION. g_freeHand is the mirror of the
+// weapon hand so they cannot collide, but a one-frame HandsProbe_AbilityMode()
+// flip could ask for it. Refusing the weapon role there is what keeps the
+// M6-S1 behaviour the tester signed off exactly as it was.
+enum { kRoleFree = 0 };
+static int g_roleHand[1] = { -1 };
+
+// The FREEZE role can own BOTH clusters at once, so it is a flag per hand rather
+// than one hand per role.
+//
+// MEASURED, Build V: on the shotgun and the Tommy gun the left hand is neither
+// hidden nor tracked (`HideInactiveHand2/5=0` -- both hands belong on the gun),
+// so the ENGINE animates it. With the weapon cluster frozen beside it the tester
+// saw exactly what that implies: *"the left hands on the tommy and shotgun ...
+// werent attached and were animated separately."* Freezing a gun without
+// freezing the hand that is also holding it just moves the mismatch.
+static bool g_freezeOwns[2] = { false, false };
+
+// M6-S2's grab point, latched only from frames the ENGINE owns the cluster.
+// Declared here with the other cluster state because ClusterStateReset clears it.
+static float g_anchorPos[2][3] = {};
+static bool  g_anchorValid[2] = { false, false };
+
+// C2 only. What the bone array read back immediately AFTER our own write, which
+// is the thing HandAnim=1 compares against next frame.
+//
+// READ BACK RATHER THAN RECONSTRUCTED, deliberately. We do not write every lane
+// -- bone 43's rotation is never ours, and position mode writes no rotation at
+// all -- so a reconstruction would differ from the array in lanes we never
+// touched and every frame would look like a restamp. Reading the array back
+// captures our write AND the engine's untouched lanes in one shape, so an exact
+// compare next frame means exactly "the engine re-evaluated".
+static ClusterBone g_clLastWritten[2][kClusterMax] = {};
 
 // Everything the cluster it belongs to needs, in one place, so no caller has to
 // remember that the right hand's sleeve is a different five bones.
@@ -1074,11 +1151,24 @@ static ClusterSpec SpecFor(int hand)
              kLeftClusterLast - kLeftClusterFirst + 1, kLeftSleeve };
 }
 
-static void LeftClusterReset()
+// EVERY SLOT, BOTH ROLES. Called from LocateSkeleton's re-lock branch and from
+// ArmHide_Reset -- i.e. exactly when the rig underneath us has been replaced.
+//
+// MISSING A SLOT HERE IS THE CRASH. A role left holding a hand across a world
+// change means the next release writes 18 bones of position and rotation through
+// the PREVIOUS level's bone array. The second-source mod hung a save load doing
+// precisely that. Clearing without restoring is deliberate and is the same
+// reasoning ArmHide_Reset documents: the old actor may already be destroyed.
+static void ClusterStateReset()
 {
-    g_clRefValid = false;
-    g_clDriven = false;
-    g_clHand = -1;
+    for (int h = 0; h < 2; ++h)
+    {
+        g_clRefValid[h] = false;
+        g_clDriven[h] = false;
+        g_freezeOwns[h] = false;
+        g_anchorValid[h] = false;      // a new rig is a new grab point
+    }
+    g_roleHand[kRoleFree] = -1;
 }
 
 static void QMul(const float a[4], const float b[4], float out[4])
@@ -1118,9 +1208,91 @@ static void QRotate(const float q[4], const float v[3], float out[3])
 // the free hand to the other side of the body, and replaying the left hand's
 // pose onto the right cluster would be gibberish -- so the hand is part of the
 // validity test, not just the pointer.
+// THE EARLY-OUT MUST BE PER HAND, and this is load-bearing twice over. DriveHands
+// runs once per EYE, so both drivers write twice per frame; if the early-out were
+// shared, the second eye would re-capture a reference from the pose the first eye
+// just wrote, and the freeze would quietly become a follower. ScaleLooksNormal
+// does NOT catch that -- the cluster drive never writes scale.
 static bool CaptureClusterRef(const ClusterSpec& c, int hand)
 {
-    if (g_clDriven && g_clRefValid && g_clHand == hand) return true;
+    if (g_clDriven[hand] && g_clRefValid[hand])
+    {
+        // ---- C2: ADOPTION, WHICH IS THIS POLICY INVERTED -----------------
+        // HandAnim=0 is the freeze above and is what kills sway. HandAnim=1
+        // takes the engine's pose whenever the array no longer holds what we
+        // last wrote -- which means the engine restamped, and that restamp is
+        // the authored animation (a reload, an idle, the drill) we want to keep.
+        // Adopting it as the new reference replays it on a hand that is still
+        // following your controller.
+        //
+        // EXACT COMPARE, NOT AN EPSILON. Our own write is bit-identical to what
+        // we stored, so anything else is the engine by construction. An epsilon
+        // would swallow small authored motion, which is precisely the breathing
+        // this mode exists to preserve.
+        //
+        // THE PRECONDITION IS MEASURED, not assumed: docs/ENGINE-MAP.md
+        // records that the array keeps evaluating in ordinary play with the
+        // dirty byte cleared -- bone 27 moved between every pair of dumps.
+        if (!g_cfg.handAnim) return true;
+
+        ClusterBone live[kClusterMax] = {};
+        for (int i = 0; i < c.count; ++i)
+        {
+            BoneTransform b = {};
+            if (!SafeRead(&g_bones[c.first + i], &b, sizeof(b))) return true;
+            if (!ScaleLooksNormal(b.scale)) return true;
+            memcpy(live[i].position, b.position, sizeof(live[i].position));
+            memcpy(live[i].rotation, b.rotation, sizeof(live[i].rotation));
+        }
+        if (memcmp(live, g_clLastWritten[hand],
+                   sizeof(ClusterBone) * (size_t)c.count) == 0)
+            return true;                       // untouched: still our own pose
+
+        // ---- SWAY IS AN ANIMATION TOO, WHICH IS WHY A BARE ADOPT FAILS ----
+        // REPORTED, Build V: "HandAnim=1 still has weapon sway." That is this
+        // policy working exactly as built and it is not a bug -- the idle bob and
+        // the reload are the same engine re-stamp arriving through the same bone
+        // array, so "adopt whatever the engine wrote" adopts both. The channels
+        // are separable in the SCRIPT (AdditiveHandBobAnim is channel 2, the rest
+        // are channel 0); they are not separable here, because what we read is
+        // already baked.
+        //
+        // SO SEPARATE THEM BY SIZE, which the measurements support: idle drift is
+        // 1-5 deg (191 B43 samples), while a switch or a reload peaks at 41-135.
+        // A threshold in that gap rejects breathing and admits real animation.
+        //
+        // AND HOLD, or a reload dies in its own middle: once the big opening
+        // frame is adopted the following frames are small deltas again, so a bare
+        // threshold would snap back to rigid mid-animation. Same peak-hold shape
+        // as the M7 motion gate, and for the same reason.
+        const ClusterBone& wr = live[c.wrist - c.first];
+        const ClusterBone& wp = g_clLastWritten[hand][c.wrist - c.first];
+        float dot = 0.0f;
+        for (int i = 0; i < 4; ++i) dot += wr.rotation[i] * wp.rotation[i];
+        if (dot < 0.0f) dot = -dot;
+        if (dot > 1.0f) dot = 1.0f;
+        const float deg = 2.0f * acosf(dot) * 57.2957795f;
+
+        static DWORD lastBig[2] = { 0, 0 };
+        const DWORD now = GetTickCount();
+        if (deg == deg && deg >= (float)g_cfg.handAnimMinDeg) lastBig[hand] = now;
+
+        const bool playing = lastBig[hand] &&
+            (now - lastBig[hand]) < (DWORD)g_cfg.handAnimHoldMs;
+        if (!playing) return true;             // breathing, not an animation
+
+        memcpy(g_clRef[hand], live, sizeof(ClusterBone) * (size_t)c.count);
+
+        static DWORD lastLog = 0;
+        if (now - lastLog >= 2000)
+        {
+            lastLog = now;
+            Log(">>> HANDANIM: cluster %d is animating (%.1f deg at the wrist, "
+                "threshold %d) -- adopting the engine's pose.",
+                hand, deg, g_cfg.handAnimMinDeg);
+        }
+        return true;
+    }
     if (!g_bones || c.last >= g_boneCount) return false;
 
     ClusterBone tmp[kClusterMax] = {};
@@ -1133,18 +1305,18 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
         memcpy(tmp[i].rotation, b.rotation, sizeof(tmp[i].rotation));
     }
 
-    memcpy(g_clRef, tmp, sizeof(g_clRef));
-    g_clRefValid = true;
-    g_clHand = hand;
+    memcpy(g_clRef[hand], tmp, sizeof(g_clRef[hand]));
+    g_clRefValid[hand] = true;
     return true;
 }
 
 // targetPos is model space. targetQuat may be null, which leaves every bone at
 // its authored orientation and slides the cluster bodily -- position mode.
-static bool WriteCluster(const ClusterSpec& c,
+static bool WriteCluster(const ClusterSpec& c, int hand,
     const float targetPos[3], const float targetQuat[4])
 {
-    const ClusterBone& wrist = g_clRef[c.wrist - c.first];
+    const ClusterBone* ref = g_clRef[hand];
+    const ClusterBone& wrist = ref[c.wrist - c.first];
 
     float qDelta[4] = { 0.f, 0.f, 0.f, 1.f };
     if (targetQuat)
@@ -1159,9 +1331,9 @@ static bool WriteCluster(const ClusterSpec& c,
     {
         const int idx = c.first + i;
 
-        float rel[3] = { g_clRef[i].position[0] - wrist.position[0],
-                         g_clRef[i].position[1] - wrist.position[1],
-                         g_clRef[i].position[2] - wrist.position[2] };
+        float rel[3] = { ref[i].position[0] - wrist.position[0],
+                         ref[i].position[1] - wrist.position[1],
+                         ref[i].position[2] - wrist.position[2] };
         if (targetQuat)
         {
             float rot[3];
@@ -1174,16 +1346,51 @@ static bool WriteCluster(const ClusterSpec& c,
                                targetPos[2] + rel[2] };
         if (!SafeWrite(g_bones[idx].position, pos, sizeof(pos))) continue;
 
-        // BONE 43 TAKES THE POSITION AND STOPS THERE. See the banner: the
-        // attachment path telekinesis release walks through it decomposes the
-        // bone, and moving it is the one thing HideBone has already proved safe.
-        // Rotation is not proved, and there is no reason to risk a crash for the
-        // orientation of an attachment point.
-        if (targetQuat && idx != kWeaponAttachBone)
+        // BONE 43 USED TO TAKE THE POSITION AND STOP THERE, and Build U measured
+        // what that cost: with the rest of the cluster frozen, bone 43 was the
+        // ONLY bone in 27-44 the engine still animated, and its rotation drifted
+        // 1-5 deg at idle with peaks of 41, 77, 126 and 135. That is the whole of
+        // the remaining gun sway, and it is why the gun stopped looking attached
+        // to a hand that had gone rigid.
+        //
+        // So the rotation is now a written lane, behind WeaponHandBone43Rot.
+        // WHAT IS FATAL HERE IS SCALE, because the attachment path
+        // inverse-decomposes the bone and divides by it -- a denormal QUATERNION
+        // is that same hazard's rotational shape, which is why the write is
+        // refused unless |q| is 1. Four multiplies to keep this fail-closed.
+        if (targetQuat && (idx != kWeaponAttachBone || g_cfg.bone43Rot))
         {
             float q[4];
-            QMul(qDelta, g_clRef[i].rotation, q);
-            SafeWrite(g_bones[idx].rotation, q, sizeof(q));
+            QMul(qDelta, ref[i].rotation, q);
+
+            bool ok = true;
+            if (idx == kWeaponAttachBone)
+            {
+                const float m = q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3];
+                ok = (m == m) && m > 0.998f && m < 1.002f;   // m==m rejects NaN
+                if (!ok)
+                {
+                    static bool warned = false;
+                    if (!warned)
+                    {
+                        warned = true;
+                        Log("!!! B43: refusing a non-unit quaternion (|q|^2 = %.6f). "
+                            "The attachment path divides through this bone.", m);
+                    }
+                }
+                else
+                {
+                    static bool announced = false;
+                    if (!announced)
+                    {
+                        announced = true;
+                        Log(">>> B43: attach rotation is now WRITTEN "
+                            "(WeaponHandBone43Rot=1). Untested path -- watch the gun "
+                            "on a telekinesis release and on a weapon switch.");
+                    }
+                }
+            }
+            if (ok) SafeWrite(g_bones[idx].rotation, q, sizeof(q));
         }
         any = true;
     }
@@ -1214,7 +1421,19 @@ static bool WriteCluster(const ClusterSpec& c,
         }
 
     SetDirty(0);          // stop the render pass rebuilding over us this frame
-    g_clDriven = true;
+    g_clDriven[hand] = true;
+
+    // C2's anchor. Only paid for when HandAnim is on -- it is one cluster read.
+    if (g_cfg.handAnim)
+        for (int i = 0; i < c.count; ++i)
+        {
+            BoneTransform b = {};
+            if (!SafeRead(&g_bones[c.first + i], &b, sizeof(b))) break;
+            memcpy(g_clLastWritten[hand][i].position, b.position,
+                sizeof(g_clLastWritten[hand][i].position));
+            memcpy(g_clLastWritten[hand][i].rotation, b.rotation,
+                sizeof(g_clLastWritten[hand][i].rotation));
+        }
     return true;
 }
 
@@ -1230,9 +1449,15 @@ bool ArmHide_DriveFreeHand(void* handsActor, int hand,
     // SWITCHED HANDS -- put the old cluster back before adopting the new one.
     // Otherwise the hand we walk away from keeps the last pose we forced on it
     // for as long as the engine's own evaluation takes to win it back.
-    if (g_clDriven && g_clHand != hand) ArmHide_ReleaseFreeHand();
+    //
+    // Expressed against THIS ROLE rather than against a global driven flag: the
+    // weapon role may legitimately be driving the other cluster at the same time,
+    // and releasing it here would be releasing somebody else's hand.
+    if (g_roleHand[kRoleFree] >= 0 && g_roleHand[kRoleFree] != hand)
+        ArmHide_ReleaseFreeHand();
 
     if (!CaptureClusterRef(c, hand)) return false;
+    g_roleHand[kRoleFree] = hand;
 
     static int loggedHand = -1;
     if (loggedHand != hand)
@@ -1242,7 +1467,7 @@ bool ArmHide_DriveFreeHand(void* handsActor, int hand,
             hand == HAND_LEFT ? "LEFT" : "RIGHT", c.first, c.last,
             targetQuat ? "position and rotation" : "position only");
     }
-    return WriteCluster(c, targetPos, targetQuat);
+    return WriteCluster(c, hand, targetPos, targetQuat);
 }
 
 // ---- MODE 3: WHICH MODEL LANE IS WHICH ----------------------------------
@@ -1257,8 +1482,10 @@ bool ArmHide_SweepFreeHand(void* handsActor, int hand)
     if (!LocateSkeleton(handsActor)) return false;
 
     const ClusterSpec c = SpecFor(hand);
-    if (g_clDriven && g_clHand != hand) ArmHide_ReleaseFreeHand();
+    if (g_roleHand[kRoleFree] >= 0 && g_roleHand[kRoleFree] != hand)
+        ArmHide_ReleaseFreeHand();
     if (!CaptureClusterRef(c, hand)) return false;
+    g_roleHand[kRoleFree] = hand;
 
     static const float kSweepAmp = 25.0f;      // model units, ~20 cm rendered
     static const DWORD kSweepMs = 3000;
@@ -1273,39 +1500,272 @@ bool ArmHide_SweepFreeHand(void* handsActor, int hand)
             "Which way did the hand move?", lane, kSweepAmp);
     }
 
-    const ClusterBone& wrist = g_clRef[c.wrist - c.first];
+    const ClusterBone& wrist = g_clRef[hand][c.wrist - c.first];
     float target[3] = { wrist.position[0], wrist.position[1], wrist.position[2] };
     target[lane] += kSweepAmp;
 
-    return WriteCluster(c, target, nullptr);
+    return WriteCluster(c, hand, target, nullptr);
+}
+
+// ONE CLUSTER BACK TO THE ENGINE. Both roles release through here, so the
+// lifetime guard below is written once and cannot drift between them.
+static void ReleaseCluster(int hand, const char* who)
+{
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return;
+    if (!g_clDriven[hand]) return;
+    g_clDriven[hand] = false;
+
+    // Only ever restore through a skeleton we still hold. A pointer from the
+    // previous level looks valid and writes into reused memory -- the same scar
+    // ArmHide_Reset and ArmHide_ReleaseInactiveHand both carry. The valid flag is
+    // tested PER HAND: a shared one would let a cluster we never captured be
+    // "restored" from another hand's reference.
+    if (!g_skeleton || !g_bones || !g_clRefValid[hand]) return;
+
+    const ClusterSpec c = SpecFor(hand);
+    if (c.last >= g_boneCount) return;
+
+    const ClusterBone* ref = g_clRef[hand];
+    for (int i = 0; i < c.count; ++i)
+    {
+        const int idx = c.first + i;
+        SafeWrite(g_bones[idx].position, ref[i].position, sizeof(ref[i].position));
+
+        // GATED ON THE SAME KEY AS THE WRITE, and that is not symmetry for its
+        // own sake. While bone 43's rotation was never ours, putting it back
+        // would have been wrong -- a reference captured minutes ago is stale.
+        // The moment we DO write it, the opposite is true: leaving it would
+        // strand the gun at a frozen angle on every release, which is every pause
+        // and every scripted scene. Off, this is byte-for-byte the old behaviour.
+        if (idx != kWeaponAttachBone || g_cfg.bone43Rot)
+            SafeWrite(g_bones[idx].rotation, ref[i].rotation, sizeof(ref[i].rotation));
+    }
+
+    SetDirty(1);          // hand the rig back, and keep M7's motion signal honest
+    Log(">>> %s: cluster released, engine evaluation requested.", who);
 }
 
 void ArmHide_ReleaseFreeHand()
 {
-    if (!g_clDriven) return;
-    g_clDriven = false;
+    const int hand = g_roleHand[kRoleFree];
+    if (hand < 0) return;
+    g_roleHand[kRoleFree] = -1;
+    ReleaseCluster(hand, "FREEHAND");
+}
 
-    // Only ever restore through a skeleton we still hold. A pointer from the
-    // previous level looks valid and writes into reused memory -- the same scar
-    // ArmHide_Reset and ArmHide_ReleaseInactiveHand both carry.
-    if (!g_skeleton || !g_bones || !g_clRefValid || g_clHand < 0) return;
+// ===========================================================================
+//  C1: THE WEAPON HAND, RIGID -- AND WHY THIS IS SIX LINES
+//
+// The gun sways because the game animates the skeleton UNDERNEATH the actor
+// transform DriveHands writes. The free hand does not sway, and that was an
+// accident of policy rather than a design: CaptureClusterRef freezes its
+// reference while driving, and a frozen reference replayed every frame is a
+// rigid hand.
+//
+// SO THE TARGET IS THE CLUSTER'S OWN REFERENCE WRIST. Feed WriteCluster the
+// wrist's captured position AND rotation and qDelta collapses to identity, so
+// every bone is rewritten exactly where the authored pose put it. That is
+// "replay the frozen pose" -- the sway removed and nothing else moved.
+//
+// DELIBERATELY NOT DERIVED FROM THE CONTROLLER. The actor transform already
+// carries this hand to where the controller is; re-deriving a wrist from the
+// pose and handsGrip would be a SECOND frame conversion that can only disagree
+// with the actor write, and every per-slot grip/cursor offset is tuned against
+// the authored pose. Nothing here needs the axis map either.
+//
+// > ### BONE 43 IS THE ONE BONE THIS DOES NOT FREEZE
+// > WriteCluster writes the weapon attach bone's position and never its
+// > rotation -- position is verified through telekinesis release, SCALE is known
+// > fatal (the attachment path divides by it), and rotation is untested. So
+// > under this freeze bone 43 is the ONLY bone in 27-44 the engine still
+// > animates, and if the weapon's rendered orientation comes from that
+// > quaternion the gun keeps swaying inside a rigid hand.
+// >
+// > NOBODY HAS EVER LOGGED THAT QUATERNION, so this measures it instead of
+// > guessing: read-only, throttled, peak-held. Under ~0.5 deg the question is
+// > closed and no write is ever needed. Several degrees and the tester's "look
+// > at the gun" verdict from the SAME launch says whether it is visible.
+// ===========================================================================
+static void Bone43Watch(int hand, const ClusterSpec& c)
+{
+    if (hand != HAND_RIGHT) return;                 // 43 is in the right cluster
+    if (kWeaponAttachBone > c.last || !g_bones) return;
 
-    const ClusterSpec c = SpecFor(g_clHand);
-    if (c.last >= g_boneCount) return;
+    BoneTransform live = {};
+    if (!SafeRead(&g_bones[kWeaponAttachBone], &live, sizeof(live))) return;
 
-    for (int i = 0; i < c.count; ++i)
+    const float* q = g_clRef[hand][kWeaponAttachBone - c.first].rotation;
+    float dot = 0.0f;
+    for (int i = 0; i < 4; ++i) dot += live.rotation[i] * q[i];
+    if (dot < 0.0f) dot = -dot;
+    if (dot > 1.0f) dot = 1.0f;
+    const float deg = 2.0f * acosf(dot) * 57.2957795f;
+    if (deg != deg) return;                         // NaN guard
+
+    static float peak = 0.0f;
+    static DWORD lastLog = 0;
+    if (deg > peak) peak = deg;
+
+    const DWORD now = GetTickCount();
+    if (now - lastLog < 1000) return;
+    lastLog = now;
+    Log(">>> B43: attach rotation drift  now %.2f deg  peak %.2f deg  "
+        "(cluster frozen; this bone is still the engine's)", deg, peak);
+    peak = 0.0f;
+}
+
+// ---- WHAT YOU ARE HOLDING CHANGED, SO THE POSE WE FROZE IS THE WRONG POSE ----
+// MEASURED, Build U, 2026-08-12. The cluster was captured once and replayed
+// through SEVEN weapon switches: `WEAPONHAND: cluster released` fired six times,
+// each 1 ms after a `PAUSE: PAUSED`, and never on a switch. So the pistol's
+// authored pose was replayed onto the machine gun and the shotgun, and pausing
+// "fixed" it only because the pause released and the unpause re-captured.
+//
+// CaptureClusterRef's own comment called this in advance: "The authored pose
+// changes on a weapon switch, and a reference from the wrong weapon would put the
+// fingers in the wrong shape." The free hand never exposed it because the idle
+// off-hand pose barely differs between weapons.
+//
+// AND THEN WAIT. Re-capturing on the change frame would freeze a pose taken
+// mid-equip, which is the same bug wearing a different hat. Release, let the
+// engine animate the draw it authored, and capture once it has settled.
+// WeaponSwitchSettleMs is the one number in this build not backed by a
+// measurement; a hand frozen mid-draw means it is too short.
+static const void* g_wpPoseKey = nullptr;
+static DWORD       g_wpKeyChanged = 0;
+static bool        g_wpSettling = false;
+
+bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
+{
+    if (!handsActor) return false;
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
+    if (!LocateSkeleton(handsActor)) return false;
+
+    const DWORD now = GetTickCount();
+    if (poseKey != g_wpPoseKey)
     {
-        const int idx = c.first + i;
-        SafeWrite(g_bones[idx].position, g_clRef[i].position, sizeof(g_clRef[i].position));
-
-        // Bone 43's rotation was never ours to write, so it is not ours to put
-        // back either -- and a reference captured minutes ago would be stale.
-        if (idx != kWeaponAttachBone)
-            SafeWrite(g_bones[idx].rotation, g_clRef[i].rotation, sizeof(g_clRef[i].rotation));
+        g_wpPoseKey = poseKey;
+        // A DIFFERENT WEAPON HAS A DIFFERENT GRAB POINT. Drop the latch so it is
+        // re-taken from the settled pose of what you are now holding, rather than
+        // leaving the previous weapon's fore-end as the target.
+        g_anchorValid[HAND_LEFT] = g_anchorValid[HAND_RIGHT] = false;
+        ArmHide_ReleaseWeaponHand();      // stamps the settle window itself
+        Log(">>> WEAPONHAND: what you are holding changed -- released for %d ms so "
+            "the equip can play, then re-freezing on the NEW pose.",
+            g_cfg.weaponSwitchSettleMs);
+    }
+    if (g_wpSettling)
+    {
+        if ((now - g_wpKeyChanged) < (DWORD)g_cfg.weaponSwitchSettleMs) return false;
+        g_wpSettling = false;
     }
 
-    SetDirty(1);          // hand the rig back, and keep M7's motion signal honest
-    Log(">>> FREEHAND: cluster released, engine evaluation requested.");
+    // THE FREE HAND WINS EVERY TIE. g_freeHand is the mirror of the weapon hand
+    // so this cannot happen in steady state, but a one-frame ability-mode flip
+    // could ask for it -- and M6-S1 is signed off, so it is the one that keeps
+    // its cluster. Refusing is the fail-closed answer.
+    if (g_roleHand[kRoleFree] == hand)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Log("!!! WEAPONHAND: the free hand already owns cluster %d. "
+                "Refusing -- the tracked hand keeps it.", hand);
+        }
+        return false;
+    }
+
+    const ClusterSpec c = SpecFor(hand);
+
+    // A HIDDEN cluster reads back OUR zeroes, and CaptureClusterRef refuses it on
+    // ScaleLooksNormal -- so a hand the inactive-hand pass has collapsed simply
+    // never freezes. That is the correct outcome and it costs no extra condition.
+    if (!CaptureClusterRef(c, hand)) return false;
+    g_freezeOwns[hand] = true;
+
+    static bool loggedHand[2] = { false, false };
+    if (!loggedHand[hand])
+    {
+        loggedHand[hand] = true;
+        Log(">>> WEAPONHAND: freezing the %s cluster, bones %d-%d.",
+            hand == HAND_LEFT ? "LEFT" : "RIGHT", c.first, c.last);
+    }
+
+    const ClusterBone& wrist = g_clRef[hand][c.wrist - c.first];
+    const bool ok = WriteCluster(c, hand, wrist.position, wrist.rotation);
+    if (ok) Bone43Watch(hand, c);
+    return ok;
+}
+
+// ---- M6-S2: WHERE THE GAME PUTS THE OFF HAND ---------------------------
+// The cluster's wrist in model space, LATCHED from a frame the engine owned.
+//
+// > ### IT CANNOT BE READ THROUGH CaptureClusterRef, AND THAT WAS A REAL BUG
+// > The first version did exactly that, and it is wrong the moment anything
+// > drives the cluster: CaptureClusterRef early-outs while driven and hands back
+// > OUR pose, so the "authored grab point" silently became whatever we last froze
+// > or tracked. REPORTED: *"when you grab the area, the hand attaches to way below
+// > the grab point (~6-12 inches below) and doesnt attach to the spot it normally
+// > does"* -- the hand was returning to a pose captured at a moment the arm was
+// > hanging, and every grab thereafter reproduced it.
+//
+// So latch it only on frames the ENGINE owns the cluster -- before tracking
+// starts, and throughout the post-equip settle window. The last refresh before we
+// take the cluster is therefore the settled authored pose for THIS weapon, which
+// is precisely the grab point. `ScaleLooksNormal` still refuses a collapsed
+// cluster, so a hidden hand reports no anchor rather than a false one.
+bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3])
+{
+    if (!handsActor || !outModel) return false;
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
+    if (!LocateSkeleton(handsActor)) return false;
+
+    const ClusterSpec c = SpecFor(hand);
+
+    // REFRESH ONLY WHILE THE ENGINE OWNS IT. Once we drive or freeze the cluster
+    // the array reports our own transform, and latching that would make the
+    // anchor chase itself.
+    if (!g_clDriven[hand] && g_bones && c.wrist < g_boneCount)
+    {
+        BoneTransform b = {};
+        if (SafeRead(&g_bones[c.wrist], &b, sizeof(b)) && ScaleLooksNormal(b.scale))
+        {
+            memcpy(g_anchorPos[hand], b.position, sizeof(g_anchorPos[hand]));
+            g_anchorValid[hand] = true;
+        }
+    }
+
+    if (!g_anchorValid[hand]) return false;
+    memcpy(outModel, g_anchorPos[hand], sizeof(float) * 3);
+    return true;
+}
+
+void ArmHide_ReleaseWeaponHand()
+{
+    bool releasedAny = false;
+    for (int h = 0; h < 2; ++h)
+    {
+        if (!g_freezeOwns[h]) continue;
+        g_freezeOwns[h] = false;
+        ReleaseCluster(h, "WEAPONHAND");
+        releasedAny = true;
+    }
+    if (!releasedAny) return;
+
+    // ---- SETTLE AFTER *ANY* RELEASE, NOT ONLY A WEAPON SWITCH -------------
+    // REPORTED, Build V: "the weapon position was incorrect while holding the
+    // shotgun after the little sister cutscene ended ... it got fixed by cycling
+    // the weapons." A scripted scene releases the cluster; on the frame it ends
+    // we re-froze immediately, capturing whatever pose the rig happened to hold
+    // coming out of the scene. Cycling weapons changed the pose key, which DID
+    // take a settle window, which is why cycling fixed it.
+    //
+    // The settle window was never really about weapon switches. It is about not
+    // capturing a pose the engine has not finished writing, and a release is the
+    // only moment that can be true. So it belongs here, where every release goes.
+    g_wpKeyChanged = GetTickCount();
+    g_wpSettling = true;
 }
 
 void ArmHide_Reset()
@@ -1318,5 +1778,5 @@ void ArmHide_Reset()
     ClearHandSaved();
     g_loggedFail = false;
     g_probeSkel = nullptr;      // a fresh rig deserves a fresh set of dumps
-    LeftClusterReset();
+    ClusterStateReset();
 }

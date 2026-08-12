@@ -343,6 +343,31 @@ value for value: wrists 6 and 27, clusters 6–21 and 27–44, both five-bone sl
 sets, weapon attach 43, 47 bones, 48-byte transform, skeleton at `+0x3FC`.
 Neither project copied the other.
 
+### Bone 43's three lanes are three different answers — MEASURED 2026-08-12
+
+The weapon attach bone has been described as "untouchable". It is not; **the lanes
+differ, and collapsing them rules out shipped features.**
+
+| lane | status |
+|---|---|
+| **position** | **written today, verified.** `HideBone` pushes it to `kFarBelow` and `WriteCluster` carries it every frame the right cluster is driven — which is every plasmid scene. Run 1 covered telekinesis release and it did not crash |
+| **scale** | **KNOWN FATAL.** The attachment path inverse-decomposes the bone and *divides* by scale, so a zero throws the weapon through the near plane |
+| **rotation** | **written as of Build V**, behind `WeaponHandBone43Rot`, guarded on unit length |
+
+**Why rotation had to become a written lane.** With the C1 cluster freeze on and
+this bone excluded, it is **the only bone in 27–44 the engine still animates** —
+and the `B43:` diagnostic measured it drifting **1–5° at idle with peaks of 41.82,
+61.28, 63.58, 77.36, 80.78, 126.12 and 134.77°** across 191 samples in one
+session. The tester saw exactly that: *"the hands appear to not be animated, but
+the gun sway still is."* Position-only can never produce a rigid gun.
+
+**The guard follows from the fatal lane rather than from caution.** What kills
+this bone is a *division*, so a non-unit quaternion is the same hazard's
+rotational shape; the write is refused unless `|q|² ∈ [0.998, 1.002]`. And
+`ReleaseCluster` restores the rotation **under the same key** — writing it without
+restoring would strand the gun at a frozen angle on every pause and every
+scripted scene.
+
 ### Bone 43 → 44 is the barrel axis — MEASURED 2026-08-11
 
 Bone 43 is the weapon attach point and 44 is the tip of that chain, so **the gun
