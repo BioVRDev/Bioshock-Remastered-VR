@@ -35,6 +35,13 @@
 #include "Core/Config.h"
 
 static void MotionReset();        // defined with the M7-S4 block below
+// Set by CameraHook each frame: may the CURRENT slot adopt engine animation?
+// A plain bool rather than a slot number, so this file never learns what a
+// weapon slot is.
+static bool g_animAllowed = false;
+void ArmHide_SetAnimAllowed(bool allowed) { g_animAllowed = allowed; }
+static bool ArmHide_AnimAllowedHere() { return g_animAllowed; }
+
 static void ClusterStateReset();  // defined with the M6-S1 block below
 
 extern void LogFile(const char* msg);
@@ -1233,7 +1240,11 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
         // THE PRECONDITION IS MEASURED, not assumed: docs/ENGINE-MAP.md
         // records that the array keeps evaluating in ordinary play with the
         // dirty byte cleared -- bone 27 moved between every pair of dumps.
-        if (!g_cfg.handAnim) return true;
+        // PER SLOT. The wrench keeps its rigid hand even with HandAnim on --
+        // its swing animation is suppressed on purpose and the tester asked for
+        // that. ArmHide has no business knowing which weapon is up, so the
+        // caller publishes it.
+        if (!ArmHide_AnimAllowedHere()) return true;
 
         ClusterBone live[kClusterMax] = {};
         for (int i = 0; i < c.count; ++i)

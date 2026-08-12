@@ -371,6 +371,8 @@ SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrSuggestInteractionProfileBindings(X
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrAttachSessionActionSets(XrSession, const XrSessionActionSetsAttachInfo*);
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrCreateActionSpace(XrSession, const XrActionSpaceCreateInfo*, XrSpace*);
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrSyncActions(XrSession, const XrActionsSyncInfo*);
+SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrApplyHapticFeedback(
+    XrSession, const XrHapticActionInfo*, const XrHapticBaseHeader*);
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateBoolean(XrSession, const XrActionStateGetInfo*, XrActionStateBoolean*);
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateFloat(XrSession, const XrActionStateGetInfo*, XrActionStateFloat*);
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateVector2f(XrSession, const XrActionStateGetInfo*, XrActionStateVector2f*);
@@ -934,6 +936,7 @@ SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(
         { "xrAttachSessionActionSets",   (PFN_xrVoidFunction)xrAttachSessionActionSets },
         { "xrCreateActionSpace",         (PFN_xrVoidFunction)xrCreateActionSpace },
         { "xrSyncActions",               (PFN_xrVoidFunction)xrSyncActions },
+        { "xrApplyHapticFeedback",       (PFN_xrVoidFunction)xrApplyHapticFeedback },
         { "xrGetActionStateBoolean",     (PFN_xrVoidFunction)xrGetActionStateBoolean },
         { "xrGetActionStateFloat",       (PFN_xrVoidFunction)xrGetActionStateFloat },
         { "xrGetActionStateVector2f",    (PFN_xrVoidFunction)xrGetActionStateVector2f },

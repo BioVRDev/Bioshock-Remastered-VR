@@ -301,6 +301,16 @@ struct VrConfig
     // because the frames that follow are small deltas again.
     int   handAnimHoldMs = 1200;
 
+    // PER SLOT, because the answer differs by weapon and one of them is a
+    // decision rather than a preference. Recoil and reload belong on the guns;
+    // the WRENCH's swing animation is deliberately suppressed -- a canned arc
+    // fights a motion-controlled swing, and the tester asked to keep it that way
+    // (`.planning/DECISIONS.md`). Slot 0 is the wrench, hence the one exception.
+    //
+    // Read as HandAnimSlotN, defaulting to HandAnim for every slot that does not
+    // name itself, so the global still works as a master switch.
+    int   handAnimSlot[9] = {};
+
     // 1 == the weapon attach bone's ROTATION is frozen along with the rest of the
     // cluster, so the gun is rigid with the hand instead of swaying inside it.
     //

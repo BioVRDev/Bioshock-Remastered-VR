@@ -2968,6 +2968,11 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // forever: Build Z did exactly that and logged ZERO probe lines in a
             // whole session, with the grip never engaging once. Yielding the
             // settle window is what gives the latch its opportunity.
+            // Publish whether THIS weapon may adopt engine animation, so
+            // ArmHide's adoption policy never has to know about weapon slots.
+            ArmHide_SetAnimAllowed(g_cfg.handAnim != 0 &&
+                (wslot >= 0 && wslot <= 8) && g_cfg.handAnimSlot[wslot] != 0);
+
             const bool thSlot = g_cfg.twoHandGrip && TwoHandableSlot(wslot);
             g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 &&
                 (hideHand || (thSlot && !CameraHook_TwoHandGripped() &&

@@ -233,6 +233,16 @@ void Config_Load(const char* iniPath)
     g_cfg.handAnim = CfgIntRange("HandAnim", 0, 0, 1);
     g_cfg.handAnimMinDeg = CfgIntRange("HandAnimMinDeg", 12, 0, 180);
     g_cfg.handAnimHoldMs = CfgIntRange("HandAnimHoldMs", 1200, 0, 10000);
+    for (int s3 = 0; s3 < 9; ++s3)
+    {
+        char key[32];
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "HandAnimSlot%d", s3);
+        // Slot 0 is the wrench and defaults OFF even when HandAnim is on: its
+        // swing animation fights the motion-controlled swing, and that is a
+        // recorded decision rather than a taste call.
+        const int def = (s3 == 0) ? 0 : g_cfg.handAnim;
+        g_cfg.handAnimSlot[s3] = CfgIntRange(key, def, 0, 1);
+    }
     g_cfg.bone43Rot = CfgIntRange("WeaponHandBone43Rot", 1, 0, 1);
     g_cfg.weaponSwitchSettleMs = CfgIntRange("WeaponSwitchSettleMs", 600, 0, 5000);
     g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
@@ -580,9 +590,21 @@ void Config_Load(const char* iniPath)
         g_cfg.handAnim ? "(adopt the engine's animation when it restamps)"
         : "(rigid; reference frozen at capture)");
     if (g_cfg.handAnim)
+    {
         CfgEcho("HandAnim tuning", "min %d deg, hold %d ms  (below the threshold "
             "is breathing and stays rigid)",
             g_cfg.handAnimMinDeg, g_cfg.handAnimHoldMs);
+        char slots[64] = {};
+        int n = 0;
+        for (int i = 0; i < 9 && n < 60; ++i)
+        {
+            if (i) slots[n++] = ',';
+            slots[n++] = g_cfg.handAnimSlot[i] ? '1' : '0';
+        }
+        slots[n] = 0;
+        CfgEcho("HandAnimSlot", "%s   (slot 0 is the wrench and is OFF by design)",
+            slots);
+    }
     CfgEcho("TwoHandGrip", "%d  %s", g_cfg.twoHandGrip,
         g_cfg.twoHandGrip ? "(off-hand grip near the fore-end two-hands the weapon)"
         : "(off)");

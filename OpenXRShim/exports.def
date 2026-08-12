@@ -36,3 +36,4 @@ EXPORTS
     xrGetActionStateFloat
     xrGetActionStateVector2f
     xrLocateSpace
+    xrApplyHapticFeedback

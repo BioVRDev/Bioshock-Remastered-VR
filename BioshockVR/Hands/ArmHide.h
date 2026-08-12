@@ -164,3 +164,9 @@ bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3]);
 // that drive a cluster MUST stand down while this is set, or the engine never
 // owns the bones and the grab point above can never be latched.
 bool ArmHide_PoseSettling();
+
+// Whether the weapon currently in hand may adopt the engine's animation
+// (HandAnim, per slot). Published by the caller because ArmHide deliberately
+// knows nothing about weapon slots. Off for the wrench by design -- a canned
+// swing fights a motion-controlled one.
+void ArmHide_SetAnimAllowed(bool allowed);

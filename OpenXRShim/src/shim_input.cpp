@@ -458,6 +458,55 @@ SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateFloat(
     return XR_SUCCESS;
 }
 
+// ---------------------------------------------------------------- haptics
+// THE LAST MISSING PIECE, and it was missing quietly. Every binding manifest
+// above already declares haptic_l/haptic_r, and every action already gets a
+// SteamVR handle -- but without this entry point the mod could not reach them,
+// and because BioshockVR.dll statically imports this DLL, its first CALL to
+// xrApplyHapticFeedback stopped the game loading altogether (2026-08-12).
+//
+// OpenXR gives nanoseconds and may ask for XR_FREQUENCY_UNSPECIFIED; SteamVR
+// wants seconds and a real frequency. 160 Hz is the mid-band both Touch and Index
+// reproduce well, and it is what SteamVR's own samples use for a generic pulse.
+//
+// XR_MIN_HAPTIC_DURATION (-1) means "the shortest pulse the hardware can do" --
+// 40 ms is short enough to read as a tick and long enough that Touch actually
+// fires it.
+SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrApplyHapticFeedback(
+    XrSession, const XrHapticActionInfo* hi, const XrHapticBaseHeader* header)
+{
+    if (!hi || !header) return XR_ERROR_VALIDATION_FAILURE;
+    ActionRec* a = (ActionRec*)hi->action;
+    if (!a || !a->vrHandle || !g_inputReady) return XR_SUCCESS;
+    if (header->type != XR_TYPE_HAPTIC_VIBRATION) return XR_ERROR_VALIDATION_FAILURE;
+
+    const XrHapticVibration* v = (const XrHapticVibration*)header;
+
+    float seconds = (v->duration == XR_MIN_HAPTIC_DURATION)
+        ? 0.04f : (float)((double)v->duration / 1e9);
+    if (seconds < 0.01f) seconds = 0.01f;
+    if (seconds > 2.0f)  seconds = 2.0f;      // a stuck buzz is worse than none
+
+    float freq = v->frequency;
+    if (freq == XR_FREQUENCY_UNSPECIFIED || freq <= 0.f) freq = 160.0f;
+
+    float amp = v->amplitude;
+    if (amp < 0.f) amp = 0.f;
+    if (amp > 1.f) amp = 1.f;
+
+    const EVRInputError ie = g_vr.input->TriggerHapticVibrationAction(
+        a->vrHandle, 0.0f, seconds, freq, amp, vr::k_ulInvalidInputValueHandle);
+
+    static bool told = false;
+    if (ie != EVRInputError_VRInputError_None && !told)
+    {
+        told = true;
+        SLOG("!!! input: TriggerHapticVibrationAction -> %d. Haptics are off for "
+             "this session; everything else still works.", (int)ie);
+    }
+    return XR_SUCCESS;
+}
+
 SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateVector2f(
     XrSession, const XrActionStateGetInfo* gi, XrActionStateVector2f* out)
 {
