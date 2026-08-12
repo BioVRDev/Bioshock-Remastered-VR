@@ -314,6 +314,18 @@ handoff disagree, this file wins.
   ask what it would do to a spike.**
 
 ### Architecture
+- **A "does this look like an engine object" check must not be applied to a
+  buffer — 2026-08-11.** `GsLooksLikeObject` requires a vtable whose first slot
+  is executable. A `TArray`'s data pointer fails that by construction: its first
+  word is element 0, whose first word points at a vtable, and **a vtable lives in
+  read-only data, not executable memory**. Running the object test on array data
+  rejected a correct pointer every time and hid the Flash interface controller for
+  three sessions. Fail closed is right; failing closed on the wrong predicate is
+  not. Use `GsLooksLikeBuffer` for anything that is not itself an object.
+- **A pointer walk that bails must say WHICH STEP bailed.** The same chain logged
+  one line — `chain did not resolve` — and latched it, so a permanent failure and
+  a not-yet-ready one were indistinguishable. Report the step and the value, and
+  retry on a backoff rather than latching the first miss.
 - **Draw signatures may control cosmetic presentation. They must never gate
   camera or input behaviour.** A false-positive draw count once froze turning
   because the aim-base update was gated on `DrawHook_MenuUp()`. **This is the same

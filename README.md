@@ -6,8 +6,8 @@ controllers and 6-DOF weapon holding.
 Built by hooking the game directly: `IDXGISwapChain::Present` for the frame,
 `APlayerController::eventPlayerCalcView` for the camera, and the D3D11 draw path
 for the interface. The engine is a heavily modified Unreal 2.5 fork with no
-reflection system, so everything here was found by scanning and measuring rather
-than read out of an SDK dump.
+public SDK, so everything here was found by scanning and measuring rather than
+read out of a dump.
 
 I would highly recommend you install these two mods for the best experience:
 
@@ -90,26 +90,52 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 - Walking head bob removed at the source
 - Adjustable height and IPD
 
+**Moving and turning**
+- `MovementMode` picks what steers your walking: nothing but the stick, where you
+  point, where you look, or both. Aiming is a separate setting, so any way of
+  walking works with either way of aiming
+- Walking goes where you asked. The game applies its stick deadzone per axis,
+  which bent your path by up to 11 degrees whenever the mod redirected the stick
+  and snapped you to a pure sidestep near 90; that is undone before the value
+  reaches the game
+- Turn speed is capped so the same push always turns you at the same rate — the
+  game's own response curve is nearly vertical at the top of the stick, which is
+  the whole of "sometimes slow, sometimes fast"
+- Snap turn, with an adjustable step
+
 **Hands and weapons**
 - 6-DOF weapon holding driven by the right controller
+- The hand that is not holding your weapon appears and follows its own
+  controller, on the weapons that hide it
 - Aim, crosshair and the actual shot all derive from one value, so where the dot
   is is where the bullet goes
 - Per-weapon grip position and angle, tunable live in the headset and saved
   automatically
 - Forearms hidden at the skeleton while the hands and weapon stay visible
 - The game's flat 2D reticle disabled at the engine level and replaced with a
-  proper VR dot
+  proper VR dot. It hides itself when your hands are empty and during scripted
+  scenes, so it never floats over a cutscene
 
 **Interface**
 - The HUD is captured off the eye image and composited as its own layer, so it
   sits at a comfortable depth instead of being painted onto the world
 - Adjustable size and position, tunable live
-- Menus and the map appear on a screen fixed in the room
+- Menus appear on a screen fixed in the room
+- Individual screens can be placed by name — `AnchorMovies`, `FollowMovies` and
+  `SceneMovies` in the ini decide whether a given screen stays put in the room,
+  follows your head, or is left exactly where the game drew it. The settings ship
+  empty; the ini lists the screen names
 
-**Cutscenes**
+**Cutscenes and scripted scenes**
 - Pre-rendered cutscenes play on a screen anchored in the room. You can look
   around it and the camera no longer follows your head — a large comfort
   improvement in the opening sequence
+- Scripted sequences land you where they intend and face you the way they
+  intended, whichever way you were looking or pointing when they started. Neither
+  head look nor the right stick pulls them off course
+- The right stick still turns you during a scene, and `ScriptedRecentre` hands
+  that back as the scene rotates so it still reaches its own framing
+- Your arms and hands appear only while the scene is actually animating them
 
 **Controls**
 - Touch and Index controllers mapped to a virtual gamepad
@@ -129,7 +155,7 @@ into `BioshockVR.ini`.
 | <kbd>F11</kbd> / <kbd>F12</kbd> | HUD panel smaller / larger |
 | <kbd>Del</kbd> | cycle which HUD property F11/F12 edits |
 | <kbd>Home</kbd> | toggle the HUD panel off, to compare |
-| <kbd>Numpad 9</kbd> | cycle weapon grip mode: position / angle / aim |
+| <kbd>Numpad 9</kbd> | cycle what the axis keys edit: gun position / gun angle / aim / off-hand position / off-hand angle |
 | <kbd>Numpad 8 2 4 6 0 5</kbd> | adjust the current mode |
 | <kbd>Numpad 7</kbd> | change step size |
 
@@ -169,9 +195,20 @@ and works on any build.
 resolutions by any reliable formula — this was measured and the scaling law was
 ruled out. Change either and expect to re-tune.
 
-**In-engine cutscenes still track your head.** Only pre-rendered ones are
-detected and moved to the flat screen. The opening is covered; some later
-scripted sequences aren't.
+**The gene machines put their text in the wrong place.** At a Gene Bank or
+Gatherer's Garden the description and slot labels sit on the HUD panel in front
+of you rather than inside the green panels they belong to. Those panels are part
+of the room, so a panel that follows your head can never line up with them. The
+screen is still usable and the text is still readable; it just is not where it
+should be. Not yet fixed.
+
+**Walking through water draws its effect as a square** rather than covering your
+whole view.
+
+**In-engine cutscenes still track your head.** Only pre-rendered ones are moved to
+the flat screen. Scripted sequences themselves — where they walk you, which way
+they turn you — are handled, but the camera during an in-engine cutscene is not
+detached the way a pre-rendered one is.
 
 **Weapon idle sway remains.** The weapon hangs off a bone of the arm mesh, so it
 inherits the authored idle animation. Hiding the arms doesn't stop it.

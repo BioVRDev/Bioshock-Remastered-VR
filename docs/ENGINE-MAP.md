@@ -466,6 +466,30 @@ GetTopPlayingMovie, this = FlashGUIController:
 
 `Actor::Level` is `+0xF8`, self-referential — see *Pause / full-menu detection*.
 
+**The movie's NAME is a file path string, measured live 2026-08-11.** No FName
+table is needed, which was the feared blocker:
+
+| Offset on a `FlashMovie` | Holds |
+|---|---|
+| `+0x40` | the file **requested** — `..\FlashMovies\Warning.swf` |
+| `+0x4C` | the file **resolved** — `..\FlashMovies\WarningPC.swf`, or `NoFileSpecified` |
+| `+0x7C` | a Bink path, when the movie plays one |
+
+They differ (`Warning` → `WarningPC`, `Hacking` → `HackingPC`), so match against
+**both**. Read as UTF-16 first, then ANSI — grep `GsTryReadString`.
+
+**⚠ THE ARRAY-DATA STEP IS NOT AN OBJECT.** `+0x44`/`+0x48` are a `TArray`'s Data
+and ArrayNum, and running an is-this-an-object check on Data rejects a correct
+pointer — see `docs/INVARIANTS.md` § *Architecture*. That hid this whole API for
+three sessions.
+
+**Screens observed live** (the complete set across three sessions of opening every
+reachable menu): `HUDPC` · `HUDRadial` · `PausePC` · `Maps` · `ingamemanual` ·
+`HackingPC` · `craftingstationPC` · `WarningPC` · `PlasmiNowPC` ·
+`PlasmidTrainingContainer` · `GenericBinkContainer`. **"What is this?" is
+`ingamemanual`.** The gene/tonic equip screens are **not** in this list and are
+drawn inside `HUDPC` — `.planning/DECISIONS.md`, 2026-08-11.
+
 ### `AWeapon::GetPerfectFireStart` — vtable slot `+0x304`
 
 Returns the shot origin and rotation, which **answers M4-S3 by asking instead of
