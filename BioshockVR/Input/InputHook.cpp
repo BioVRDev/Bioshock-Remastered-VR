@@ -62,9 +62,16 @@ bool GameState_Theater();            // GameState.cpp
 bool GameState_ScriptedAnim();       // GameState.cpp
 bool GameState_ForcedMove();         // GameState.cpp
 
-// M7-S2/S6. Mirrors CameraHook's ScriptedAimReleased(): the turn path must be
-// handed back for the whole window in which the mod is not writing the aim
-// field, which includes the forced move BEFORE a sequence starts.
+// M7-S2/S6. The turn path must be handed back for the whole window in which the
+// mod is not writing the aim field, which includes the forced move BEFORE a
+// sequence starts.
+//
+// ⚠ THIS IS NOT A MIRROR OF CameraHook's ScriptedAimReleased(), and the comment
+// here used to claim it was. That one now also releases for a "walk through"
+// scene (ControllableScriptedFix), where the mod deliberately KEEPS writing the
+// aim field so head look can steer. This one stays wider on purpose: releasing
+// the turn axis there is what the tester signed off on -- "the big daddy splicer
+// fight felt mostly normal". Do not weld them together without a headset.
 static bool ScriptedQol()
 {
     return g_cfg.scriptedQol &&

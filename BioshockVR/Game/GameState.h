@@ -112,6 +112,19 @@ bool GameState_Bathysphere();
 // signal, which is a different question.
 bool GameState_ForcedMove();
 
+// TRUE for a scripted animation the player is still meant to walk through -- the
+// Big Daddy killing a splicer, where the meters stay up and you keep control.
+//
+// DECIDED ONCE, inside the first second of the animation, and frozen until it
+// ends. It has to be: the per-frame version of this question could flip in the
+// middle of a sequence, which resumed the aim write while the game was still
+// moving the player and threw the balcony landing 3.7 m off. See the banner in
+// GameState.cpp.
+//
+// FALSE while undecided, so callers fail closed. Consumers still gate on
+// g_cfg.controllableScripted -- this reports the fact, not the policy.
+bool GameState_ScriptedInControl();
+
 void GameState_Reset();
 bool GameState_Cutscene();
 bool GameState_InGame();

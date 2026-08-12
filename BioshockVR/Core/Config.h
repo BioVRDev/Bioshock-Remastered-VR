@@ -239,6 +239,14 @@ struct VrConfig
     // field we follow, and head aim was overwriting the one it was on.
     int   scriptedCameraFollow = 1;
 
+    // ScriptedEntryHeading lived here and is GONE -- falsified in a headset,
+    // 2026-08-11. It substituted a heading into the aim field as a scripted
+    // window opened, on the theory that a forced move steers by whatever we last
+    // left there. A forced move steers by nothing of ours: under M7-S6, which
+    // never writes the field during a sequence, three falls entered at wildly
+    // different controller angles landed on the SAME spot. With the substitution
+    // on, both straight-on runs landed badly wrong -- the write is the damage.
+
     // Ground truth for the residual walk drift: where the pawn ACTUALLY went,
     // against where the mode promised. Read-only, silent unless you are moving.
     int   walkDriftProbe = 1;
@@ -370,6 +378,14 @@ struct VrConfig
     // How much rig motion counts as "animating" for the scripted arm gate.
     // Calibrated from the logged raw/smoothed values -- see ScriptedHandsMoving.
     float scriptedHandsMotion = 0.02f;
+
+    // How long the arm gate keeps the hands up after the rig stops moving.
+    // TUNABLE BECAUSE THE RIGHT ANSWER DIFFERS BY SCENE: the plasmid injection
+    // holds a pose for 2.5-4.5 s mid-animation and the hands vanish, while the
+    // Little Sister crawl needs the gate sharp so they stay hidden after the
+    // bottle catch. 300 was hardcoded and is kept as the default.
+    int   scriptedHandsHoldMs = 300;
+
     int   modYaw = 0;          // mod owns yaw: stick turns g_aimBase directly
     float modYawSpeed = 90.0f; // deg/sec at full deflection
     int   forceFocus = 1;   // ForceWindowFocus

@@ -379,6 +379,8 @@ void Config_Load(const char* iniPath)
     g_cfg.scriptedProbe = CfgBool("ScriptedWindowProbe", true);
     g_cfg.scriptedHandsMotion =
         CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
+    g_cfg.scriptedHandsHoldMs =
+        CfgIntRange("ScriptedHandsHoldMs", 300, 0, 10000);
     g_cfg.modYaw = CfgIntRange("ModYaw", 0, 0, 1);
     g_cfg.modYawSpeed = CfgFloat("ModYawSpeed", 90.0f, 15.0f, 360.0f);
     g_cfg.forceFocus = CfgIntRange("ForceWindowFocus", 1, 0, 1);
@@ -492,6 +494,8 @@ void Config_Load(const char* iniPath)
         g_cfg.scriptedRotFollow ? "(cutscenes turn you)"
         : "(view holds still; turn yourself)");
     CfgEcho("ScriptedHandsMotionThreshold", "%.4f", g_cfg.scriptedHandsMotion);
+    CfgEcho("ScriptedHandsHoldMs", "%d   (hands stay up this long after the rig "
+        "stops)", g_cfg.scriptedHandsHoldMs);
     CfgEcho("ControllableScriptedFix", "%d  %s", g_cfg.controllableScripted,
         g_cfg.controllableScripted ? "(a sequence with the HUD up keeps your aim)"
         : "(off)");

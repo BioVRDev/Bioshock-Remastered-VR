@@ -142,20 +142,48 @@ means the same thing whoever wrote the field. `CameraHook_OwnsAimField()` still
 names that condition. Subtracting terms the field never contained is what steered
 the plasmid balcony scene off its path.
 
-### Scripted scenes rotate you on two different fields
+### Scripted scenes rotate you on two different fields — and sometimes both
 
 `ScriptedCameraFollow` (on by default) advances `g_aimBase` by the game's own
-`cleanRot` yaw delta during a scripted window, **as well as** following the aim
-field. Both are needed, because different scenes use different fields:
+`cleanRot` yaw delta during a scripted window. Different scenes use different
+fields:
 
 | Scene | aim field | the game's own camera |
 |---|---:|---:|
 | Little Sister rescue | rotates | — |
-| **Balcony fall** | **0.00 deg/s** | **up to 125 deg/s** |
+| **Balcony fall**, across the window | **0.00 deg/s** | **up to 125 deg/s** |
+| **Balcony fall**, the opening snap | **41.03 deg/s** | **41.03 deg/s** |
 
 Measured 2026-08-11 with every gate open, so nothing was being discarded — the
 fall's rotation had simply never been read. It is why that scene never turned the
 player, for the whole life of the mod.
+
+> **⚠ THE LAST ROW IS THE CORRECTION, and it cost three runs.** This table
+> originally had only the middle row, from a deg/s average across the whole
+> 67-second window — and on that evidence the mod followed **both** fields. But
+> the opening snap moves both *identically*, so it landed twice and the view
+> finished a whole snap past the authored heading. The error equalled the snap in
+> three consecutive runs, sign included: **+41°, −4°, −77°**, against the tester's
+> *"45 right"*, *"almost perfect"*, *"90 left"*.
+>
+> The camera is downstream of the aim field, so it already carries anything the
+> scene did to `Controller.Rotation`. **It is now the single source of scripted
+> yaw** (grep `ONE SOURCE FOR SCRIPTED YAW`); the aim-field path still owns pitch
+> and roll, which the follow never handled. `ScriptedCameraFollow=0` reverts to
+> aim-field-only.
+
+### The balcony's authored numbers
+
+Useful because they turn *"landed wrong"* into arithmetic, and both were stable
+across every correct run on two different builds:
+
+| | value |
+|---|---|
+| authored heading | **−90.0°**, held for twelve seconds after the snap |
+| landing position | **−417.1, −3144.8, −31.8** |
+
+A run that ends anywhere else is a regression, and the log says so without anyone
+having to judge it by eye.
 
 ### Turn response
 

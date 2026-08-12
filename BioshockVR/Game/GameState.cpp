@@ -474,6 +474,7 @@ static void ForcedMoveReset();
 static void ScriptedAnimTick();
 static void BathysphereTick();
 static void ForcedMoveFlagTick(const uint8_t* controller);
+static void ScriptedOwnershipTick();
 static void ScriptedWindowProbe(const uint8_t* controller);
 
 // ---- WORLD FOV CEILING ---------------------------------------------------
@@ -1086,6 +1087,11 @@ void GameState_Observe(void* playerController)
 
     // M7-S6. The forced-move window -- the entry stall.
     ForcedMoveFlagTick((const uint8_t*)playerController);
+
+    // Decides ONCE per scripted animation who owns the aim. Must run after both
+    // flags above are fresh, and unconditionally -- its HUD peak-hold only works
+    // if it is sampled every tick.
+    ScriptedOwnershipTick();
 
     // Which signal separates a scripted sequence you can WALK THROUGH from one
     // that owns you. Read-only, throttled, and silent outside the window.
@@ -2319,6 +2325,144 @@ static const size_t kAForwardOff = 0x5C0;   // PlayerController.aForward
 static const size_t kAStrafeOff = 0x5C8;   // PlayerController.aStrafe
 
 bool DrawHook_HudCaptured();               // DrawHook.cpp, render thread
+
+// ============================================================================
+//  ONE VERDICT PER SCRIPTED ANIMATION -- and it cannot change while it runs
+//
+// THE BUG THIS EXISTS TO CLOSE, measured at the balcony 2026-08-11. The mod must
+// not write Controller.Rotation at any point while a sequence is moving the
+// player: M7-S6 established that, and three falls entered at wildly different
+// controller angles under that build all landed on the SAME spot, so the entry
+// heading is not what steers a forced move -- our writes fighting it are.
+//
+// The "scripted scene you can walk through" fix then reintroduced a way for the
+// window to break MID-SCENE. Its predicate was evaluated every frame:
+//
+//     controllableScripted && ScriptedAnim() && HudIsUp()
+//
+// and HudIsUp() is a 500 ms peak-hold on a RENDER-THREAD draw counter. One
+// millisecond after the forced-move flag dropped, that flipped to "you are in
+// control", the aim write resumed for 107 ms while the game was still moving
+// the player, and the fall landed 3.7 metres from where the two runs with an
+// intact window landed -- and those two agreed to a TENTH OF A UNIT. Whether the
+// HUD happens to draw inside that half-second is a race, which is exactly why
+// the symptom was "different every single run".
+//
+// SO THE VERDICT IS TAKEN ONCE. A per-frame predicate over a racy signal can
+// flip mid-scene; a decision made once cannot. Locked inside the first second,
+// then frozen until the animation ends.
+//
+// FAIL CLOSED: undecided reads as "the game owns you", so the aim is released
+// until something proves otherwise. Being wrong that way costs a fraction of a
+// second of the gun not tracking. Being wrong the other way is the bug above.
+//
+// A FORCED MOVE ALWAYS WINS, at any time, even after the verdict locked the
+// other way. Deliberately asymmetric: flipping toward "do not write" is safe.
+// ============================================================================
+
+enum { OWN_UNDECIDED = 0, OWN_GAME = 1, OWN_PLAYER = 2 };
+
+// Before the verdict may be taken. The forced-move flag rises 2-6 ms AFTER the
+// animation begins (measured, three balcony runs), so a verdict on frame one
+// would miss it. 150 ms is 25x that.
+static const DWORD kOwnDecideFromMs = 150;
+
+// After this the verdict is GAME, permanently. Without a ceiling a HUD flicker
+// ten seconds into a locked cutscene would re-open the aim write -- the same
+// bug, from the same signal, just later.
+static const DWORD kOwnDecideByMs = 1000;
+
+// How long BOTH flags must stay clear before the forced-move latch is dropped.
+// NOT dropped at the animation's rising edge: the bathysphere's forced move ends
+// 14 ms BEFORE its animation begins, and clearing on the edge would lose it and
+// judge the ride "in control".
+static const DWORD kOwnLatchIdleMs = 1000;
+
+static long  g_scriptedOwn = OWN_UNDECIDED;
+static DWORD g_ownAnimT0 = 0;
+static bool  g_ownForcedSeen = false;
+static DWORD g_ownIdleSince = 0;
+
+bool GameState_ScriptedInControl() { return g_scriptedOwn == OWN_PLAYER; }
+
+// Moved here from CameraHook so the decision has one owner on one thread. Same
+// peak-hold shape as before: the HUD does not draw every frame, so the raw
+// counter alone chatters.
+static bool HudDrawnRecently()
+{
+    static DWORD lastDrew = 0;
+    const DWORD now = GetTickCount();
+    if (DrawHook_HudCaptured()) lastDrew = now;
+    return lastDrew != 0 && (now - lastDrew) < 500;
+}
+
+static void ScriptedOwnershipTick()
+{
+    const DWORD now = GetTickCount();
+    const bool anim = GameState_ScriptedAnim();
+    const bool forced = GameState_ForcedMove();
+
+    // Sampled EVERY tick, unconditionally, or the peak-hold above is meaningless.
+    const bool hud = HudDrawnRecently();
+
+    // ---- the forced-move latch ----------------------------------------------
+    if (forced)
+    {
+        g_ownForcedSeen = true;
+        g_ownIdleSince = 0;
+    }
+    else if (anim)
+    {
+        g_ownIdleSince = 0;          // never expire it mid-animation
+    }
+    else if (!g_ownIdleSince)
+    {
+        g_ownIdleSince = now;
+    }
+    else if (now - g_ownIdleSince >= kOwnLatchIdleMs)
+    {
+        g_ownForcedSeen = false;
+    }
+
+    // ---- a new animation reopens the question -------------------------------
+    static bool s_wasAnim = false;
+    if (anim != s_wasAnim)
+    {
+        s_wasAnim = anim;
+        g_ownAnimT0 = now;
+        if (g_scriptedOwn != OWN_UNDECIDED)
+            _InterlockedExchange(&g_scriptedOwn, OWN_UNDECIDED);
+    }
+
+    if (!anim) return;
+
+    if (g_ownForcedSeen)
+    {
+        if (g_scriptedOwn != OWN_GAME)
+        {
+            _InterlockedExchange(&g_scriptedOwn, OWN_GAME);
+            Log(">>> SCRIPTED: THE GAME OWNS THIS ONE -- it moved the player. Aim "
+                "stays released for the whole animation.");
+        }
+        return;
+    }
+
+    if (g_scriptedOwn != OWN_UNDECIDED) return;     // already locked
+
+    const DWORD age = now - g_ownAnimT0;
+    if (age >= kOwnDecideFromMs && hud)
+    {
+        _InterlockedExchange(&g_scriptedOwn, OWN_PLAYER);
+        Log(">>> SCRIPTED: YOU ARE STILL IN CONTROL of this one -- HUD up, no "
+            "forced move in %lu ms. Verdict locked.", (unsigned long)age);
+    }
+    else if (age >= kOwnDecideByMs)
+    {
+        _InterlockedExchange(&g_scriptedOwn, OWN_GAME);
+        Log(">>> SCRIPTED: no HUD in the first %lu ms -- the game owns this one. "
+            "Verdict locked.", (unsigned long)kOwnDecideByMs);
+    }
+}
 
 static void ScriptedWindowProbe(const uint8_t* controller)
 {

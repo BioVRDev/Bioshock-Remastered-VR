@@ -54,8 +54,16 @@ bool Input_GetSentStickAngle(float* outDeg);   // InputHook.cpp -- for WalkDrift
 static void Log(const char* fmt, ...);   // defined just below
 
 // M7-S4: is the rig actually animating? The script has no usable flag for this
-// -- see ArmHide.h. Peak-held, then held a further 300 ms so a pause inside a
-// chained animation does not flicker the hands out.
+// -- see ArmHide.h. Peak-held, then held a further ScriptedHandsHoldMs so a
+// pause inside a chained animation does not flicker the hands out.
+//
+// THE HOLD IS AN INI VALUE BECAUSE THE RIGHT ANSWER DIFFERS BY SCENE, and this
+// signal cannot tell the scenes apart. The plasmid injection holds a pose for
+// 2.5 and 4.5 seconds mid-animation -- the rig really is frozen, the gate is
+// working as designed, and the arms vanish anyway. But M7's verified win was the
+// Little Sister crawl "unhiding for the bottle catch and hidden for the rest",
+// which needs the gate sharp. A longer hold fixes one and risks the other, so
+// the number is tunable in a headset instead of guessed at here.
 static bool ScriptedHandsMoving()
 {
     float smoothed = 0.0f, raw = 0.0f;
@@ -83,7 +91,8 @@ static bool ScriptedHandsMoving()
             moving ? "MOVING" : "still");
     }
 
-    return moving || (s_lastMoving && (now - s_lastMoving) < 300);
+    return moving || (s_lastMoving &&
+        (now - s_lastMoving) < (DWORD)g_cfg.scriptedHandsHoldMs);
 }
 
 // ===========================================================================
@@ -314,27 +323,18 @@ bool CameraHook_OwnsAimField()
 }
 
 // ---- A SCRIPTED SEQUENCE YOU CAN WALK THROUGH ---------------------------
-bool DrawHook_HudCaptured();   // DrawHook.cpp -- did the interface draw?
-
-// The interface is up, held for half a second so a per-frame draw count cannot
-// chatter. Same peak-hold shape as ScriptedHandsMoving, and for the same reason.
-static bool HudIsUp()
-{
-    static DWORD lastDrew = 0;
-    const DWORD now = GetTickCount();
-    if (DrawHook_HudCaptured()) lastDrew = now;
-    return lastDrew != 0 && (now - lastDrew) < 500;
-}
-
-// TRUE for a scripted animation the player can still walk through -- the Big
-// Daddy killing a splicer, where the meters stay up and you keep control.
+// The HUD peak-hold and the verdict both MOVED to GameState.cpp, and the move
+// is the fix rather than tidying. This used to be decided here, per frame, from
+// a render-thread draw counter -- so it could flip in the MIDDLE of a sequence,
+// which resumed the aim write while the game was still moving the player and
+// threw the balcony landing 3.7 m off. GameState now takes the verdict ONCE per
+// animation and freezes it. See the ONE VERDICT PER SCRIPTED ANIMATION banner
+// there for the measurement.
 //
-// See the SCRIPTED SEQUENCE YOU CAN WALK THROUGH banner in GameState.cpp for
-// why the HUD is the candidate. Default OFF until a log says it separates the
-// two cases; the probe there prints what it is being judged on.
+// The policy stays here; only the fact moved.
 static bool ScriptedButInControl()
 {
-    return g_cfg.controllableScripted && GameState_ScriptedAnim() && HudIsUp();
+    return g_cfg.controllableScripted && GameState_ScriptedInControl();
 }
 
 static bool ScriptedAimReleased()
@@ -345,9 +345,11 @@ static bool ScriptedAimReleased()
     // what leaves head-look unable to steer and walking following the game's own
     // heading -- right for a sequence that owns you, wrong for one that does not.
     //
-    // Deliberately NOT extended to a forced move: that genuinely is the game
-    // moving you, and M7-S6 measured the entry stall it fixes.
-    if (ScriptedButInControl() && !GameState_ForcedMove()) return false;
+    // The old `&& !GameState_ForcedMove()` guard is GONE, not lost: a forced move
+    // now settles the verdict itself, permanently, for the rest of the animation.
+    // One place encodes that rule, because two places encoding it is how the
+    // window came to break mid-scene in the first place.
+    if (ScriptedButInControl()) return false;
 
     return GameState_ScriptedAnim() || GameState_ForcedMove();
 }
@@ -1381,6 +1383,82 @@ static FRotator g_aimLastWrote = {};
 static bool     g_aimInit = false;
 static int      g_aimCand = 0;      // Numpad + cycles the ROTSCAN candidates
 static const unsigned kAimOffsets[2] = { 0x1E4, 0x328 };
+
+// ============================================================================
+//  WHAT STATE DOES A SCRIPTED WINDOW OPEN AND CLOSE IN?
+//
+// THE QUESTION. The balcony fall lands somewhere different every single run.
+// The path is straight (StickPrecomp) and the scene rotates correctly
+// (ScriptedCameraFollow), so the remaining source of run-to-run variation is
+// the state the window OPENS in -- and a forced move steers by
+// Controller.Rotation, whose last value is whatever WE wrote on the frame
+// before. That is the controller's aim, not the player's body heading.
+//
+// TWO CANDIDATES, AND THE PROBE SEPARATES THEM. It could be the entry HEADING
+// (you were pointing somewhere) or the entry POSITION (you walked up to the
+// trigger from a slightly different spot). Both are logged, on both edges of
+// every window, so the answer is read rather than argued. Position also makes
+// the OUTCOME measurable: the exit of the balcony's second window is the
+// landing spot, in world coordinates, instead of "way off" or "almost right".
+//
+// TWO WINDOWS AT THE BALCONY, 118 ms apart -- the forced move lives entirely in
+// the first (362 ms) and the fall plays out in the second (~67 s). No
+// special-casing here, or the second one is exactly the one that goes missing.
+//
+// EMITTED FROM THE AIM BLOCK, NOT FROM THE EDGE. The edge detector runs before
+// aimField is resolved, so the interesting value is not available where the
+// edge is seen. Latch there, print here, and keep a fallback line for the case
+// where the aim block is skipped entirely (head aim off, starved, UI up) --
+// otherwise a silent log would look like a window that never happened.
+// ============================================================================
+
+// FALSIFIED AND REMOVED, 2026-08-11: substituting a heading into the aim field
+// on the window's rising edge. The idea was that a forced move steers by
+// whatever we last left in Controller.Rotation. It does not -- under M7-S6,
+// which never writes the field during a sequence, three falls entered at wildly
+// different controller angles all landed on the SAME spot. With the substitution
+// on, both straight-on runs landed badly wrong, because the write itself is the
+// damage. Do not re-add a write of any kind inside a scripted window.
+static int   g_edgePending = 0;     // 0 none, 1 entry, 2 exit
+static DWORD g_edgeLastTick = 0;    // when the OPPOSITE edge fired
+
+static inline double YawDeg(int32_t r)
+{
+    // Rotators are 16-bit-periodic in a wider field, so the printable angle is
+    // the low word read as signed -- otherwise an accumulated base prints as
+    // thousands of degrees and two runs cannot be compared by eye.
+    return (double)(short)(r & 0xFFFF) / 182.0444;
+}
+
+static void ScriptedEdgeReport(const FRotator* aim)
+{
+    if (!g_edgePending) return;
+
+    const int which = g_edgePending;
+    g_edgePending = 0;
+
+    float p[3] = { 0.0f, 0.0f, 0.0f };
+    const bool havePos = GameState_GetPawnEyePoint(p);
+
+    const DWORD now = GetTickCount();
+    const DWORD since = g_edgeLastTick ? (now - g_edgeLastTick) : 0;
+    g_edgeLastTick = now;
+
+    Log(">>> SCRIPTED %s: aim y %+8.2f p %+7.2f %s| base y %+8.2f | head y %+7.2f"
+        " | hand y %+7.2f valid %d | pawn %9.1f %9.1f %9.1f ok %d | forced %d"
+        " anim %d | %lu ms since the last edge",
+        which == 1 ? "ENTRY" : "EXIT ",
+        aim ? YawDeg(aim->yaw) : 0.0,
+        aim ? YawDeg(aim->pitch) : 0.0,
+        aim ? "" : "(FIELD UNREADABLE) ",
+        YawDeg(g_aimBase.yaw),
+        g_headYaw,
+        g_aimHandYaw, g_aimHandValid ? 1 : 0,
+        p[0], p[1], p[2], havePos ? 1 : 0,
+        GameState_ForcedMove() ? 1 : 0,
+        GameState_ScriptedAnim() ? 1 : 0,
+        (unsigned long)since);
+}
 
 // ---- PAIR LOCK (§14): the two eyes of a pair must be rendered from the SAME
 // instant. The head pose was already latched per pair (§6) -- but cleanRot and
@@ -2766,10 +2844,12 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             {
                 g_aimInit = false;
                 Log(">>> SCRIPTED: aim released back to the player");
+                if (g_cfg.scriptedRotProbe) g_edgePending = 2;
             }
             else if (!s_wasScriptedAim && scriptedAim)
             {
                 Log(">>> SCRIPTED: aim handed to the game (head look kept)");
+                if (g_cfg.scriptedRotProbe) g_edgePending = 1;
             }
             s_wasScriptedAim = scriptedAim;
 
@@ -2781,6 +2861,8 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 if (IsMemoryWritable(a, sizeof(FRotator)))
                 {
                     aimField = a;
+
+                    ScriptedEdgeReport(aimField);
 
                     static bool s_wasCut = false;
                     aimNowCut = GameState_Cutscene();
@@ -2917,11 +2999,46 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                         const bool scriptedRotBlocked =
                             scriptedAim && !g_cfg.scriptedRotFollow;
 
+                        // ---- ONE SOURCE FOR SCRIPTED YAW --------------------
+                        // MEASURED 2026-08-11, and it cost three runs to see.
+                        // These two paths -- the aim-field delta here, and
+                        // ScriptedCameraFollow below -- were BOTH advancing
+                        // g_aimBase. Most of the balcony they do not overlap:
+                        // the scene puts 0.00 deg/s on the aim field and up to
+                        // 125 deg/s on its own camera. But the opening SNAP
+                        // moves both, identically:
+                        //
+                        //   game injected 41.03 deg/s into the AIM FIELD,
+                        //                 41.03 deg/s onto its own CAMERA
+                        //
+                        // so it landed TWICE and the view finished a whole snap
+                        // past the authored heading (measured at exactly -90.0,
+                        // held for twelve seconds). The error equalled the snap
+                        // in all three runs, sign included: +41, -4, -77 against
+                        // the tester's "45 right", "almost perfect", "90 left".
+                        //
+                        // The camera is DOWNSTREAM of the aim field, so it
+                        // already carries anything the scene did to
+                        // Controller.Rotation. Following it alone counts each
+                        // rotation once, whichever field the scene used.
+                        //
+                        // ⚠ WHY THE ORIGINAL MEASUREMENT MISSED IT.
+                        // ScriptedCameraFollow was justified by a deg/s average
+                        // over a 67-second window, and a per-second rate cannot
+                        // see a one-frame event -- the one second where both
+                        // moved together averaged into invisibility.
+                        //
+                        // YAW ONLY. The follow below never handled pitch or
+                        // roll, so blocking those here would silently drop
+                        // scripted pitch instead of deduplicating it.
+                        const bool cameraOwnsYaw =
+                            scriptedAim && g_cfg.scriptedCameraFollow != 0;
+
                         if (!aimNowCut && !freeze && !gameplayFreeze &&
                             !scriptedRotBlocked)
                         {
                             g_aimBase.pitch += dP;
-                            g_aimBase.yaw += dY;
+                            if (!cameraOwnsYaw) g_aimBase.yaw += dY;
                             g_aimBase.roll += dR;
                         }
 
@@ -2970,6 +3087,13 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                     }
                 }
             }
+
+            // The aim block above consumes the latch when it runs. Reaching
+            // here with it still set means the block was SKIPPED -- head aim
+            // off, the hook starved, or a UI up -- and that is worth a line of
+            // its own, because a silent log at a window boundary otherwise
+            // reads as a window that never happened.
+            ScriptedEdgeReport(nullptr);
 
             // ---- MOD-SIDE SMOOTH YAW ---------------------------------------
             // MUST run BEFORE finalRot is composed. The view, the aim field and

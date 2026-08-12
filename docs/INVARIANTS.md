@@ -268,10 +268,57 @@ handoff disagree, this file wins.
   that looked clean was the one that got lucky. **A mode-specific symptom is not
   evidence of a mode-specific cause.**
 
+- **NEVER write `Controller.Rotation` while a sequence is moving the player, and
+  a scripted animation's aim ownership must be decided ONCE — 2026-08-11.**
+  Both halves were measured on the balcony fall, and each cost a session.
+
+  *The write.* Any write in that window fights the game's own move. Three falls
+  under a build that never writes there, entered at wildly different controller
+  angles, landed on the **same spot with the same facing** — so the entry heading
+  does not steer a forced move at all. See § *Falsified*.
+
+  *The decision.* `ControllableScriptedFix` re-judged "is the player still in
+  control" **every frame**, from `HudIsUp()` — a 500 ms peak-hold on a
+  render-thread draw counter. One millisecond after the forced-move flag dropped
+  it could flip, the aim write resumed for 107 ms while the game was still moving
+  the player, and that fall landed **3.7 m** from the two whose window stayed
+  intact — and those two agreed **to a tenth of a unit**. Whether the HUD happens
+  to draw inside that half-second is a race, which is exactly why the symptom was
+  *"different every single run"*.
+
+  The verdict now locks inside the first second and is frozen for the animation
+  (`GameState_ScriptedInControl`, grep `ONE VERDICT PER SCRIPTED ANIMATION`).
+  Undecided reads as "the game owns you" — fail closed. **A per-frame predicate
+  over a racy signal is not a safe way to answer a per-scene question.**
+
+- **A scene can put its rotation on the aim field AND the game's own camera at
+  the same time — 2026-08-11.** The balcony's opening snap moves both, and by the
+  same amount to the hundredth:
+
+  ```
+  game injected 41.03 deg/s into the AIM FIELD, 41.03 deg/s onto its own CAMERA
+  ```
+
+  Following both applied it **twice**, and the view finished one whole snap past
+  the authored heading — the error equalled the snap in three consecutive runs,
+  sign included (+41, −4, −77). The camera is downstream of the aim field, so it
+  already carries anything the scene did to `Controller.Rotation`: follow the
+  camera alone (grep `ONE SOURCE FOR SCRIPTED YAW`) and each rotation counts once
+  whichever field the scene used.
+
+- **A deg/s rate averaged over a long window cannot see a one-frame event.** The
+  double-count above hid for three sessions behind the measurement that motivated
+  the camera follow in the first place — *"0.00 deg/s into the aim field, up to
+  125 deg/s onto the camera"*, averaged across 67 seconds. The one second where
+  both moved together averaged into invisibility. **When a probe reports a rate,
+  ask what it would do to a spike.**
+
 ### Architecture
 - **Draw signatures may control cosmetic presentation. They must never gate
   camera or input behaviour.** A false-positive draw count once froze turning
-  because the aim-base update was gated on `DrawHook_MenuUp()`.
+  because the aim-base update was gated on `DrawHook_MenuUp()`. **This is the same
+  mistake `ControllableScriptedFix` made from the other direction** — see the
+  ownership invariant above.
 - Fix lifetime, not range. Do not cap a feature to hide stale state — reset it at
   save, level and pawn boundaries.
 - Clear every cached actor pointer immediately when the pawn goes null.
@@ -357,6 +404,16 @@ handoff disagree, this file wins.
   view, the weapon trace *and* the walk direction. No arrangement of that one
   field separates aim from movement. Decoupling requires finding what the firing
   trace reads, which is unknown.
+- **Substituting a heading into the aim field at a scripted window's entry —
+  falsified in a headset, 2026-08-11.** The theory was that a forced move steers
+  by whatever we last left in `Controller.Rotation`, so handing it the player's
+  body heading would fix the balcony landing. **A forced move steers by nothing
+  of ours:** under a build that never writes the field during a sequence, three
+  falls entered at *far right*, *straight on* and *far left hugging the machine*
+  all landed on the same spot with the same facing. With the substitution on,
+  both straight-on runs landed badly wrong — **the write itself is the damage**,
+  which is the ownership invariant above. Do not re-add a write of any kind
+  inside a scripted window.
 
 ### Other
 - `TryPassThrough`, loader export patching, 5-byte JMP redirection. Reverted in

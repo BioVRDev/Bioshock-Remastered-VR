@@ -82,6 +82,10 @@ this file so the check costs nothing.
 14. **Refining the stick rotation** to remove the residual walk drift. `R` was algebraically exact from the first attempt; the distortion was the game's own **square (per-axis) deadzone of 0.225** applied after the value left us, reproduced seven for seven. Fixed by pre-compensation. **When a correction is provably exact and the symptom survives, go and measure what the other side received.**
 15. **`WalkFromPawnYaw`** — the pawn's rotator tracks the aim field exactly, 60 of 62 samples at `+0.0` under a held 76° offset.
 
+*Scripted scenes:*
+16. **Substituting a heading into the aim field as a scripted window opens.** A forced move steers by **nothing of ours** — three balcony falls entered far right, straight on and far left all landed on the same spot. With the substitution on, both straight-on runs landed badly wrong. **The write itself is the damage.** Never write `Controller.Rotation` while a sequence is moving the player, and never let the window break mid-scene: a per-frame "are you still in control" predicate over the HUD did exactly that and threw one landing 3.7 m. `docs/INVARIANTS.md` § *Locomotion and the aim field*.
+17. **Following the aim field AND the game's camera during a scripted window.** They are not independent — the balcony's opening snap moves both by `41.03 deg/s`, so it applied twice and the view finished a whole snap past the authored heading. The camera is downstream; follow it alone. **The measurement that justified following both was a deg/s average over 67 seconds, and a rate cannot see a one-frame spike.**
+
 *HUD:* the scene-sampling leak guard, `DrawHook_NoWorldRender()`,
 `g_gameplayConfirmed`, `MenuMaxIndexed=0` — all dead. The square was solved by one
 term: `PSSrv0Res(ctx) == nullptr` (the interface is untextured; the square was
