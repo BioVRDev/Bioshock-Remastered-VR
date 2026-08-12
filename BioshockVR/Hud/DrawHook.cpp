@@ -913,6 +913,27 @@ static bool      g_anchorUp = false;
 
 bool DrawHook_AnchorUp() { return g_anchorUp; }
 
+// ---- THE COMPOSED-FRAME ROUTE, and why it turns the capture off ------------
+// A screen named in AnchorMovies or FollowMovies is shown as the GAME'S OWN
+// COMPOSED FRAME on the menu quad. Lifting the interface layer out of that frame
+// first empties the very picture being shown.
+//
+// MEASURED from the Build O log with no new run needed. While Maps.swf was the
+// top movie the capture took 3 draws per frame (total 11129 -> 11483 in one
+// second); while ingamemanual.swf was top it took 0 and the total sat still.
+// That is exactly what the tester saw -- a correctly placed, correctly scaled,
+// EMPTY map, next to a manual that read perfectly. The map's contents are
+// untextured GameSWF vector geometry, so they pass the PSSrv0Res guard into the
+// capture; its paper, frame and tabs are textured and stay behind.
+//
+// The HUD gate could not catch this: it closes on GameState_MenuUp() or
+// GameState_Paused(), and these screens do not pause -- the anchored window ran
+// a full minute in that log without one HUD GATE line.
+bool DrawHook_ComposedFrameUp()
+{
+    return g_anchorUp || GameState_AnchorMovieUp() || GameState_FollowMovieUp();
+}
+
 static Bucket* FindBucket(unsigned count, int kind)
 {
     for (int i = 0; i < g_bucketCount; ++i)
@@ -1464,8 +1485,13 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                 // also render into the scene rather than onto the HUD panel. That
                 // is accepted for the seconds a machine screen is open, and it is
                 // written down in the ini rather than left to be discovered.
+                //
+                // The composed-frame route suppresses it for a SECOND and
+                // different reason -- see DrawHook_ComposedFrameUp(). Two terms
+                // rather than one merged predicate, so each keeps its own why
+                // here at the site that reads it.
                 if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
-                    !GameState_SceneMovieUp() &&
+                    !GameState_SceneMovieUp() && !DrawHook_ComposedFrameUp() &&
                     PSSrv0Res(ctx) == nullptr &&
                     kind == KIND_DRAW && g_hudRTV && g_hudDSV)
                 {
@@ -1777,7 +1803,14 @@ void DrawHook_EndFrame()
     // started, and BOTH the captured quad and the raw eye-image HUD were
     // visible at once. Require a sustained state before switching either way.
     {
-        const bool wantOpen = !(GameState_MenuUp() || GameState_Paused());
+        // PanelMovies overrides the pause close. The gate closes while paused
+        // because the composed-frame route is showing the whole picture, so
+        // capturing as well would draw the interface twice. A panel screen takes
+        // the opposite route -- the interface belongs ON the panel and the world
+        // stays in stereo -- so it needs the capture running even though the game
+        // has paused underneath it.
+        const bool wantOpen = GameState_PanelMovieUp() ||
+            !(GameState_MenuUp() || GameState_Paused());
         static int gateRun = 0;
         if (wantOpen == g_hudGateOpen) gateRun = 0;
         else if (++gateRun >= 12)

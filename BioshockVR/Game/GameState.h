@@ -90,6 +90,17 @@ bool GameState_ScriptedSequence();
 // bit clear. Do not treat it as "in a cutscene" generally.
 bool GameState_ScriptedAnim();
 
+// The union of GameState_ScriptedAnim() and GameState_ForcedMove(), HELD open
+// for ScriptedWindowHoldMs after both drop.
+//
+// One scene raises those two in sequence and they normally overlap. When the
+// order reversed on the Little Sister crawl the union went false for a single
+// frame, the aim was released and re-armed inside a live scene, and the field
+// finished 18.6 deg off the pawn for the rest of it. Anything asking "is a
+// scene running" wants THIS, not the raw pair. See the ONE SCENE, ONE WINDOW
+// banner in GameState.cpp.
+bool GameState_ScriptedWindow();
+
 // The player is riding a bathysphere. MEASURED-BY-ORACLE: pawn+0x464 bit 1 is
 // Pawn.bCannotFall, which ActionEnableBathysphereModeForPlayer sets for the
 // whole ride while clearing bit 2 in the same call.
@@ -149,6 +160,13 @@ bool GameState_SceneMovieUp();
 // Read on the RENDER thread by the menu-quad placement in XRSession. Empty list
 // == always false.
 bool GameState_FollowMovieUp();
+
+// TRUE while the top screen is one PanelMovies names -- shown as the INTERFACE
+// ONLY, captured onto the HUD panel, with the world still rendering in stereo
+// behind it. The third route, and mutually exclusive with the composed-frame
+// one: while this is true the menu quad must NOT engage and the HUD gate is held
+// open, or the interface would be drawn twice. Empty list == always false.
+bool GameState_PanelMovieUp();
 
 void GameState_Reset();
 bool GameState_Cutscene();

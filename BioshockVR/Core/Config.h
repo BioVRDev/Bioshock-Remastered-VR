@@ -214,6 +214,20 @@ struct VrConfig
     // rules. See GameState_FollowMovieUp().
     char  followMovies[512] = {};
 
+    // Screens shown on the HUD PANEL -- the interface captured onto the same
+    // quad the HUD rides, with the world still rendering in STEREO behind it.
+    //
+    // This is the third route and it is the one the tester remembers from when
+    // HUD scaling was new: "all menus went on the same quad as the hud and it
+    // looked really nice". It is mutually exclusive with the composed-frame
+    // route by construction -- running both would draw the interface twice,
+    // once inside the flat picture and once on the panel -- so a name listed
+    // here is deliberately kept OUT of the composed-frame route and the HUD gate
+    // is held open for it. See GameState_PanelMovieUp().
+    //
+    // Empty by default: nothing changes route until you say so.
+    char  panelMovies[512] = {};
+
     // Read-only. Logs textured full-screen-ish quads with their viewport, once a
     // second, so an effect that covers only part of the view can be identified
     // by walking in and out of it. Silent unless such a draw happens.
@@ -240,6 +254,37 @@ struct VrConfig
     float arrowY = 0.0f;         // fraction of viewport height, - == up
     int   arrowPtrOff = 0;                    // pawn+N -> the arrow actor. 0 == off
     float arrowWorld[3] = { 0.f, 0.f, 60.f }; // fwd,right,up from the camera, cm
+
+    // The arrow's ROTATION still followed the right hand after the Location
+    // write was switched on (headset, 2026-08-12), so the old "leave rotation
+    // alone and it keeps pointing at the objective" comment is falsified.
+    // 1 == subtract the weapon's rotation each frame, which lands the arrow back
+    // on the objective IF the composition is additive. See the QUEST ARROW
+    // banner in CameraHook.cpp; ArrowProbe prints what decides it.
+    // DEFAULT 0 AFTER MEASUREMENT. Subtracting the weapon's rotation each frame
+    // assumed the game rewrites the arrow's rotation every tick; it does not, so
+    // the correction compounded and walked the arrow through +151 and -103
+    // degrees of pitch within seconds. See the QUEST ARROW banner.
+    int   arrowUnparentRot = 0;
+    int   arrowProbe = 1;        // one throttled line/sec, read-only
+
+    // Actor DrawScale (+0x2AC), the same field GunScale writes. 0 == leave the
+    // size alone.
+    float arrowDrawScale = 0.0f;
+
+    // How often the desktop mirror is presented, in ms. 17 ~= 60 Hz and is the
+    // right default for a window nobody is watching; lower it for recording.
+    // Costs real Present time, which is why it is not simply "every frame".
+    int   mirrorIntervalMs = 17;
+
+    // Park the arrow out of the world during a scripted scene. Uses the held
+    // window, so one scene is one hide.
+    int   arrowHideScripted = 1;
+
+    // 0 off · 1 zero the ROLL (measured as the only component tracking the
+    // weapon) · 2 also zero the pitch, pinning the arrow horizontal. Absolute
+    // writes, so unlike the cancellation above they cannot accumulate.
+    int   arrowLevel = 1;
     int   hideInactiveHand = 1;   // HideInactiveHand
     int   hideHandSlot[9] = {};   // HideInactiveHandN, per weapon slot
 
@@ -418,6 +463,21 @@ struct VrConfig
     // Little Sister crawl needs the gate sharp so they stay hidden after the
     // bottle catch. 300 was hardcoded and is kept as the default.
     int   scriptedHandsHoldMs = 300;
+
+    // How long the AIM window stays open after both scripted signals go false.
+    //
+    // MEASURED, and this is a bug fix rather than a comfort knob. One scene
+    // raises two signals in sequence -- the forced move that walks you into
+    // place, then the scripted animation -- and GameState.cpp's M7-S6 banner
+    // records them normally OVERLAPPING by 90 ms. The order is not guaranteed:
+    // on the Little Sister crawl the forced move ended 5 ms BEFORE the animation
+    // began, the window collapsed for one frame, and the re-arm in that frame
+    // took a bogus reading as the player's new heading -- 58 seconds of the
+    // scene 18.6 deg off. See the ONE SCENE, ONE WINDOW banner in GameState.
+    //
+    // 250 covers every gap measured so far (5 ms here, 14 and 118 ms at the
+    // balcony) with margin. 0 restores the old edge-exact behaviour.
+    int   scriptedWindowHoldMs = 250;
 
     int   modYaw = 0;          // mod owns yaw: stick turns g_aimBase directly
     float modYawSpeed = 90.0f; // deg/sec at full deflection

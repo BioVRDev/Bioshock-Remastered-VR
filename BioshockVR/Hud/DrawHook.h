@@ -65,6 +65,17 @@ bool DrawHook_MenuUp();
 // is FALSE. Separate list, separate consumer -- so a wrong entry here can never
 // freeze the camera the way a wrong MenuIndexCounts entry did.
 bool DrawHook_AnchorUp();
+
+// TRUE while a screen is being shown as the game's OWN COMPOSED FRAME on the
+// menu quad -- both the anchored route and the head-following one do that, and
+// so does the (empty) draw-count list.
+//
+// ONE OWNER for that question, deliberately. Hooks.cpp routes the quad by it and
+// DrawHook suppresses the HUD capture by it, so the two can never disagree about
+// which screens are on this route -- and disagreeing is exactly what left the
+// map's contents in the capture instead of in the picture.
+bool DrawHook_ComposedFrameUp();
+
 bool DrawHook_CutsceneBarsActive();
 
 // Forward declaration rather than #include <d3d11.h>: this header is included

@@ -19,6 +19,35 @@ reload — which is why the reticle kill uses it instead of suppressing a draw
 signature. Three absolute addresses, INI-overridable, vtable-verified before the
 call, silently disabled on mismatch.
 
+**The playing-movie stack, and which screen is on top.** `FlashGuiTick()` walks
+`LevelInfo` to the Flash GUI controller and reads the top entry of the
+playing-movie array (`+0x158` data, `+0x15C` count), then its two name fields —
+the requested file at `+0x40` and the resolved one at `+0x4C`, which differ
+(`Warning.swf` resolves to `WarningPC.swf`). Matching is loose, case-insensitive,
+against both. A cached pointer with decaying-backoff retries, dropped on level
+change; never a per-frame scan. **A name cannot false-fire on geometry**, which
+is why this replaced the draw-count signature lists.
+
+Three config lists consume it, and each publishes an interlocked flag read on the
+render thread:
+
+| Predicate | List | Consumer |
+|---|---|---|
+| `GameState_AnchorMovieUp()` | `AnchorMovies` | the composed frame, pinned where it opened |
+| `GameState_FollowMovieUp()` | `FollowMovies` | the composed frame, following your head |
+| `GameState_SceneMovieUp()` | `SceneMovies` | left in the scene, capture off |
+
+The first two are ORed with the empty draw-count list into
+`DrawHook_ComposedFrameUp()`, which is read both by `Hooks.cpp` (which quad) and
+by the HUD capture condition (**do not redirect** — see `docs/modules/hud.md`
+§ *The gate*, and the invariant it graduated into). All three suppress the
+capture; only the reasons differ.
+
+The flags are recomputed **only when the top movie changes**, so a whole session
+costs a handful of log lines and `FlashGuiProbe=1` prints a transcript of which
+screen was up when. The matching is not gated on the probe switch — turning a
+diagnostic off must never turn a feature off with it.
+
 ## The console read channel (new, and its limit)
 
 `Exec` reports results through an `FOutputDevice`. The original stub was a no-op

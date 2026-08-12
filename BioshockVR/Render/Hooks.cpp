@@ -462,23 +462,34 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 }
             }
 
-            // Two sources, and only the second one is trusted going forward.
-            // DrawHook_AnchorUp() is the draw-count signature list, which is
-            // empty and stays empty -- counts false-fire during ordinary play.
-            // GameState_AnchorMovieUp() asks the game which named Flash movie is
-            // on top, so it cannot be confused by geometry.
+            // Three sources, and only the movie-name ones are trusted going
+            // forward: the draw-count signature list is empty and stays empty,
+            // because counts false-fire during ordinary play, while a named
+            // Flash movie cannot be confused by geometry.
             // A FOLLOW screen takes the same route as an anchored one -- both
             // want the whole composed frame on the menu quad. They differ only
             // in how often that quad's pose is recomputed, which XRSession
-            // decides. Routing them together here is what keeps that true.
-            const bool anchorUi = DrawHook_AnchorUp() ||
-                GameState_AnchorMovieUp() || GameState_FollowMovieUp();
+            // decides.
+            //
+            // The OR used to live here. It now lives in DrawHook, because the
+            // HUD capture has to answer the same question -- a screen shown as
+            // the composed frame must not have its interface lifted out of that
+            // frame first, which is what emptied the map. One owner, two
+            // consumers, no way for them to drift apart.
+            const bool anchorUi = DrawHook_ComposedFrameUp();
 
             // Theater is a RENDERING-MODE decision, not a menu feature. Gating
             // it behind EnableMenuScreen means turning menus off also disables
             // cutscene handling, which is not a relationship anyone would
             // expect from either switch.
+            // A PANEL screen stands the flat route down entirely -- including
+            // the `paused` and `starved` terms, which is the whole point. Its
+            // interface is being captured onto the HUD quad instead and the
+            // world keeps rendering in stereo behind it; letting the mono route
+            // fire as well would flatten that world AND draw the interface a
+            // second time inside the flat picture.
             const bool ordinaryMenu = g_cfg.menuScreen &&
+                !GameState_PanelMovieUp() &&
                 (starved || paused || anchorUi ||
                     (drawMenu && !GameState_InGame()));
 
@@ -517,7 +528,19 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                         drawMenu ? "drawmenu" : "");
                 }
 
-                XR_SubmitMenuMono(bb);
+                // ONE EYE, NOT BOTH. Present fires twice per stereo pair and
+                // the backbuffer holds a DIFFERENT eye's image each time, so
+                // submitting on both fed the flat panel the left view and then
+                // the right view, alternating -- one IPD of horizontal shimmer
+                // on a surface the player is trying to read. Reported as "you
+                // can see both frames being submitted" in the background.
+                //
+                // A flat quad wants ONE image, so take every other Present and
+                // always the same eye. The panel is world-locked, so the
+                // compositor reprojects the frames we skip; and with the view
+                // now held still behind an interface there is nothing moving in
+                // the image for the halved rate to show.
+                if (eye == 0) XR_SubmitMenuMono(bb);
             }
             else
             {
@@ -637,19 +660,37 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     if (g_cfg.mirrorEvery > 0)
     {
         static unsigned mirrorTick = 0;
-        ++mirrorTick;
-        doMirror = ((mirrorTick % (unsigned)g_cfg.mirrorEvery) == 0);
+        if (eye == 0) ++mirrorTick;      // one eye only -- see the note below
+        doMirror = (eye == 0) &&
+            ((mirrorTick % (unsigned)g_cfg.mirrorEvery) == 0);
     }
     else
     {
-        // 17 ms == just under 60 Hz, the lowest refresh worth designing for.
+        // MirrorIntervalMs, default 17 == just under 60 Hz, the lowest refresh
+        // worth designing for. TUNABLE because the right answer depends on what
+        // the desktop image is FOR: 17 is right for glancing at, and too slow
+        // for recording, where a 60 Hz capture of a 90 Hz session beats against
+        // itself and reads as judder. Lower it to present more often -- 8 for
+        // ~120 -- and pay for it in Present time, which the counters report.
+        const double kMirrorMs = (double)g_cfg.mirrorIntervalMs;
         static LARGE_INTEGER lastMirror = {};
         LARGE_INTEGER nowM;
         QueryPerformanceCounter(&nowM);
         const double sinceMs = lastMirror.QuadPart
             ? (double)(nowM.QuadPart - lastMirror.QuadPart) * 1000.0 / (double)g_qpf.QuadPart
             : 1e9;
-        doMirror = (sinceMs >= 17.0);
+        // ONE EYE ON THE DESKTOP, for the same reason the menu quad takes one.
+        // The backbuffer alternates between the left and right eye image, so a
+        // mirror that presents whichever one happens to be current flickers
+        // between two viewpoints -- fine in the headset, where each eye gets its
+        // own, but it makes the monitor unwatchable and unrecordable. Reported
+        // as "on the monitor it flickers a lot which means people cant record
+        // it unless its in the headset".
+        //
+        // The eye test comes BEFORE the timer so the 17 ms clock only advances
+        // on frames we actually present; testing it afterwards would let a
+        // skipped frame eat the interval and halve the mirror rate.
+        doMirror = (eye == 0) && (sinceMs >= kMirrorMs);
         if (doMirror) lastMirror = nowM;
     }
 

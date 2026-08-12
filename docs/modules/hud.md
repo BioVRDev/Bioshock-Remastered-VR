@@ -100,15 +100,47 @@ chooses *where* the interface renders, never *whether*.
 fingerprint path's `g_gameplayConfirmed` block reads it.** Any counter borrowed
 across those two functions reads zero. This cost two builds.
 
+### What the gate cannot see, and the two terms that cover it
+
+The gate only knows about pausing. Two kinds of screen need the capture off
+while the game is emphatically *not* paused, so both are terms in the redirect
+condition rather than gate inputs:
+
+```cpp
+!GameState_SceneMovieUp() && !DrawHook_ComposedFrameUp() &&
+```
+
+- **`SceneMovies`** — the text belongs inside panels that are world geometry, so
+  no head-locked surface can line up with it. Leave it where the game put it.
+- **The composed-frame route** (`DrawHook_ComposedFrameUp()`, which owns
+  `AnchorMovies`, `FollowMovies` and the empty draw-count list) — the panel shows
+  the game's own composed frame, so lifting the interface layer out of that frame
+  first empties the picture being shown.
+
+**Measured, Build O, 2026-08-11.** With `Maps.swf` on top the capture took **3
+draws per frame** (total 11129 → 11483 in a second); with `ingamemanual.swf` on
+top it took **0**. The tester saw exactly that: a correctly placed, correctly
+scaled, empty map beside a manual that read perfectly. The map's contents are
+untextured GameSWF vector geometry and enter the capture; its paper, frame and
+tabs are textured and stay behind. The anchored window ran a full minute in that
+log without one `HUD GATE` line — the map does not pause.
+
+While either kind of screen is up the health and EVE bars also stay in the game's
+frame. For the composed-frame route that is where the panel shows them anyway.
+
 ## Other responsibilities
 
 - **Cutscene bars** — detected structurally and suppressible. Textureless, so
   `PSSrv0Res` is null for them and the capture guard does not affect them.
   `DrawHook_CutsceneBarsActive()` exists and currently has no consumer.
-- **Menu / anchor lists** — `MenuIndexCounts` routes full-screen menus;
-  `AnchorIndexCounts` routes in-game UIs (map, hacking, vending, "What is this?")
-  onto the world-locked quad. **`AnchorIndexCounts` is currently empty**, which is
-  why the context-help screen does not resize with the rest of the HUD.
+- **Menu / anchor lists** — `MenuIndexCounts` routes full-screen menus by draw
+  signature. `AnchorIndexCounts` was meant to route in-game UIs the same way and
+  is **empty and staying empty**: counts false-fire during ordinary play. The
+  in-game screens are routed by Flash movie NAME instead — `AnchorMovies`,
+  `FollowMovies`, `SceneMovies` — read live off the playing-movie stack in
+  `GameState.cpp`. `DrawHook_ComposedFrameUp()` is the single owner of "is this
+  screen being shown as the game's own frame", read by both `Hooks.cpp` (which
+  quad) and the capture condition (whether to redirect).
 - **Fingerprint tooling** — Numpad `*` clears the table, `3` dumps it, `-` steps
   the isolate walker. The dump is the useful one; the walker cannot catch a rare
   short-lived effect (one candidate per press).
@@ -119,7 +151,7 @@ Sections, by banner text -- grep for these rather than a line number:
 `the classifier` · `capture surfaces` · `ALPHA REPAIR` · `alpha correction` ·
 `texture discrimination` · `the fingerprint table` · `suppression` ·
 `isolate stepper` · `menu detection` · `ANCHOR list` ·
-`vertex-shader constant dump`.
+`THE COMPOSED-FRAME ROUTE` · `vertex-shader constant dump`.
 
 **A split was considered and rejected** -- see `.planning/DECISIONS.md`. The
 state is shared across the whole file.

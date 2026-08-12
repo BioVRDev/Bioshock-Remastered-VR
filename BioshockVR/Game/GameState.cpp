@@ -474,6 +474,8 @@ static void ForcedMoveReset();
 static void ScriptedAnimTick();
 static void BathysphereTick();
 static void ForcedMoveFlagTick(const uint8_t* controller);
+static void ScriptedWindowHoldTick();
+static void ScriptedWindowReset();
 static void ScriptedOwnershipTick();
 static void ScriptedWindowProbe(const uint8_t* controller);
 
@@ -817,6 +819,22 @@ static long g_anchorMovie = 0;
 static long g_sceneMovie = 0;
 static long g_followMovie = 0;
 
+// ---- THE THIRD ROUTE: THE INTERFACE ON THE HUD PANEL ----------------------
+// The composed-frame route cannot misalign, because it shows one picture -- but
+// it pays for that by flattening the whole world into that picture. The tester
+// remembers the alternative working well when HUD scaling was new: "all menus
+// went on the same quad as the hud and it looked really nice", world still in
+// stereo behind a panel carrying only the interface.
+//
+// Nothing new has to be built for it. The capture already lifts the interface;
+// the two things standing in the way are that the composed-frame route would
+// ALSO fire (drawing the interface twice, once flat and once on the panel) and
+// that the HUD gate closes while the game is paused. A name listed here
+// suppresses the first and holds the second open.
+static long g_panelMovie = 0;
+
+bool GameState_PanelMovieUp() { return g_panelMovie != 0; }
+
 bool GameState_AnchorMovieUp() { return g_anchorMovie != 0; }
 
 // ---- THE FULL SCREEN, FOLLOWING YOUR HEAD --------------------------------
@@ -964,6 +982,7 @@ static void FlashGuiTick()
             if (g_anchorMovie) _InterlockedExchange(&g_anchorMovie, 0);
             if (g_sceneMovie)  _InterlockedExchange(&g_sceneMovie, 0);
             if (g_followMovie) _InterlockedExchange(&g_followMovie, 0);
+            if (g_panelMovie)  _InterlockedExchange(&g_panelMovie, 0);
             s_nextTry = now + s_delay;
             if (s_delay < 5000) s_delay *= 2;
             return;
@@ -1048,6 +1067,18 @@ static void FlashGuiTick()
                 Log(">>> FLASHGUI: %s -- \"%s\"",
                     wantFollow ? "*** FOLLOW THIS SCREEN ***"
                     : "--- follow off ---", shown);
+        }
+
+        const long wantPanel =
+            GsListMatches(g_cfg.panelMovies, nameA, nameB) ? 1 : 0;
+
+        if (wantPanel != g_panelMovie)
+        {
+            _InterlockedExchange(&g_panelMovie, wantPanel);
+            if (logIt)
+                Log(">>> FLASHGUI: %s -- \"%s\"",
+                    wantPanel ? "*** THIS SCREEN ON THE HUD PANEL "
+                    "(world stays in stereo) ***" : "--- panel off ---", shown);
         }
     }
 
@@ -1360,6 +1391,7 @@ static void RefreshPawn(const void* controller)
     g_level = nullptr;                      // force Level re-find; Pauser was stale
     _InterlockedExchange(&g_paused, 0);
     _InterlockedExchange(&g_cutscene, 0);
+    ScriptedWindowReset();                  // a held scene must not cross worlds
     g_fovRest = 0.0f;
     HandsProbe_Reset();                     // re-lock hands/gun on the new pawn
 
@@ -1436,6 +1468,10 @@ void GameState_Observe(void* playerController)
 
     // M7-S6. The forced-move window -- the entry stall.
     ForcedMoveFlagTick((const uint8_t*)playerController);
+
+    // Must run AFTER both signals above are fresh: it holds their union so one
+    // scene cannot present as two windows. See the ONE SCENE, ONE WINDOW banner.
+    ScriptedWindowHoldTick();
 
     // Decides ONCE per scripted animation who owns the aim. Must run after both
     // flags above are fresh, and unconditionally -- its HUD peak-hold only works
@@ -2611,6 +2647,82 @@ static long g_forcedMove = 0;
 
 bool GameState_ForcedMove() { return g_forcedMove != 0; }
 
+// ============================================================================
+// ONE SCENE, ONE WINDOW -- the held pair
+//
+// A scene raises the two signals above IN SEQUENCE: the forced move walks you
+// into place, then the scripted animation plays. The M7-S6 banner above measured
+// the forced flag dropping 0.09s AFTER the animation begins, so they normally
+// overlap and nothing downstream ever sees a gap.
+//
+// THE ORDER IS NOT GUARANTEED. MEASURED 2026-08-11, the Little Sister crawl:
+//
+//   22:46:10.556  FORCEDMOVE: --- forced move done ---
+//   22:46:10.557  SCRIPTED: aim released back to the player   <- the collapse
+//   22:46:10.561  SCRIPTED: *** SCRIPTED ANIMATION BEGAN ***  <- 5 ms later
+//
+// One frame at 231 CalcView/s. CameraHook released the aim in it, re-armed its
+// base from an aim field that happened to read exactly (0,0), and wrote that
+// back -- so the field sat 18.6 deg off the pawn for the whole 58-second scene
+// and the crawl walked that far wrong. It is the balcony's lesson ("never let
+// the window break mid-scene") arriving through a different door: not a racy
+// signal this time, but two CORRECT signals that failed to overlap.
+//
+// So the pair is held: rises instantly, falls only after ScriptedWindowHoldMs
+// with neither signal set. Held HERE rather than in either consumer because two
+// consumers read this pair with deliberately different policies on top -- the
+// aim suppression narrows it, InputHook's turn release stays wider -- and those
+// policies were signed off separately in a headset.
+//
+// Peak-hold, the same shape as HudDrawnRecently() below.
+// ============================================================================
+
+static long  g_scriptedWindow = 0;
+
+// File scope rather than a function-local static SO THAT IT CAN BE RESET. A
+// carried-over hold is exactly the "new world, old state" trap the pawn-change
+// path exists to close: a level or save load inside the 250 ms would otherwise
+// report a scene still running in a world that has only just started.
+static DWORD g_scriptedWindowLastOn = 0;
+
+bool GameState_ScriptedWindow() { return g_scriptedWindow != 0; }
+
+static void ScriptedWindowReset()
+{
+    g_scriptedWindowLastOn = 0;
+    if (g_scriptedWindow) _InterlockedExchange(&g_scriptedWindow, 0);
+}
+
+static void ScriptedWindowHoldTick()
+{
+    DWORD& s_lastOn = g_scriptedWindowLastOn;
+
+    const bool  raw = GameState_ScriptedAnim() || GameState_ForcedMove();
+    const DWORD now = GetTickCount();
+    bool held = raw;
+
+    if (raw)
+        s_lastOn = now;
+    else if (s_lastOn && g_cfg.scriptedWindowHoldMs > 0 &&
+        (now - s_lastOn) < (DWORD)g_cfg.scriptedWindowHoldMs)
+        held = true;
+    else
+        s_lastOn = 0;
+
+    const long want = held ? 1 : 0;
+    if (want != g_scriptedWindow)
+    {
+        _InterlockedExchange(&g_scriptedWindow, want);
+
+        // Only the BRIDGED case is worth a line -- the window staying open while
+        // both signals are already down is the whole point of this code, and a
+        // log that only ever says the obvious gets skimmed past.
+        if (!want && !raw)
+            Log(">>> SCRIPTED: window closed (held %d ms past the last signal)",
+                g_cfg.scriptedWindowHoldMs);
+    }
+}
+
 static void ForcedMoveFlagTick(const uint8_t* controller)
 {
     if (!controller || !Readable(controller + kForcedMoveOff, 4))
@@ -3050,5 +3162,11 @@ void GameState_Reset()
     g_offset = 0;
     g_nCand = 0;
     g_recheck = 0;
+    ScriptedWindowReset();
     MyHudReset();       // level load / save reload: re-resolve, never carry over
+
+    // NOTE FOR WHOEVER WIRES THIS UP: this function currently has no callers.
+    // The live new-world path is RefreshPawn, which resets the same state
+    // inline. Anything added here must be added there too until the two are
+    // merged -- a reset that only half the paths perform is worse than none.
 }

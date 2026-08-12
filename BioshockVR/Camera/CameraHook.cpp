@@ -47,6 +47,7 @@ int HandsProbe_WeaponSlot();
 bool GameState_Cutscene();   // GameState.cpp
 bool GameState_Theater();    // GameState.cpp
 bool GameState_ScriptedAnim();          // GameState.cpp
+bool GameState_ScriptedWindow();        // GameState.cpp -- the HELD pair
 bool GameState_Bathysphere();           // GameState.cpp
 bool Input_GetTurnX(float* out);        // InputHook.cpp
 bool Input_GetSentStickAngle(float* outDeg);   // InputHook.cpp -- for WalkDrift
@@ -337,6 +338,20 @@ static bool ScriptedButInControl()
     return g_cfg.controllableScripted && GameState_ScriptedInControl();
 }
 
+// ---- THE WINDOW IS HELD, AND NOT HERE ------------------------------------
+// One scene raises two signals in SEQUENCE -- the forced move, then the scripted
+// animation -- and their union can gap for a single frame when the order
+// reverses. One frame was enough to release the aim, re-arm the base from a
+// field reading exactly (0,0), and leave the Little Sister crawl 18.6 deg off
+// for 58 seconds. The measurement is in GameState.cpp, grep ONE SCENE, ONE
+// WINDOW, and in docs/INVARIANTS.md.
+//
+// THE HOLD IS ON THE SHARED PAIR, in GameState, deliberately. Two consumers read
+// that pair with different policies on top: this one narrows it with
+// ScriptedButInControl() so a walk-through scene keeps your aim, while
+// InputHook's turn release stays wider -- and the note on its ScriptedQol() says
+// in as many words not to weld the two together without a headset. Holding the
+// signal they share fixes both without touching either policy.
 static bool ScriptedAimReleased()
 {
     if (!g_cfg.scriptedQol) return false;
@@ -349,9 +364,14 @@ static bool ScriptedAimReleased()
     // now settles the verdict itself, permanently, for the rest of the animation.
     // One place encodes that rule, because two places encoding it is how the
     // window came to break mid-scene in the first place.
+    //
+    // Safe to evaluate per frame inside the hold: the verdict can only be
+    // OWN_PLAYER for a scene that never released the aim in the first place, and
+    // it resets to UNDECIDED -- which reads as "the game owns you" -- on the
+    // animation's falling edge.
     if (ScriptedButInControl()) return false;
 
-    return GameState_ScriptedAnim() || GameState_ForcedMove();
+    return GameState_ScriptedWindow();
 }
 
 // One predicate, four call sites. Cheap: a cached pointer and two strcmps.
@@ -374,6 +394,32 @@ bool DrawHook_MenuUp();   // DrawHook.cpp
 // is FALSE. Separate list, separate consumer -- so a wrong entry here can never
 // freeze the camera the way a wrong MenuIndexCounts entry did.
 bool DrawHook_AnchorUp();
+
+// TRUE while a screen is being shown as the game's own composed picture on the
+// menu quad. See the banner in DrawHook.cpp.
+bool DrawHook_ComposedFrameUp();
+
+// ---- WHEN THE VIEW HOLDS STILL BEHIND AN INTERFACE ------------------------
+// The pause menu already freezes the head-driven camera and the hands, latching
+// them where they were on entry, "because inventory and vending all render the
+// world behind the UI, and having it swing with your head while you read is
+// disorienting."
+//
+// THE SAME IS TRUE WHEN THE GAME IS NOT PAUSED. A machine's second page unpauses
+// while its interface stays up (grep ONE SCENE, ONE WINDOW's sibling finding in
+// .planning/STATE.md), so the world behind the panel kept rendering live: head
+// motion slid the picture and the gun swayed inside a screen the player was
+// trying to read as a still image. Tester: it "should not track head or arm/gun
+// movement in the background so it doesn't change the background and looks
+// paused instead of gameplay", and "the pause menu logic should have the same
+// thing".
+//
+// So this is not a new mechanism -- it is the pause freeze, asked the right
+// question. One predicate, four sites, so they cannot drift apart.
+static bool ViewHeldForUi()
+{
+    return GameState_Paused() || DrawHook_ComposedFrameUp();
+}
 
 bool GameState_InGame();  // GameState.cpp
 
@@ -1381,6 +1427,10 @@ static inline int RotDelta(int now, int then)
 static FRotator g_aimBase = {};
 static FRotator g_aimLastWrote = {};
 static bool     g_aimInit = false;
+// Has a base ever been established? Only so the arm log can say how far the
+// reference jumped -- on the very first arm of a run there is nothing to jump
+// from, and printing one would invite reading noise as a finding.
+static bool     g_aimInitEver = false;
 static int      g_aimCand = 0;      // Numpad + cycles the ROTSCAN candidates
 static const unsigned kAimOffsets[2] = { 0x1E4, 0x328 };
 
@@ -1643,7 +1693,7 @@ void CameraHook_LateHandsWrite()
     // whole sequence. Clearing the cache is what hands the rig back to the game.
     if (ScriptedAimReleased()) { g_hwValid = false; return; }
 
-    if (GameState_Paused()) return;   // render-thread half of the same freeze
+    if (ViewHeldForUi()) return;      // render-thread half of the same freeze
 
     // The hands actor is destroyed on level/save load. This runs on the RENDER
     // thread from a pointer cached on the GAME thread, so a stale cache writes
@@ -1855,6 +1905,24 @@ static void DriveQuestArrow(const FVector& camLoc)
     const double u = g_cfg.arrowWorld[2];
 
     FVector* const L = (FVector*)((uint8_t*)arrow + 0x1D8);
+
+    // ---- OUT OF THE WAY DURING A SCRIPTED SCENE ---------------------------
+    // Requested for immersion: a quest marker floating in front of your face
+    // through a cutscene is exactly the kind of thing that breaks one. The same
+    // held window the aim suppression uses, so it covers a scene's forced move
+    // and its animation as one unit and cannot flicker between the two.
+    //
+    // Parked far below the world rather than hidden: we already own this actor's
+    // Location every frame, so this needs no second mechanism and no bHidden
+    // hunt, and it restores itself the moment the window closes.
+    if (g_cfg.arrowHideScripted && GameState_ScriptedWindow())
+    {
+        L->x = (float)camLoc.x;
+        L->y = (float)camLoc.y;
+        L->z = -1.0e6f;
+        return;
+    }
+
     L->x = (float)(camLoc.x + (f * cs - r * sn));
     L->y = (float)(camLoc.y + (f * sn + r * cs));
     L->z = (float)(camLoc.z + u);
@@ -1865,6 +1933,159 @@ static void DriveQuestArrow(const FVector& camLoc)
         announced = true;
         Log(">>> ARROW: driving pawn+0x%X -> 0x%08X",
             (unsigned)g_cfg.arrowPtrOff, (unsigned)(uintptr_t)arrow);
+    }
+
+    // ---- WHY DOES IT POINT WHERE THE GUN POINTS? (read-only) --------------
+    // MEASURED IN A HEADSET 2026-08-12: the Location write above works -- the
+    // arrow now sits where we put it and no longer bobs -- but its ROTATION
+    // still follows the right hand. The comment above assumed leaving rotation
+    // alone would keep it aimed at the objective; that assumption is now
+    // falsified, so the next step needs numbers rather than another assumption.
+    //
+    // Actor layout: Location +0x1D8, so Rotation is +0x1E4 (FVector is 12
+    // bytes), the same pairing Controller.Rotation uses. Printed beside the
+    // WEAPON actor's rotation, because the whole question is whether the arrow's
+    // own field already carries the gun's heading (the game composes it and we
+    // can overwrite) or is independent of it (something downstream composes at
+    // render time, and overwriting will not help).
+    //
+    if (!IsMemoryWritable((uint8_t*)arrow + 0x1E4, sizeof(FRotator))) return;
+    FRotator* const R = (FRotator*)((uint8_t*)arrow + 0x1E4);
+
+    // The weapon actor, so the two rotations can be compared and, if the
+    // composition turns out to be additive, cancelled.
+    FRotator gun = {};
+    bool haveGun = false;
+    {
+        void* const hands = HandsProbe_Get();
+        if (hands && IsMemoryValid((const uint8_t*)hands + 0x45C, 4))
+        {
+            void* const wpn = *(void* const*)((const uint8_t*)hands + 0x45C);
+            if (wpn && IsMemoryValid((const uint8_t*)wpn + 0x1E4, sizeof(FRotator)))
+            {
+                gun = *(const FRotator*)((const uint8_t*)wpn + 0x1E4);
+                haveGun = true;
+            }
+        }
+    }
+
+    // ---- THE CANCELLATION WAS WRONG, AND THE LOG SAYS HOW ----------------
+    // FALSIFIED 2026-08-12, first run. Subtracting the gun's rotation each frame
+    // assumed the GAME rewrites this field every tick, so that each subtraction
+    // applies to a fresh value. It does not. The subtraction COMPOUNDED, and the
+    // probe caught it walking away within seconds:
+    //
+    //   arrow p -1.1 ... p +44.6 ... p +151.1 ... p -103.3
+    //
+    // A cumulative correction to a field nobody resets is a runaway, and this
+    // one is the same shape as the pitch servo in the graveyard. Now DEFAULT
+    // OFF, so the probe below reports the game's own values instead of ours.
+    //
+    // WHAT THE NEXT RUN DECIDES: with the write off, does the arrow's rotation
+    // CHANGE as the objective moves relative to the player? If yes, the field is
+    // the authored direction and the gun is composed downstream at render time
+    // -- which no write here can undo, and detaching the actor (its Base) is the
+    // real fix. If it sits still, the field is not what aims the arrow at all.
+    if (g_cfg.arrowUnparentRot && haveGun)
+    {
+        R->pitch -= gun.pitch;
+        R->yaw -= gun.yaw;
+    }
+
+    // ---- IT WAS THE ROLL, AND THE YAW WAS NEVER WRONG --------------------
+    // MEASURED 2026-08-12 with every write off, player standing still:
+    //
+    //   arrow y  -90.2  -89.1  -89.3  -89.4  -88.9   <- parked on the objective
+    //   gun   y +153.8 +159.1 +159.2 +163.1          <- swinging freely
+    //   arrow r  +19.8  +17.3  +14.7  +14.8   +3.3   <- following the gun
+    //
+    // So "it points where the gun points" was never a heading error. The yaw is
+    // the authored objective direction and it holds; what tracks the weapon is
+    // ROLL, tilting the arrow by up to 20 degrees, which reads as the thing
+    // fighting you. The attachment scan agrees there is nothing to detach --
+    // arrow+0x0AC holds the PAWN and no slot in its first 0x400 bytes points at
+    // the weapon.
+    //
+    // An arrow has no business carrying roll, so this zeroes it. ABSOLUTE, not
+    // cumulative -- that distinction is the entire lesson of the failed
+    // cancellation above, and writing a constant is idempotent by construction.
+    if (g_cfg.arrowLevel)
+    {
+        R->roll = 0;
+        if (g_cfg.arrowLevel >= 2) R->pitch = 0;   // also pin it horizontal
+    }
+
+    // ---- SIZE, and it uses the mechanism that already works on the gun ----
+    // Actor DrawScale, the same +0x2AC HandsProbe writes for GunScale. Apparent
+    // size is mostly distance for a world actor, but the arrow's mesh is small
+    // enough that distance alone could not get there.
+    if (g_cfg.arrowDrawScale > 0.0f)
+    {
+        float* const S = (float*)((uint8_t*)arrow + 0x2AC);
+        if (IsMemoryWritable(S, 4) && *S != g_cfg.arrowDrawScale)
+            *S = g_cfg.arrowDrawScale;
+    }
+
+    // ---- WHAT IS THIS ACTOR ATTACHED TO? (one shot, read-only) -----------
+    // "Fully decoupled instead of just canceled out" is the right instinct and
+    // arithmetic cannot get there: if the renderer composes a parent transform,
+    // no value written into this actor's own rotation survives it. The parent
+    // pointer is what has to change.
+    //
+    // Rather than guess where AActor::Base lives, SEARCH FOR ITS VALUE. Walk the
+    // arrow's head looking for any slot holding a pointer we can already name --
+    // the weapon actor, the hands actor, the pawn. A hit identifies the
+    // attachment field outright, the same way the self-referential back-reference
+    // pinned myHUD. Runs once, prints, and changes nothing.
+    if (g_cfg.arrowProbe)
+    {
+        static bool s_scanned = false;
+        if (!s_scanned && haveGun)
+        {
+            s_scanned = true;
+            void* const hands = HandsProbe_Get();
+            void* const wpn = (hands && IsMemoryValid((const uint8_t*)hands + 0x45C, 4))
+                ? *(void* const*)((const uint8_t*)hands + 0x45C) : nullptr;
+
+            int hits = 0;
+            for (unsigned off = 0; off < 0x400; off += 4)
+            {
+                if (!IsMemoryValid((const uint8_t*)arrow + off, 4)) continue;
+                void* const v = *(void* const*)((const uint8_t*)arrow + off);
+                if (!v) continue;
+                const char* what = (v == wpn) ? "the WEAPON actor"
+                    : (v == hands) ? "the HANDS actor"
+                    : (v == pawn) ? "the pawn" : nullptr;
+                if (!what) continue;
+                ++hits;
+                Log(">>> ARROWBASE: arrow+0x%03X -> %s (0x%08X)",
+                    off, what, (unsigned)(uintptr_t)v);
+            }
+            if (!hits)
+                Log(">>> ARROWBASE: no slot in the first 0x400 bytes points at "
+                    "the weapon, hands or pawn -- it is not parented to any of "
+                    "them, so the gun-following is coming from somewhere else.");
+        }
+    }
+
+    // Throttled to once a second, read-only, and it gates nothing.
+    if (g_cfg.arrowProbe)
+    {
+        static DWORD s_last = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_last >= 1000)
+        {
+            s_last = now;
+            Log(">>> ARROWROT: arrow p%+7.1f y%+7.1f r%+7.1f | gun %sp%+7.1f "
+                "y%+7.1f | arrow-gun y%+7.1f | camYaw%+7.1f | cancel %d",
+                UnitsToDeg(R->pitch), UnitsToDeg(R->yaw), UnitsToDeg(R->roll),
+                haveGun ? "" : "(none) ",
+                UnitsToDeg(gun.pitch), UnitsToDeg(gun.yaw),
+                haveGun ? UnitsToDeg(R->yaw) - UnitsToDeg(gun.yaw) : 0.0,
+                UnitsToDeg((int32_t)((g_cfg.headAim && g_aimInit)
+                    ? g_aimBase.yaw : g_lastCleanYaw)),
+                g_cfg.arrowUnparentRot ? 1 : 0);
+        }
     }
 }
 
@@ -2130,7 +2351,7 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
 {
     if (!g_cfg.sixDofHands) return;
     if (GameState_Cutscene()) return;
-    if (GameState_Paused()) return;   // hands hold still behind a menu
+    if (ViewHeldForUi()) return;      // hands hold still behind any UI panel
 
     // M7-S2: the game is animating the hands on purpose. Let it. Moving the
     // controllers during a scripted moment dragged the hand models wherever you
@@ -2962,10 +3183,65 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
 
                     if (!g_aimInit)
                     {
-                        g_aimBase = *a;
-                        g_aimLastWrote = *a;
-                        g_aimInit = true;
-                        Log(">>> HEAD-AIM armed on +0x%X", off);
+                        // ---- ARMING IS A WRITE, SO IT GETS THE HARDER CHECK --
+                        // Whatever lands in g_aimBase becomes the player's frame
+                        // of reference: the aim field is written from it, and two
+                        // of the four movement modes subtract terms from it to
+                        // steer walking. Adopting a bad reading here corrupts
+                        // both at once.
+                        //
+                        // MEASURED 2026-08-11, the Little Sister crawl: at a
+                        // one-frame collapse of the scripted window this read
+                        // exactly (0,0) while the player's true heading was
+                        // -19.64. It was adopted, and the aim field then sat
+                        // 18.6 deg off the pawn for the whole 58-second scene.
+                        //
+                        // EXACTLY ZERO IN BOTH is the transient's fingerprint,
+                        // and it is the right test rather than a comparison
+                        // against the pawn: the pawn's rotator and the aim field
+                        // legitimately diverge inside a scene, so their gap
+                        // cannot decide anything here.
+                        //
+                        // Not a hard refusal -- a genuine (0,0) heading must
+                        // never hang the aim, so a run of rejections arms anyway
+                        // and says so.
+                        static int s_armRejects = 0;
+                        const bool zeroRead = (a->pitch == 0 && a->yaw == 0);
+
+                        if (zeroRead && s_armRejects < 8)
+                        {
+                            ++s_armRejects;
+                            if (s_armRejects == 1)
+                                Log("!!! HEAD-AIM arm REFUSED: field reads "
+                                    "p=%d y=%d r=%d -- keeping base y %+.2f. "
+                                    "See ONE SCENE, ONE WINDOW in GameState.",
+                                    a->pitch, a->yaw, a->roll,
+                                    YawDeg(g_aimBase.yaw));
+                        }
+                        else
+                        {
+                            if (s_armRejects)
+                                Log("!!! HEAD-AIM armed after %d refused "
+                                    "frame(s)%s", s_armRejects,
+                                    zeroRead ? " -- STILL ZERO, arming anyway"
+                                    : "");
+                            s_armRejects = 0;
+
+                            // The jump this arm makes to the frame of reference.
+                            // Logged so a future session can decide whether a
+                            // magnitude threshold is safe -- it is not yet, since
+                            // with ScriptedCameraFollow off a legitimate exit
+                            // re-arm IS a large jump.
+                            const double jump = g_aimInitEver
+                                ? YawDeg(a->yaw - g_aimBase.yaw) : 0.0;
+
+                            g_aimBase = *a;
+                            g_aimLastWrote = *a;
+                            g_aimInit = true;
+                            g_aimInitEver = true;
+                            Log(">>> HEAD-AIM armed on +0x%X  (base y %+.2f, "
+                                "jump %+.2f)", off, YawDeg(g_aimBase.yaw), jump);
+                        }
                     }
                     else
                     {
@@ -3455,7 +3731,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 {
                     static FRotator s_menuRot = {};
                     static bool     s_menuHeld = false;
-                    if (GameState_Paused())
+                    if (ViewHeldForUi())
                     {
                         if (!s_menuHeld) { s_menuHeld = true; s_menuRot = finalRot; }
                         finalRot = s_menuRot;
@@ -3489,7 +3765,7 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 static double mFwd = 0.0, mRight = 0.0, mUp = 0.0;
                 static bool   mHeld = false;
                 double pf = g_posFwd, pr = g_posRight, pu = g_posUp;
-                if (GameState_Paused())
+                if (ViewHeldForUi())
                 {
                     if (!mHeld) { mHeld = true; mFwd = g_posFwd; mRight = g_posRight; mUp = g_posUp; }
                     pf = mFwd; pr = mRight; pu = mUp;

@@ -61,6 +61,7 @@ bool GameState_Paused();             // GameState.cpp
 bool GameState_Theater();            // GameState.cpp
 bool GameState_ScriptedAnim();       // GameState.cpp
 bool GameState_ForcedMove();         // GameState.cpp
+bool GameState_ScriptedWindow();     // GameState.cpp -- the two above, HELD
 
 // M7-S2/S6. The turn path must be handed back for the whole window in which the
 // mod is not writing the aim field, which includes the forced move BEFORE a
@@ -72,10 +73,15 @@ bool GameState_ForcedMove();         // GameState.cpp
 // aim field so head look can steer. This one stays wider on purpose: releasing
 // the turn axis there is what the tester signed off on -- "the big daddy splicer
 // fight felt mostly normal". Do not weld them together without a headset.
+//
+// THE PAIR IS NOW HELD, and the width above is unchanged by that. The union of
+// the two signals goes momentarily false BETWEEN the two phases of one scene --
+// measured at 5 ms on the Little Sister crawl -- which handed the turn axis back
+// mid-scene for a frame. GameState_ScriptedWindow() is the same union with a
+// hold on its falling edge; every policy layered on top stays exactly as it was.
 static bool ScriptedQol()
 {
-    return g_cfg.scriptedQol &&
-        (GameState_ScriptedAnim() || GameState_ForcedMove());
+    return g_cfg.scriptedQol && GameState_ScriptedWindow();
 }
 
 static void Log(const char* fmt, ...)

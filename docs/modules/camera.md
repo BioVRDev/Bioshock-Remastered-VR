@@ -172,6 +172,29 @@ player, for the whole life of the mod.
 > and roll, which the follow never handled. `ScriptedCameraFollow=0` reverts to
 > aim-field-only.
 
+### The window itself — one scene, one window
+
+`ScriptedAimReleased()` decides whether the mod writes the aim field. It reads
+`GameState_ScriptedWindow()`, which is the **held** union of the two signals a
+scene raises in sequence: the forced move that walks you into place, then the
+scripted animation. Those normally overlap by ~90 ms. When the order reverses
+their union gaps, and a gap of **one frame** is enough to release the aim,
+re-arm `g_aimBase` from whatever the field says at that instant, and write it
+back — measured on the Little Sister crawl, which then ran 58 seconds with the
+aim field 18.6° off the pawn. Full measurement in `docs/INVARIANTS.md`.
+
+The hold lives in `GameState` rather than here **on purpose**: two consumers read
+that union with deliberately different policies on top. This one narrows it with
+`ScriptedButInControl()` so a walk-through scene keeps your aim; `InputHook`'s
+turn-axis release stays wider, and its own note says not to weld the two together
+without a headset. Holding the shared signal fixes both without touching either
+policy.
+
+Arming is treated as a write, not a read (grep `ARMING IS A WRITE`): whatever
+lands in `g_aimBase` becomes the reference for the aim field *and* for the two
+subtractive movement modes, so an exactly-zero reading is refused rather than
+adopted. Bounded, so a genuine zero heading cannot hang the aim.
+
 ### The balcony's authored numbers
 
 Useful because they turn *"landed wrong"* into arithmetic, and both were stable

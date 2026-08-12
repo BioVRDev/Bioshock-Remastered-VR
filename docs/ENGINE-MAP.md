@@ -255,6 +255,24 @@ state, not this bit.
 Ability mode tests `CurrentAbility != null && CurrentHoldable == null`, which
 avoids flapping mid-equip.
 
+## Quest arrow actor — `pawn+0xAE4`
+
+Found by the proximity probe, "22 cm directly above the gun". Reachable as
+`*(void**)(pawn + 0xAE4)`; `DriveQuestArrow` in `Camera/CameraHook.cpp` writes it.
+
+| Field | Offset | Notes |
+|---|---|---|
+| `Location` | `+0x1D8` | Written every CalcView. **Verified working in a headset** — the arrow parks relative to the head and stops bobbing |
+| `Rotation` | `+0x1E4` | `Location + 12`, the same pairing `Controller.Rotation` uses. Writes here **persist** — the game does not rewrite it every tick, which is why a per-frame *relative* correction ran away |
+| `DrawScale` | `+0x2AC` | The same field `GunScale` writes on the weapon. A plain float; verified changing the arrow's size |
+| *(owner)* | `+0x0AC` | Holds the **pawn** pointer |
+
+**MEASURED NEGATIVE, and it closes a line of attack:** a scan of the first
+`0x400` bytes for any slot holding the weapon actor, the hands actor or the pawn
+returned **only** the `+0x0AC` pawn hit. **The arrow is not actor-parented to the
+weapon**, so its gun-following cannot be fixed by detaching it. See
+`docs/INVARIANTS.md` § *The quest arrow* for what is still open.
+
 ## Holdable / weapon animation
 
 | Offset | Field |

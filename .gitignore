@@ -63,3 +63,7 @@ research/
 # reader would look for it anyway and gives it better provenance than a planning
 # note ever had. `docs/` remains the published, permanent knowledge base.
 .planning/
+
+# Local Codex <-> Claude collaboration notes. These are transient advisory
+# messages and must never become project history.
+coordination/

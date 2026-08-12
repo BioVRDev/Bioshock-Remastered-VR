@@ -33,6 +33,53 @@ handoff disagree, this file wins.
   "never present". Never presenting measured *worse* (85 Present/s vs 240).
 - Exclusive fullscreen is not an acceptable fix for anything. It snaps the
   portrait VR render to a real monitor mode and changes projection calibration.
+- **`Present` fires twice per stereo pair, and the backbuffer holds a DIFFERENT
+  eye each time. Anything flat must take ONE of them.** Verified in a headset
+  twice over, 2026-08-12. The menu quad submitted on both Presents, so the flat
+  panel alternated between the left and right views — one IPD of horizontal
+  shimmer on a surface being read. The desktop mirror had the same bug for the
+  same reason, reported as *"on the monitor it flickers a lot which means people
+  cant record it"*. Both now take `eye == 0`. **Put the eye test BEFORE the
+  mirror's interval timer**, or a skipped frame eats the interval and halves the
+  desktop rate.
+
+- **The `paused` term was silently anchoring every machine screen, and clicking
+  through unpauses.** Measured 2026-08-11, and the tester diagnosed it before
+  either agent did. `Hooks.cpp` routes the composed frame on
+  `starved || paused || anchorUi || …`; a machine's *first* page pauses, so it
+  was anchored and correct, and its *second* page unpauses while the interface
+  stays up — the panel's only reason to exist evaporating underneath it:
+
+  ```
+  23:49:11.888  PAUSE: PAUSED                     <- screen 1, anchored
+  23:49:18.998  PAUSE: unpaused                   <- clicks OK
+  23:49:19.002  MENU SCREEN off                   <- screen 2 drops to the HUD
+  ```
+
+  **This generalises to every multi-page interface in the game.** Fixed by naming
+  the second page (`PlasmiNow`) in `AnchorMovies`; the general fix is
+  `ShockPlayer.CurrentStation`, still unhunted.
+
+- **The composed-frame route and the HUD capture are mutually exclusive by
+  construction** — running both draws the interface twice, once inside the flat
+  picture and once on the panel. That is why the HUD gate closes on pause, and it
+  is the only thing that stopped menus riding the HUD quad. `PanelMovies` inverts
+  both couplings for a named screen and ships empty; **the tester tried it on the
+  tonic flow and preferred the flat route**, so it has no users yet.
+
+- **A screen shown as the game's own composed frame must have the HUD capture
+  off.** The anchored and head-following routes both submit the composed frame as
+  a mono quad; the capture lifts the interface layer *out* of that frame, so
+  whatever it takes is missing from the picture. MEASURED, Build O: with
+  `Maps.swf` on top the capture took **3 draws per frame** and the map rendered
+  with correct paper, frame and tabs and **blank contents**; with
+  `ingamemanual.swf` on top it took **0** and that screen read perfectly. The
+  divider is texturing — the map's contents are untextured GameSWF vector
+  geometry and pass the `PSSrv0Res` guard into the capture. **The HUD gate cannot
+  cover this**: it closes on `GameState_MenuUp() || GameState_Paused()`, and these
+  screens do not pause — the anchored window ran a full minute without one
+  `HUD GATE` line. `DrawHook_ComposedFrameUp()` is the one owner, read by the quad
+  router and by the capture condition.
 
 ### Threading and frames
 - `eventPlayerCalcView` is the **game thread**; `Present` is the **render thread**.
@@ -291,6 +338,44 @@ handoff disagree, this file wins.
   Undecided reads as "the game owns you" — fail closed. **A per-frame predicate
   over a racy signal is not a safe way to answer a per-scene question.**
 
+- **One scene raises two signals in sequence, and the order between them is not
+  guaranteed — 2026-08-11, the Little Sister crawl.** The forced move walks the
+  player into place, then the scripted animation plays. M7-S6 measured the forced
+  flag dropping **0.09 s after** the animation begins, so they normally overlap
+  and their union never gaps. On one run the order reversed:
+
+  ```
+  22:46:10.556  FORCEDMOVE: --- forced move done ---
+  22:46:10.557  SCRIPTED: aim released back to the player     <- the collapse
+  22:46:10.557  SCRIPTED EXIT : aim y +0.00 p +0.00 | base y -19.64
+  22:46:10.561  SCRIPTED: *** SCRIPTED ANIMATION BEGAN ***    <- 5 ms later
+  ```
+
+  **One frame** at 231 CalcView/s. In it the mod released the aim, re-armed
+  `g_aimBase` from an aim field reading **exactly (0,0)** while the true heading
+  was `-19.64`, and wrote that back — a write inside a live scene, which the
+  invariant above forbids. The damage held for the whole 58-second scene, visible
+  in a field nothing else touches: `aim-pawn` sat at exactly **`-18.6` for 58
+  seconds**, having read `+0.0` on every sample before it and returning to `+0.0`
+  after. The crawl walked that far wrong.
+
+  Two rules come out of it, and either alone would have prevented it:
+
+  1. **The union of the two signals is held** — rises instantly, falls only after
+     `ScriptedWindowHoldMs` with neither set (`GameState_ScriptedWindow`, grep
+     `ONE SCENE, ONE WINDOW`). Held on the *shared* signal, not in either
+     consumer, because the aim suppression and the turn-axis release layer
+     deliberately different policies on top of it.
+  2. **Arming the aim base is a write, so it gets the harder check.** Whatever
+     lands in `g_aimBase` becomes the player's frame of reference for both the
+     aim field and two of the four movement modes. An exactly-zero pitch *and*
+     yaw is the transient's fingerprint and is refused (bounded, so a genuine
+     zero cannot hang the aim). Comparing against the pawn's rotator is **not** a
+     usable test here — the two legitimately diverge inside a scene.
+
+  **A signal that is correct is not the same as a signal that is continuous.**
+  Both of these were reading exactly what they were built to read.
+
 - **A scene can put its rotation on the aim field AND the game's own camera at
   the same time — 2026-08-11.** The balcony's opening snap moves both, and by the
   same amount to the hundredth:
@@ -426,6 +511,39 @@ handoff disagree, this file wins.
   both straight-on runs landed badly wrong — **the write itself is the damage**,
   which is the ownership invariant above. Do not re-add a write of any kind
   inside a scripted window.
+
+### The quest arrow
+
+- **"Leave the rotation alone and it keeps pointing at the objective" — FALSIFIED
+  in a headset, 2026-08-12.** The `DriveQuestArrow` Location write works: the
+  arrow parks relative to the head, stops riding the gun and stops bobbing. Its
+  *rotation* still moves with the controller.
+
+- **Cancelling the weapon's rotation per frame — FALSIFIED, and it is the pitch
+  servo's lesson again.** `R->yaw -= gun.yaw` every CalcView assumed the game
+  rewrites that field each tick. It does not, so the correction **compounded**;
+  the probe caught arrow pitch walking `-1.1 → +44.6 → +151.1 → -103.3` within
+  seconds. **A cumulative correction to a field nobody resets is a runaway.**
+  `ArrowUnparentRot` ships 0. An absolute write (`ArrowLevel` zeroing roll) is
+  idempotent and safe by construction; that distinction is the whole finding.
+
+- **There is nothing to detach.** A scan of the arrow actor's first `0x400` bytes
+  for any slot holding a pointer we can name found **`arrow+0x0AC` → the pawn**
+  and **no weapon pointer at all**. So the gun-following is not actor parenting,
+  and severing an attachment cannot be the fix.
+
+- **SHELVED 2026-08-12, not solved.** Final observed behaviour: *"it moves with
+  the controller but then it snaps back to the correct direction"* — i.e. the
+  game re-asserts the right heading periodically and something drags it between
+  those updates. Position, size (`ArrowDrawScale`, actor DrawScale `+0x2AC`, the
+  field `GunScale` already writes) and scripted-scene suppression are all
+  verified working. **Do not re-open this with another rotation write; the open
+  question is what drags it between the game's own updates.**
+
+  ⚠ **A methodology note that cost a round.** The run that produced the rotation
+  data was one the tester was asked to hold *still* so the attachment scan could
+  complete, and the gun barely moved in it. A tracking claim was then read out of
+  that sample. **A still gun cannot answer whether something tracks the gun.**
 
 ### Other
 - `TryPassThrough`, loader export patching, 5-byte JMP redirection. Reverted in

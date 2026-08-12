@@ -382,6 +382,8 @@ void Config_Load(const char* iniPath)
         CfgFloat("ScriptedHandsMotionThreshold", 0.02f, 0.0001f, 10.0f);
     g_cfg.scriptedHandsHoldMs =
         CfgIntRange("ScriptedHandsHoldMs", 300, 0, 10000);
+    g_cfg.scriptedWindowHoldMs =
+        CfgIntRange("ScriptedWindowHoldMs", 250, 0, 5000);
     g_cfg.modYaw = CfgIntRange("ModYaw", 0, 0, 1);
     g_cfg.modYawSpeed = CfgFloat("ModYawSpeed", 90.0f, 15.0f, 360.0f);
     g_cfg.forceFocus = CfgIntRange("ForceWindowFocus", 1, 0, 1);
@@ -417,6 +419,7 @@ void Config_Load(const char* iniPath)
     CfgStr("AnchorMovies", "", g_cfg.anchorMovies, sizeof(g_cfg.anchorMovies));
     CfgStr("SceneMovies", "", g_cfg.sceneMovies, sizeof(g_cfg.sceneMovies));
     CfgStr("FollowMovies", "", g_cfg.followMovies, sizeof(g_cfg.followMovies));
+    CfgStr("PanelMovies", "", g_cfg.panelMovies, sizeof(g_cfg.panelMovies));
     g_cfg.waterProbe = CfgIntRange("WaterProbe", 1, 0, 1);
 
     // debug / probe
@@ -450,6 +453,12 @@ void Config_Load(const char* iniPath)
     g_cfg.arrowY = CfgFloat("ArrowOffsetY", g_cfg.arrowY, -2.f, 2.f);
     g_cfg.arrowPtrOff = CfgHex("ArrowPtrOffset", g_cfg.arrowPtrOff);
     CfgVec3("ArrowWorldOffset", g_cfg.arrowWorld);
+    g_cfg.arrowUnparentRot = CfgIntRange("ArrowUnparentRot", 0, 0, 1);
+    g_cfg.arrowProbe = CfgIntRange("ArrowProbe", 1, 0, 1);
+    g_cfg.arrowDrawScale = CfgFloat("ArrowDrawScale", 0.0f, 0.0f, 20.0f);
+    g_cfg.mirrorIntervalMs = CfgIntRange("MirrorIntervalMs", 17, 4, 100);
+    g_cfg.arrowHideScripted = CfgIntRange("ArrowHideScripted", 1, 0, 1);
+    g_cfg.arrowLevel = CfgIntRange("ArrowLevel", 1, 0, 2);
 
     // ---- echo ----
     Log("=== BioshockVR config ===");
@@ -501,6 +510,11 @@ void Config_Load(const char* iniPath)
     CfgEcho("ScriptedHandsMotionThreshold", "%.4f", g_cfg.scriptedHandsMotion);
     CfgEcho("ScriptedHandsHoldMs", "%d   (hands stay up this long after the rig "
         "stops)", g_cfg.scriptedHandsHoldMs);
+    CfgEcho("ScriptedWindowHoldMs", "%d   %s", g_cfg.scriptedWindowHoldMs,
+        g_cfg.scriptedWindowHoldMs
+        ? "(one window per scene -- bridges the gap between a forced move and "
+          "the animation that follows it)"
+        : "(OFF -- the window closes the instant both signals drop)");
     CfgEcho("ControllableScriptedFix", "%d  %s", g_cfg.controllableScripted,
         g_cfg.controllableScripted ? "(a sequence with the HUD up keeps your aim)"
         : "(off)");
@@ -615,6 +629,9 @@ void Config_Load(const char* iniPath)
         "panel and scales with HudWidthDeg)");
     CfgEcho("SceneMovies", "'%s'%s", g_cfg.sceneMovies,
         g_cfg.sceneMovies[0] ? "   (not captured; drawn in the world)" : "");
+    CfgEcho("PanelMovies", "'%s'%s", g_cfg.panelMovies,
+        g_cfg.panelMovies[0] ? "   (interface on the HUD panel, world in stereo)"
+        : "   (none)");
     CfgEcho("FollowMovies", "'%s'%s", g_cfg.followMovies,
         g_cfg.followMovies[0] ? "   (whole frame, follows your head)" : "");
     CfgEcho("WaterProbe", "%d", g_cfg.waterProbe);
@@ -688,6 +705,20 @@ void Config_Load(const char* iniPath)
         g_cfg.arrowList, g_cfg.arrowScale, g_cfg.arrowX, g_cfg.arrowY);
     CfgEcho("ArrowPtrOffset", "0x%X   world %+.0f fwd %+.0f right %+.0f up (cm)",
         g_cfg.arrowPtrOff, g_cfg.arrowWorld[0], g_cfg.arrowWorld[1], g_cfg.arrowWorld[2]);
+    CfgEcho("ArrowUnparentRot", "%d  %s", g_cfg.arrowUnparentRot,
+        g_cfg.arrowUnparentRot ? "(cancel the weapon's rotation -- RUNS AWAY, "
+        "see the QUEST ARROW banner)" : "(leave the arrow's rotation alone)");
+    CfgEcho("MirrorIntervalMs", "%d   (~%d fps on the desktop; one eye only)",
+        g_cfg.mirrorIntervalMs, 1000 / g_cfg.mirrorIntervalMs);
+    CfgEcho("ArrowDrawScale", "%.2f  %s", g_cfg.arrowDrawScale,
+        g_cfg.arrowDrawScale > 0.f ? "" : "(size left alone)");
+    CfgEcho("ArrowLevel", "%d  %s", g_cfg.arrowLevel,
+        (g_cfg.arrowLevel >= 2) ? "(roll and pitch zeroed -- horizontal)"
+        : g_cfg.arrowLevel ? "(roll zeroed -- it was the roll tracking the gun)"
+        : "(rotation untouched)");
+    CfgEcho("ArrowHideScripted", "%d  %s", g_cfg.arrowHideScripted,
+        g_cfg.arrowHideScripted ? "(parked out of the world during scenes)"
+        : "(visible during scenes)");
 
     Log("=========================");
 }
