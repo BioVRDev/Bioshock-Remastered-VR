@@ -683,9 +683,12 @@ void Input_Pulse(int hand, float amplitude, int ms)
     // report from the outside, and the API has already returned success once
     // while nothing happened. Throttled only lightly -- pulses are rare events.
     {
+        // THROTTLED HARD now that a pulse can be continuous. It was 250 ms when
+        // pulses were single events; the grab-zone buzz re-fires every 50 ms and
+        // would bury the log.
         static DWORD lastPulseLog = 0;
         const DWORD nowP = GetTickCount();
-        if (nowP - lastPulseLog >= 250)
+        if (nowP - lastPulseLog >= 3000)
         {
             lastPulseLog = nowP;
             Log(">>> HAPTIC: %s hand, amp %.2f, %d ms -> result %d",

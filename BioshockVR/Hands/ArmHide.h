@@ -170,3 +170,10 @@ bool ArmHide_PoseSettling();
 // knows nothing about weapon slots. Off for the wrench by design -- a canned
 // swing fights a motion-controlled one.
 void ArmHide_SetAnimAllowed(bool allowed);
+
+// How far this cluster's wrist moved in the last frame, in degrees, as written by
+// the ENGINE rather than by us. A recoil animation is a spike here, which makes
+// this the most honest "a shot just happened" signal available: it respects ammo,
+// fire rate and reloads for free, where watching the trigger would fire on a dry
+// click. Published whether or not the slot may adopt animation.
+float ArmHide_HandImpulseDeg(int hand);

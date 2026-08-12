@@ -77,6 +77,18 @@ static const float kFarBelow[3] = { 0.0f, 0.0f, -5000.0f };
 #define HAND_LEFT   0
 #define HAND_RIGHT  1
 
+// The weapon cluster's per-frame wrist movement, in degrees. Computed whenever
+// we are driving, not only when HandAnim is on, because it answers a second
+// question: A SHOT JUST HAPPENED. The game's recoil animation is the most honest
+// firing signal available to us -- it respects ammo, fire rate and reloads for
+// free, where watching the trigger would fire on a dry click.
+static float g_impulseDeg[2] = { 0.f, 0.f };
+float ArmHide_HandImpulseDeg(int hand)
+{
+    return (hand == HAND_LEFT || hand == HAND_RIGHT) ? g_impulseDeg[hand] : 0.f;
+}
+
+
 struct BoneTransform
 {
     float position[4];
@@ -1240,12 +1252,6 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
         // THE PRECONDITION IS MEASURED, not assumed: docs/ENGINE-MAP.md
         // records that the array keeps evaluating in ordinary play with the
         // dirty byte cleared -- bone 27 moved between every pair of dumps.
-        // PER SLOT. The wrench keeps its rigid hand even with HandAnim on --
-        // its swing animation is suppressed on purpose and the tester asked for
-        // that. ArmHide has no business knowing which weapon is up, so the
-        // caller publishes it.
-        if (!ArmHide_AnimAllowedHere()) return true;
-
         ClusterBone live[kClusterMax] = {};
         for (int i = 0; i < c.count; ++i)
         {
@@ -1257,7 +1263,10 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
         }
         if (memcmp(live, g_clLastWritten[hand],
                    sizeof(ClusterBone) * (size_t)c.count) == 0)
+        {
+            g_impulseDeg[hand] = 0.f;
             return true;                       // untouched: still our own pose
+        }
 
         // ---- SWAY IS AN ANIMATION TOO, WHICH IS WHY A BARE ADOPT FAILS ----
         // REPORTED, Build V: "HandAnim=1 still has weapon sway." That is this
@@ -1283,6 +1292,12 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
         if (dot < 0.0f) dot = -dot;
         if (dot > 1.0f) dot = 1.0f;
         const float deg = 2.0f * acosf(dot) * 57.2957795f;
+        g_impulseDeg[hand] = (deg == deg) ? deg : 0.f;
+
+        // MEASURED FIRST, ADOPTED SECOND. The impulse above is published whether
+        // or not this slot may adopt, because recoil haptics want the number even
+        // on the wrench -- which is exactly the slot that must NOT adopt.
+        if (!ArmHide_AnimAllowedHere()) return true;
 
         static DWORD lastBig[2] = { 0, 0 };
         const DWORD now = GetTickCount();
@@ -1682,6 +1697,18 @@ static bool        g_wpHavePrev = false;
 static const float kSettleStillUnits = 0.05f;   // model units per frame
 static const DWORD kSettleStillMs = 150;
 
+// A LOOPING IDLE NEVER GOES STILL, so there is no single authored pose to latch
+// and "the last frame before we take the cluster" is an arbitrary phase of the
+// loop. REPORTED for the shotgun: the grip sits *"slightly off"*, and the hand
+// *"does an animation cycle, stops then starts the same animation over"* -- which
+// is what a looping idle looks like and why one frame of it is the wrong target.
+//
+// So accumulate while settling and, if the rig never stills, latch the MEAN --
+// the centre of the loop rather than a point on its circumference. When the rig
+// does go still, the still pose is used and this is ignored.
+static double g_settleSum[3] = {};
+static int    g_settleN = 0;
+
 bool ArmHide_PoseSettling() { return g_wpSettling; }
 
 bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
@@ -1725,6 +1752,8 @@ bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
                 }
                 memcpy(g_wpPrevWrist, w.position, sizeof(g_wpPrevWrist));
                 g_wpHavePrev = true;
+                for (int k = 0; k < 3; ++k) g_settleSum[k] += w.position[k];
+                ++g_settleN;
             }
         }
 
@@ -1743,8 +1772,18 @@ bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
 
         g_wpSettling = false;
         g_wpHavePrev = false;
+
+        // The rig never stopped moving, so it is looping. Latch the mean of what
+        // we watched rather than whichever frame the ceiling happened to land on.
+        if (!still && g_settleN > 0)
+        {
+            const int oh = (hand == HAND_LEFT) ? HAND_RIGHT : HAND_LEFT;
+            for (int k = 0; k < 3; ++k)
+                g_anchorPos[oh][k] = (float)(g_settleSum[k] / g_settleN);
+        }
         Log(">>> WEAPONHAND: pose settled after %u ms (%s) -- freezing from here.",
-            (unsigned)(now - g_wpKeyChanged), still ? "rig went still" : "ceiling");
+            (unsigned)(now - g_wpKeyChanged),
+            still ? "rig went still" : "ceiling; grab point averaged over the loop");
     }
 
     // THE FREE HAND WINS EVERY TIE. g_freeHand is the mirror of the weapon hand
@@ -1873,6 +1912,8 @@ void ArmHide_ReleaseWeaponHand()
     g_wpLastMoved = g_wpKeyChanged;
     g_wpHavePrev = false;
     g_wpSettling = true;
+    g_settleSum[0] = g_settleSum[1] = g_settleSum[2] = 0.0;
+    g_settleN = 0;
 }
 
 void ArmHide_Reset()

@@ -2385,10 +2385,28 @@ static void TwoHandTick(void* handsActor, const FRotator& want,
     //
     // This is the first caller of Input_Pulse in the project; the action was
     // created and bound long ago and has never fired.
-    // FULL STRENGTH, BY REQUEST. A 0.35 / 40 ms tick was inaudible to the
-    // hardware; until a pulse is felt at all there is nothing to tune down from.
-    if (g_thEligible && !wasEligible)
-        Input_Pulse(g_freeHand, 1.0f, 200);
+    // ---- A STEADY BUZZ WHILE YOU ARE IN THE ZONE -------------------------
+    // Not a one-shot on entry: you cannot SEE the grab point (while reaching,
+    // that hand is tracking your controller, so nothing is drawn there), and a
+    // single tick tells you only that you crossed a line, not that you are still
+    // inside it. Requested as *"it would be good to have the haptic constant
+    // while you are in the radius."*
+    //
+    // Re-fired rather than held on, because a haptic pulse is one-shot -- there is
+    // no "keep vibrating" call. The interval is shorter than the pulse so the
+    // next one starts before the last has finished, which is what makes it read
+    // as continuous rather than as a stutter.
+    if (g_cfg.hapticGrabZone && g_thEligible)
+    {
+        static DWORD lastBuzz = 0;
+        const DWORD nowB = GetTickCount();
+        if (nowB - lastBuzz >= (DWORD)g_cfg.hapticGrabEveryMs)
+        {
+            lastBuzz = nowB;
+            Input_Pulse(g_freeHand, g_cfg.hapticGrabAmp, g_cfg.hapticGrabMs);
+        }
+    }
+    (void)wasEligible;
 
     const bool grip = Input_GripDown(g_freeHand);
     static bool prevGrip = false;
@@ -2728,6 +2746,28 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
         // the same side of that decision.
         if (g_offHandLoose)
             ArmHide_FreezeWeaponHand(obj, g_freeHand, poseKey);
+
+        // ---- RECOIL, READ OFF THE ANIMATION RATHER THAN THE TRIGGER --------
+        // The game's own recoil animation is the most honest "a shot happened"
+        // signal we have: it respects ammo, fire rate and reloads for free, where
+        // a trigger watch would kick on a dry click and miss the difference
+        // between a pistol and a Tommy gun entirely. The number is already
+        // measured for HandAnim, so this costs one comparison.
+        //
+        // Rate-limited to the pulse length so an automatic weapon rattles rather
+        // than queueing a pulse per frame.
+        if (g_cfg.hapticRecoil && !ArmHide_PoseSettling())
+        {
+            const float imp = ArmHide_HandImpulseDeg(weaponHand);
+            static DWORD lastKick = 0;
+            const DWORD nowK = GetTickCount();
+            if (imp >= (float)g_cfg.hapticRecoilMinDeg &&
+                nowK - lastKick >= (DWORD)g_cfg.hapticRecoilMs)
+            {
+                lastKick = nowK;
+                Input_Pulse(weaponHand, g_cfg.hapticRecoilAmp, g_cfg.hapticRecoilMs);
+            }
+        }
     }
 
     static bool announced = false;

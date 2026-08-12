@@ -246,9 +246,17 @@ void Config_Load(const char* iniPath)
     g_cfg.bone43Rot = CfgIntRange("WeaponHandBone43Rot", 1, 0, 1);
     g_cfg.weaponSwitchSettleMs = CfgIntRange("WeaponSwitchSettleMs", 600, 0, 5000);
     g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
-    g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 15, 1, 200);
-    g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 25, 1, 300);
+    g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 12, 1, 200);
+    g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 20, 1, 300);
     g_cfg.twoHandBlockRadial = CfgIntRange("TwoHandBlockRadial", 0, 0, 1);
+    g_cfg.hapticGrabZone = CfgIntRange("HapticGrabZone", 1, 0, 1);
+    g_cfg.hapticGrabMs = CfgIntRange("HapticGrabMs", 60, 1, 500);
+    g_cfg.hapticGrabEveryMs = CfgIntRange("HapticGrabEveryMs", 50, 10, 1000);
+    g_cfg.hapticGrabAmp = CfgFloat("HapticGrabAmp", 0.35f, 0.f, 1.f);
+    g_cfg.hapticRecoil = CfgIntRange("HapticRecoil", 1, 0, 1);
+    g_cfg.hapticRecoilMinDeg = CfgIntRange("HapticRecoilMinDeg", 6, 1, 180);
+    g_cfg.hapticRecoilMs = CfgIntRange("HapticRecoilMs", 45, 1, 500);
+    g_cfg.hapticRecoilAmp = CfgFloat("HapticRecoilAmp", 1.0f, 0.f, 1.f);
     g_cfg.twoHandToggle = CfgIntRange("TwoHandToggle", 0, 0, 1);
     g_cfg.twoHandProbe = CfgIntRange("TwoHandProbe", 1, 0, 1);
     for (int s2 = 0; s2 < 9; ++s2)
@@ -618,6 +626,12 @@ void Config_Load(const char* iniPath)
             ? "(the grip NEVER opens the plasmid wheel -- and so cannot switch "
               "plasmids either, on a grabbable weapon)"
             : "(the wheel opens normally outside the grab zone)");
+    CfgEcho("HapticGrabZone", "%d  %s", g_cfg.hapticGrabZone,
+        g_cfg.hapticGrabZone ? "(steady buzz while the off hand is at the fore-end)"
+        : "(off)");
+    CfgEcho("HapticRecoil", "%d  %s", g_cfg.hapticRecoil,
+        g_cfg.hapticRecoil ? "(kick on the weapon hand when the gun fires -- from "
+        "the recoil animation, so it needs WeaponHandDrive=1)" : "(off)");
     CfgEcho("WeaponHandBone43Rot", "%d  %s", g_cfg.bone43Rot,
         g_cfg.bone43Rot ? "(the GUN is frozen to the hand -- attach bone rotation "
         "written; set 0 if the gun breaks)"

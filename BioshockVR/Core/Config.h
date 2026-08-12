@@ -359,8 +359,8 @@ struct VrConfig
     // be reachable at all. 40 then meant *"I can grip it with both arms out
     // straight and my hand about a foot away"* -- correct, and the fault was the
     // radius outliving the bug it was compensating for.
-    int   twoHandGrab = 15;      // cm to engage
-    int   twoHandRelease = 25;   // cm to let go -- LARGER on purpose, hysteresis
+    int   twoHandGrab = 12;      // cm to engage
+    int   twoHandRelease = 20;   // cm to let go -- LARGER on purpose, hysteresis
     int   twoHandToggle = 0;     // 0 hold, 1 press to grab and press to let go
     int   twoHandProbe = 1;      // Cycle 1's distance log. Read-only
 
@@ -379,6 +379,31 @@ struct VrConfig
     // the zone and is suppressed anyway. Left in for anyone who binds plasmids
     // elsewhere and wants the grip reserved outright.
     int   twoHandBlockRadial = 0;
+
+    // ---- HAPTICS -------------------------------------------------------
+    // A steady buzz for as long as your off hand is inside the grab zone, so you
+    // can FEEL where the fore-end is instead of guessing. You cannot see the grab
+    // point -- while you are reaching, that hand is tracking your controller, so
+    // nothing is drawn there.
+    //
+    // Re-fired on an interval because a haptic pulse is one-shot: SteamVR has no
+    // "hold this on" call, so continuous means "a new pulse before the last one
+    // ends". The interval is deliberately shorter than the duration.
+    int   hapticGrabZone = 1;
+    int   hapticGrabMs = 60;      // pulse length
+    int   hapticGrabEveryMs = 50; // and how often to re-fire it
+    float hapticGrabAmp = 0.35f;  // gentle -- this one is continuous
+
+    // A kick when the gun fires, driven by the recoil ANIMATION rather than by
+    // your trigger, so it respects ammo, fire rate and reloads for free. Costs
+    // nothing extra: the impulse it watches is already measured for HandAnim.
+    //
+    // NEEDS WeaponHandDrive=1, because the impulse is only measured on a cluster
+    // we are driving.
+    int   hapticRecoil = 1;
+    int   hapticRecoilMinDeg = 6;   // wrist movement that counts as a shot
+    int   hapticRecoilMs = 45;
+    float hapticRecoilAmp = 1.0f;
 
     // Which slots can be two-handed, like HideInactiveHandN. The shotgun (2) and
     // the Tommy gun (5) are the ones the game itself animates two-handed.

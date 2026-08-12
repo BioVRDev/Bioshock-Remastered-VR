@@ -244,7 +244,7 @@ static DWORD WINAPI InitThread(LPVOID)
     // built at 18:08 stamped 17:52. Editing the label is what moves the stamp,
     // which is exactly why the label must be bumped rather than left alone.
     Log("BioshockVR version: 1.0.3");
-    Log("dllmain build: Build AC -- a radius that matches the grip, and a pulse you can hear  (%s %s)",
+    Log("dllmain build: Build AD -- the gun kicks back  (%s %s)",
         __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {};
