@@ -277,6 +277,13 @@ struct VrConfig
     // Costs real Present time, which is why it is not simply "every frame".
     int   mirrorIntervalMs = 17;
 
+    // 1 == the desktop mirror presents only one eye's image. Present fires twice
+    // per stereo pair with a DIFFERENT eye each time, so mirroring both makes the
+    // monitor flicker between two viewpoints. 0 restores the pre-2026-08-12
+    // behaviour for anyone who wants to compare, or who is replacing the mirror
+    // with a headset-view blit instead.
+    int   mirrorOneEye = 1;
+
     // Park the arrow out of the world during a scripted scene. Uses the held
     // window, so one scene is one hide.
     int   arrowHideScripted = 1;

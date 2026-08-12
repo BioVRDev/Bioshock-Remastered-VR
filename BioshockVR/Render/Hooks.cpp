@@ -660,8 +660,9 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
     if (g_cfg.mirrorEvery > 0)
     {
         static unsigned mirrorTick = 0;
-        if (eye == 0) ++mirrorTick;      // one eye only -- see the note below
-        doMirror = (eye == 0) &&
+        const bool eyeOk = (!g_cfg.mirrorOneEye || eye == 0);
+        if (eyeOk) ++mirrorTick;         // one eye only -- see the note below
+        doMirror = eyeOk &&
             ((mirrorTick % (unsigned)g_cfg.mirrorEvery) == 0);
     }
     else
@@ -690,7 +691,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         // The eye test comes BEFORE the timer so the 17 ms clock only advances
         // on frames we actually present; testing it afterwards would let a
         // skipped frame eat the interval and halve the mirror rate.
-        doMirror = (eye == 0) && (sinceMs >= kMirrorMs);
+        doMirror = (!g_cfg.mirrorOneEye || eye == 0) && (sinceMs >= kMirrorMs);
         if (doMirror) lastMirror = nowM;
     }
 

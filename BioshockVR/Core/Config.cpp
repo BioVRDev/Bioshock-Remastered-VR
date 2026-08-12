@@ -457,6 +457,7 @@ void Config_Load(const char* iniPath)
     g_cfg.arrowProbe = CfgIntRange("ArrowProbe", 1, 0, 1);
     g_cfg.arrowDrawScale = CfgFloat("ArrowDrawScale", 0.0f, 0.0f, 20.0f);
     g_cfg.mirrorIntervalMs = CfgIntRange("MirrorIntervalMs", 17, 4, 100);
+    g_cfg.mirrorOneEye = CfgIntRange("MirrorOneEye", 1, 0, 1);
     g_cfg.arrowHideScripted = CfgIntRange("ArrowHideScripted", 1, 0, 1);
     g_cfg.arrowLevel = CfgIntRange("ArrowLevel", 1, 0, 2);
 
@@ -708,6 +709,9 @@ void Config_Load(const char* iniPath)
     CfgEcho("ArrowUnparentRot", "%d  %s", g_cfg.arrowUnparentRot,
         g_cfg.arrowUnparentRot ? "(cancel the weapon's rotation -- RUNS AWAY, "
         "see the QUEST ARROW banner)" : "(leave the arrow's rotation alone)");
+    CfgEcho("MirrorOneEye", "%d  %s", g_cfg.mirrorOneEye,
+        g_cfg.mirrorOneEye ? "(one eye -- no flicker on the monitor)"
+        : "(both eyes, as before -- the monitor will flicker)");
     CfgEcho("MirrorIntervalMs", "%d   (~%d fps on the desktop; one eye only)",
         g_cfg.mirrorIntervalMs, 1000 / g_cfg.mirrorIntervalMs);
     CfgEcho("ArrowDrawScale", "%.2f  %s", g_cfg.arrowDrawScale,
