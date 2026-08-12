@@ -125,6 +125,31 @@ bool GameState_ForcedMove();
 // g_cfg.controllableScripted -- this reports the fact, not the policy.
 bool GameState_ScriptedInControl();
 
+// TRUE while the interface screen on top is one AnchorMovies names -- i.e. one
+// that should sit on the WORLD-LOCKED quad rather than ride the HUD panel.
+//
+// The screen identifies itself by Flash movie FILENAME, read live off the
+// playing-movie stack, so this cannot false-fire on scene geometry the way the
+// draw-count signatures it replaces did. Empty list == always false, and every
+// screen keeps riding the HUD panel at HudWidthDeg.
+bool GameState_AnchorMovieUp();
+
+// TRUE while the top screen is one SceneMovies names -- one whose interface must
+// NOT be captured at all, because the panels its text belongs inside are world
+// geometry and no head-locked surface can line up with them.
+//
+// Read on the RENDER thread by the capture condition in DrawHook. Empty list ==
+// always false, and every screen keeps being captured exactly as before.
+bool GameState_SceneMovieUp();
+
+// TRUE while the top screen is one FollowMovies names -- shown as the WHOLE
+// composed frame, like the pause menu, but on a panel that follows your head
+// instead of staying where it was opened.
+//
+// Read on the RENDER thread by the menu-quad placement in XRSession. Empty list
+// == always false.
+bool GameState_FollowMovieUp();
+
 void GameState_Reset();
 bool GameState_Cutscene();
 bool GameState_InGame();

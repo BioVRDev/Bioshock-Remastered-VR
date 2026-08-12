@@ -54,6 +54,7 @@
 
 #include <MinHook.h>
 #include "Core/Config.h"
+#include "Game/GameState.h"
 
 extern void  LogFile(const char* msg);
 
@@ -1329,6 +1330,55 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
 {
     ++g_drawsSinceBind;
 
+    // ---- WHAT IS THE WATER EFFECT? ------------------------------------------
+    // REPORTED: walking through water puts an effect on screen that "renders as
+    // a square that doesn't block my whole vision when it should". The
+    // backbuffer is the full eye size (2750x2850 measured), so a genuine
+    // full-screen pass would cover everything -- which means this one is drawn
+    // at a different extent, and a VIEWPORT is the cheapest thing that would
+    // show that.
+    //
+    // Full-screen post passes are textured quads of a handful of vertices, so
+    // that is the filter. Tonemap and bloom will appear here too, and that is
+    // the point: the set is stable, and ONE LINE APPEARS when you step into
+    // water. The difference between the wet and dry sets names the draw.
+    //
+    // Deduplicated by signature and rate-limited per signature, so a steady
+    // scene settles into silence instead of writing every frame.
+    if (g_cfg.waterProbe && kind == KIND_DRAW && count >= 3 && count <= 6 &&
+        PSSrv0Res(ctx) != nullptr)
+    {
+        D3D11_VIEWPORT vp = {};
+        UINT nvp = 1;
+        ctx->RSGetViewports(&nvp, &vp);
+
+        if (nvp)
+        {
+            struct Sig { unsigned c, w, h; DWORD last; };
+            static Sig s_seen[16] = {};
+            static int s_nSeen = 0;
+
+            const unsigned vw = (unsigned)vp.Width, vh = (unsigned)vp.Height;
+            const DWORD now = GetTickCount();
+
+            Sig* slot = nullptr;
+            for (int i = 0; i < s_nSeen; ++i)
+                if (s_seen[i].c == count && s_seen[i].w == vw && s_seen[i].h == vh)
+                {
+                    slot = &s_seen[i]; break;
+                }
+            if (!slot && s_nSeen < 16) slot = &s_seen[s_nSeen++];
+
+            if (slot && (slot->last == 0 || now - slot->last >= 2000))
+            {
+                slot->c = count; slot->w = vw; slot->h = vh; slot->last = now;
+                Log(">>> WATER?: %u verts tex=yes  vp %ux%u @%d,%d   rt %ux%u",
+                    count, vw, vh, (int)vp.TopLeftX, (int)vp.TopLeftY,
+                    g_curW, g_curH);
+            }
+        }
+    }
+
     {
         const bool indexed = (kind == KIND_INDEXED || kind == KIND_IDXINST);
 
@@ -1408,7 +1458,14 @@ static bool NoteDraw(ID3D11DeviceContext* ctx, unsigned count, int kind)
                 // shader resource separates them, so the square never enters the
                 // capture -- in ANY scene, with no timers and no cutscene
                 // detection. Structural, not a timing bandaid.
+                // SceneMovies: a screen whose text belongs on world geometry is
+                // not captured at all -- see GameState_SceneMovieUp(). This gate
+                // is global, so while such a screen is up the health and EVE bars
+                // also render into the scene rather than onto the HUD panel. That
+                // is accepted for the seconds a machine screen is open, and it is
+                // written down in the ini rather than left to be discovered.
                 if (g_hudRedirect && g_hudGateOpen && g_hudClearedThisFrame &&
+                    !GameState_SceneMovieUp() &&
                     PSSrv0Res(ctx) == nullptr &&
                     kind == KIND_DRAW && g_hudRTV && g_hudDSV)
                 {

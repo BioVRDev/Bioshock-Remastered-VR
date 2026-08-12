@@ -414,6 +414,10 @@ void Config_Load(const char* iniPath)
     g_cfg.menuMaxDraw = CfgIntRange("MenuMaxDraw", 0, 0, 100000);
     CfgStr("MenuIndexCounts", "1769,63,49,95,21,87", g_cfg.menuList, sizeof(g_cfg.menuList));
     CfgStr("AnchorIndexCounts", "", g_cfg.anchorList, sizeof(g_cfg.anchorList));
+    CfgStr("AnchorMovies", "", g_cfg.anchorMovies, sizeof(g_cfg.anchorMovies));
+    CfgStr("SceneMovies", "", g_cfg.sceneMovies, sizeof(g_cfg.sceneMovies));
+    CfgStr("FollowMovies", "", g_cfg.followMovies, sizeof(g_cfg.followMovies));
+    g_cfg.waterProbe = CfgIntRange("WaterProbe", 1, 0, 1);
 
     // debug / probe
     g_cfg.drawHook = CfgBool("EnableDrawHook", true);
@@ -606,6 +610,14 @@ void Config_Load(const char* iniPath)
     CfgEcho("MenuMaxIndexed", "%d", g_cfg.menuMaxIndexed);
     CfgEcho("MenuIndexCounts", "'%s'", g_cfg.menuList);
     CfgEcho("AnchorIndexCounts", "'%s'", g_cfg.anchorList);
+    CfgEcho("AnchorMovies", "'%s'%s", g_cfg.anchorMovies,
+        g_cfg.anchorMovies[0] ? "" : "   (none -- every screen rides the HUD "
+        "panel and scales with HudWidthDeg)");
+    CfgEcho("SceneMovies", "'%s'%s", g_cfg.sceneMovies,
+        g_cfg.sceneMovies[0] ? "   (not captured; drawn in the world)" : "");
+    CfgEcho("FollowMovies", "'%s'%s", g_cfg.followMovies,
+        g_cfg.followMovies[0] ? "   (whole frame, follows your head)" : "");
+    CfgEcho("WaterProbe", "%d", g_cfg.waterProbe);
     CfgEcho("HudDsvMode", "%d  (0 none, 1 private, 2 game's)", g_cfg.hudDsvMode);
 
     Log("[debug/probe]");

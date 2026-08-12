@@ -643,53 +643,340 @@ static void HuntPauser()
 // READ-ONLY. Every step goes through Readable() and bails rather than guessing,
 // which is the only acceptable shape for a six-deep pointer chain we decoded
 // from instructions rather than measured.
-static void* FlashGuiController()
+// A pointer that is merely a readable, aligned BUFFER -- not an object. Used for
+// the array-data step below, where demanding a vtable is simply wrong.
+static bool GsLooksLikeBuffer(const void* p)
 {
-    if (!g_level) return nullptr;
+    return p && !((uintptr_t)p & 3) && (uintptr_t)p >= 0x10000 &&
+        Readable(p, 4);
+}
 
-    const uint8_t* p = (const uint8_t*)g_level;
+// ---- WHY THIS FUNCTION REPORTS WHERE IT STOPS ---------------------------
+// The first version returned a bare nullptr, and the log said only
+// "chain did not resolve" -- once, because the result is latched on change. A
+// six-deep pointer walk decoded from instructions has six ways to be wrong and
+// that line distinguishes none of them. It cost a session.
+//
+// AND THE FIRST VERSION'S BUG WAS ITS OWN SAFETY CHECK. The tail of the getter
+// is `cmp [eax+0x48],0` then `mov eax,[eax+0x44]` then a further deref -- the
+// shape of a TArray, Data at +0x44 and ArrayNum at +0x48. The old code ran
+// GsLooksLikeObject() on that array DATA pointer, which demands a vtable whose
+// first slot is executable. An array buffer's first word is element 0, whose own
+// first word is a vtable POINTER -- and a vtable lives in read-only data, not
+// executable memory. So a perfectly correct pointer was rejected every time.
+//
+// Fail closed is right. Failing closed on the wrong predicate is not.
+static void* FlashGuiController(const char** outStopStep, unsigned* outStopVal)
+{
+    const char* stop = nullptr;
+    unsigned    val = 0;
 
-    // +0xFC -> +0x5C -> +0x4C, each checked before it is followed.
-    static const unsigned kStep[3] = { 0xFC, 0x5C, 0x4C };
-    for (int i = 0; i < 3; ++i)
+#define GS_BAIL(nameStr, value) \
+    do { stop = (nameStr); val = (unsigned)(uintptr_t)(value); goto done; } while (0)
+
+    void* ctrl = nullptr;
+
+    if (!g_level) GS_BAIL("g_level null", 0);
+
     {
-        if (!Readable(p + kStep[i], 4)) return nullptr;
-        p = *(const uint8_t* const*)(p + kStep[i]);
-        if (!GsLooksLikeObject(p)) return nullptr;
+        const uint8_t* p = (const uint8_t*)g_level;
+
+        // +0xFC (Actor::XLevel) -> +0x5C -> +0x4C. These are engine objects.
+        static const unsigned kStep[3] = { 0xFC, 0x5C, 0x4C };
+        static const char* const kName[3] = {
+            "step1 +0xFC XLevel", "step2 +0x5C", "step3 +0x4C" };
+
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!Readable(p + kStep[i], 4)) GS_BAIL(kName[i], p);
+            p = *(const uint8_t* const*)(p + kStep[i]);
+            if (!GsLooksLikeObject(p)) GS_BAIL(kName[i], p);
+        }
+
+        // The getter's own guard: cmp [eax+0x48], 0 -- bail when it is zero.
+        // An empty array, so there is genuinely no controller yet.
+        if (!Readable(p + 0x48, 4)) GS_BAIL("step4 +0x48 count unreadable", p);
+        if (*(const int*)(p + 0x48) == 0)
+            GS_BAIL("step4 +0x48 count == 0 (empty, the getter bails too)", 0);
+
+        if (!Readable(p + 0x44, 4)) GS_BAIL("step5 +0x44 data unreadable", p);
+
+        // THE ARRAY DATA. A buffer, not an object -- see the banner above.
+        const uint8_t* const q = *(const uint8_t* const*)(p + 0x44);
+        if (!GsLooksLikeBuffer(q)) GS_BAIL("step5 +0x44 array data", q);
+
+        const uint8_t* const r = *(const uint8_t* const*)q;
+        if (!GsLooksLikeObject(r)) GS_BAIL("step6 data[0] element", r);
+        if (!Readable(r + 0x7C, 4)) GS_BAIL("step7 +0x7C unreadable", r);
+
+        void* const c = *(void* const*)(r + 0x7C);
+        if (!GsLooksLikeObject(c)) GS_BAIL("step7 +0x7C controller", c);
+        ctrl = c;
     }
 
-    // The getter's own guard: cmp [eax+0x48], 0 -- bail when it is zero.
-    if (!Readable(p + 0x48, 4)) return nullptr;
-    if (*(const int*)(p + 0x48) == 0) return nullptr;
+done:
+#undef GS_BAIL
+    if (outStopStep) *outStopStep = stop;
+    if (outStopVal)  *outStopVal = val;
+    return ctrl;
+}
 
-    if (!Readable(p + 0x44, 4)) return nullptr;
-    const uint8_t* const q = *(const uint8_t* const*)(p + 0x44);
-    if (!GsLooksLikeObject(q) || !Readable(q, 4)) return nullptr;
+// ---- READ A STRING OUT OF AN UNKNOWN SLOT --------------------------------
+// The movie names are FILENAMES -- ContentBaked\pc\FlashMovies holds
+// GeneBankPC.swf, PlasmidEquipStation.swf, hackingPC.swf, pause.swf and 44 more
+// (found in the reference project's engine notes and confirmed on disk). So the
+// object very likely carries the name as a STRING rather than an FName index,
+// and a string needs no name table to read.
+//
+// Tries UTF-16 first because UE2 builds TCHAR as wchar_t, then ANSI. Conservative
+// on purpose: printable ASCII only, must terminate, bounded length. A false
+// positive here costs a junk log line, which is why it is allowed to guess at
+// all.
+static bool GsTryReadString(const void* p, char* out, size_t outSz)
+{
+    if (!out || outSz < 8 || !GsLooksLikeBuffer(p) || !Readable(p, 4)) return false;
 
-    const uint8_t* const r = *(const uint8_t* const*)q;
-    if (!GsLooksLikeObject(r) || !Readable(r + 0x7C, 4)) return nullptr;
+    const size_t kMax = 63;
+    const unsigned char* const b = (const unsigned char*)p;
 
-    void* const ctrl = *(void* const*)(r + 0x7C);
-    return GsLooksLikeObject(ctrl) ? ctrl : nullptr;
+    // UTF-16LE: printable ASCII in the low byte, zero high byte.
+    if (Readable(b, 4) && b[1] == 0 && b[0] >= 0x20 && b[0] < 0x7F)
+    {
+        size_t n = 0;
+        while (n < kMax && Readable(b + n * 2, 2))
+        {
+            const unsigned char lo = b[n * 2], hi = b[n * 2 + 1];
+            if (lo == 0 && hi == 0) break;
+            if (hi != 0 || lo < 0x20 || lo >= 0x7F) return false;
+            out[n] = (char)lo;
+            ++n;
+        }
+        if (n < 2) return false;
+        out[n] = '\0';
+        return true;
+    }
+
+    // ANSI.
+    if (b[0] >= 0x20 && b[0] < 0x7F)
+    {
+        size_t n = 0;
+        while (n < kMax && Readable(b + n, 1))
+        {
+            const unsigned char ch = b[n];
+            if (ch == 0) break;
+            if (ch < 0x20 || ch >= 0x7F) return false;
+            out[n] = (char)ch;
+            ++n;
+        }
+        if (n < 2) return false;
+        out[n] = '\0';
+        return true;
+    }
+
+    return false;
+}
+
+// Every pointer-shaped slot in an object's head that resolves to a readable
+// string, printed with its offset. This is how the name field gets located --
+// the same static-analysis move that solved the two getters, except the log does
+// the reading. Printed on EVERY top-movie change rather than once, so a single
+// run produces a transcript naming each screen instead of only a layout.
+static void GsDumpStringSlots(const void* obj, const char* tag)
+{
+    if (!obj || !Readable(obj, 128)) return;
+
+    char s[72];
+    int found = 0;
+    for (unsigned off = 0; off < 128 && found < 4; off += 4)
+    {
+        const void* const slot =
+            *(const void* const*)((const uint8_t*)obj + off);
+        if (!GsTryReadString(slot, s, sizeof(s))) continue;
+        ++found;
+        Log(">>> FLASHGUI:   %s +0x%02X -> \"%s\"", tag, off, s);
+    }
+    if (!found) Log(">>> FLASHGUI:   %s no string slot in the first 128 bytes",
+        tag);
+}
+
+// ---- WHICH SCREEN WANTS THE WORLD-LOCKED QUAD ----------------------------
+// MEASURED 2026-08-11: the movie name is a FILE PATH on the object, so a screen
+// identifies itself as "..\FlashMovies\GeneBankPC.swf" and the config can name
+// it in plain English. That replaces AnchorIndexCounts -- a numeric draw-count
+// signature list the tester rejected on evidence, because counts false-fire
+// during ordinary play and a wrong entry froze the camera once.
+//
+// A NAME CANNOT FALSE-FIRE ON GEOMETRY. That is the whole reason this route was
+// worth three sessions of work.
+//
+// Substring, case-insensitive, against BOTH name fields: the object carries the
+// requested file at +0x40 and the resolved one at +0x4C, and they differ
+// ("Warning.swf" resolves to "WarningPC.swf"). Matching either means the config
+// can say `Warning` and not care which build variant is loaded.
+static long g_anchorMovie = 0;
+static long g_sceneMovie = 0;
+static long g_followMovie = 0;
+
+bool GameState_AnchorMovieUp() { return g_anchorMovie != 0; }
+
+// ---- THE FULL SCREEN, FOLLOWING YOUR HEAD --------------------------------
+// The mod can show a screen two ways: the captured INTERFACE LAYER on the HUD
+// quad, or the WHOLE COMPOSED FRAME on the menu panel. The machine screens want
+// the second -- panels and text together, correct by construction because it is
+// one image -- but the menu panel is world-anchored, and being pinned to a spot
+// in the room is the other half of what the tester disliked.
+//
+// So this is the same full frame with the anchor recomputed every frame instead
+// of once. Nothing new is rendered: it reuses the menu quad and the placement
+// block that already exists, and only changes how often that block runs.
+bool GameState_FollowMovieUp() { return g_followMovie != 0; }
+
+// ---- AND WHICH SCREEN WANTS TO BE LEFT ALONE ----------------------------
+// MEASURED from a side-by-side photo, 2026-08-10: on the tonic/gene screen the
+// game's own render shows the green panels COMPLETELY EMPTY, because the mod
+// captured their text out and drew it on the head-locked HUD panel. But those
+// panels are 3D WORLD GEOMETRY bolted to a machine in the room, so a head-locked
+// overlay can never line up with them -- HudWidthDeg only changes how big the
+// misplaced text is.
+//
+// So this screen does not want redirecting anywhere. It wants to be left alone,
+// drawn by the game where the game always drew it: on the panel.
+//
+// ⚠ KNOWN ARTEFACT, and it is a depth one rather than a placement one. The text
+// is drawn at the same screen position in BOTH eyes, so it carries no parallax
+// and may read as floating slightly in front of the panel instead of printed on
+// it. That is the trade being made deliberately. If it reads badly the fallback
+// is AnchorMovies, which cannot misalign because it shows one composed image.
+bool GameState_SceneMovieUp() { return g_sceneMovie != 0; }
+
+// Own implementation rather than StrStrIA, which would pull in shlwapi for one
+// call. Short strings, called only when the top movie changes.
+static bool GsContainsNoCase(const char* hay, const char* needle)
+{
+    if (!hay || !needle || !*needle) return false;
+    const size_t nl = strlen(needle);
+    for (const char* h = hay; *h; ++h)
+    {
+        size_t i = 0;
+        while (i < nl && h[i] &&
+            tolower((unsigned char)h[i]) == tolower((unsigned char)needle[i])) ++i;
+        if (i == nl) return true;
+    }
+    return false;
+}
+
+static bool GsListMatches(const char* list, const char* a, const char* b)
+{
+    if (!list || !*list) return false;
+
+    char item[128];
+    size_t n = 0;
+    for (const char* p = list; ; ++p)
+    {
+        if (*p && *p != ';' && *p != ',')
+        {
+            if (n + 1 < sizeof(item)) item[n++] = *p;
+            continue;
+        }
+        item[n] = '\0';
+        // Trim: a list written with spaces after the separator is the obvious
+        // way to write one, so it must not silently fail to match.
+        char* s = item;
+        while (*s == ' ' || *s == '\t') ++s;
+        size_t len = strlen(s);
+        while (len && (s[len - 1] == ' ' || s[len - 1] == '\t')) s[--len] = '\0';
+
+        if (len)
+        {
+            if (GsContainsNoCase(a, s)) return true;
+            if (GsContainsNoCase(b, s)) return true;
+        }
+        n = 0;
+        if (!*p) break;
+    }
+    return false;
 }
 
 // Logs only when the TOP MOVIE CHANGES, so a whole session costs a handful of
 // lines and the log reads as a transcript of which screen was up when. That is
 // the shape the cutscene question actually needs.
+//
+// THE MATCH IS NOT GATED ON THE PROBE SWITCH, only the logging is. Turning a
+// diagnostic off must never turn a feature off with it.
 static void FlashGuiTick()
 {
-    if (!g_cfg.flashGuiProbe || !g_level) return;
+    if (!g_level) return;
 
-    void* const ctrl = FlashGuiController();
+    const bool logIt = g_cfg.flashGuiProbe != 0;
 
-    static void* lastCtrl = (void*)~(uintptr_t)0;
-    if (ctrl != lastCtrl)
+    // ---- CACHE PLUS BACKOFF -------------------------------------------------
+    // The controller does not exist until the interface is up, so an early miss
+    // is normal and a permanent one is a bug -- the old code could not tell them
+    // apart, because it walked once, latched the null and never said another
+    // word. Retry on a decaying schedule; drop everything on a level change.
+    // Never a per-frame scan: this is a cached pointer plus a handful of derefs.
+    static void* s_ctrl = nullptr;
+    static void* s_levelSeen = nullptr;
+    static DWORD s_nextTry = 0;
+    static DWORD s_delay = 250;
+    static const char* s_lastStop = nullptr;
+
+    const DWORD now = GetTickCount();
+
+    if (g_level != s_levelSeen)
     {
-        lastCtrl = ctrl;
-        Log(">>> FLASHGUI: controller = 0x%08X%s", (unsigned)(uintptr_t)ctrl,
-            ctrl ? "" : "  (chain did not resolve)");
+        s_levelSeen = g_level;
+        s_ctrl = nullptr;
+        s_nextTry = 0;
+        s_delay = 250;
+        s_lastStop = nullptr;
     }
-    if (!ctrl) return;
+
+    // A cached controller still has to stay an object; a level teardown can free
+    // it between our checks.
+    if (s_ctrl && !GsLooksLikeObject(s_ctrl))
+    {
+        if (logIt) Log(">>> FLASHGUI: controller went stale -- re-resolving");
+        s_ctrl = nullptr;
+        s_nextTry = 0;
+        s_delay = 250;
+    }
+
+    if (!s_ctrl)
+    {
+        if (now < s_nextTry) return;
+
+        const char* stop = nullptr;
+        unsigned    stopVal = 0;
+        s_ctrl = FlashGuiController(&stop, &stopVal);
+
+        if (!s_ctrl)
+        {
+            // Only when the REASON changes, so a screen that is simply not up
+            // yet does not fill the log with the same line.
+            if (stop != s_lastStop)
+            {
+                s_lastStop = stop;
+                if (logIt)
+                    Log(">>> FLASHGUI: chain stopped at %s  (value 0x%08X)",
+                        stop ? stop : "(unknown)", stopVal);
+            }
+            if (g_anchorMovie) _InterlockedExchange(&g_anchorMovie, 0);
+            if (g_sceneMovie)  _InterlockedExchange(&g_sceneMovie, 0);
+            if (g_followMovie) _InterlockedExchange(&g_followMovie, 0);
+            s_nextTry = now + s_delay;
+            if (s_delay < 5000) s_delay *= 2;
+            return;
+        }
+
+        s_delay = 250;
+        s_lastStop = nullptr;
+        if (logIt)
+            Log(">>> FLASHGUI: controller = 0x%08X  RESOLVED",
+                (unsigned)(uintptr_t)s_ctrl);
+    }
+
+    void* const ctrl = s_ctrl;
 
     const uint8_t* const c = (const uint8_t*)ctrl;
     if (!Readable(c + 0x158, 8)) return;
@@ -697,24 +984,86 @@ static void FlashGuiTick()
     const int count = *(const int*)(c + 0x15C);
     const uint8_t* const data = *(const uint8_t* const*)(c + 0x158);
 
+    // BUFFER, not object -- the same mistake that hid the controller for a whole
+    // session. GsLooksLikeObject here would reject the playing-movie array.
     void* top = nullptr;
-    if (count > 0 && count < 64 && GsLooksLikeObject(data) &&
+    if (count > 0 && count < 64 && GsLooksLikeBuffer(data) &&
         Readable(data + (size_t)(count - 1) * 4, 4))
         top = *(void* const*)(data + (size_t)(count - 1) * 4);
 
     static void* lastTop = (void*)~(uintptr_t)0;
     static int   lastCount = -1;
-    if (top == lastTop && count == lastCount) return;
+    const bool changed = (top != lastTop || count != lastCount);
     lastTop = top;
     lastCount = count;
+
+    // ---- THE PLACEMENT DECISION, recomputed only when the top changes -------
+    // MEASURED offsets: the requested file at +0x40, the resolved one at +0x4C.
+    if (changed)
+    {
+        char a[72] = {}, b[72] = {};
+        bool haveA = false, haveB = false;
+        if (top && Readable(top, 0x50))
+        {
+            haveA = GsTryReadString(*(const void* const*)((const uint8_t*)top + 0x40),
+                a, sizeof(a));
+            haveB = GsTryReadString(*(const void* const*)((const uint8_t*)top + 0x4C),
+                b, sizeof(b));
+        }
+
+        const char* const nameA = haveA ? a : nullptr;
+        const char* const nameB = haveB ? b : nullptr;
+        const char* const shown = haveB ? b : (haveA ? a : "(no name)");
+
+        const long wantAnchor =
+            GsListMatches(g_cfg.anchorMovies, nameA, nameB) ? 1 : 0;
+        const long wantScene =
+            GsListMatches(g_cfg.sceneMovies, nameA, nameB) ? 1 : 0;
+
+        if (wantAnchor != g_anchorMovie)
+        {
+            _InterlockedExchange(&g_anchorMovie, wantAnchor);
+            if (logIt)
+                Log(">>> FLASHGUI: %s -- \"%s\"",
+                    wantAnchor ? "*** ANCHOR THIS SCREEN ***"
+                    : "--- anchor off ---", shown);
+        }
+
+        if (wantScene != g_sceneMovie)
+        {
+            _InterlockedExchange(&g_sceneMovie, wantScene);
+            if (logIt)
+                Log(">>> FLASHGUI: %s -- \"%s\"",
+                    wantScene ? "*** LEAVE THIS SCREEN IN THE SCENE "
+                    "(capture off) ***" : "--- capture back on ---", shown);
+        }
+
+        const long wantFollow =
+            GsListMatches(g_cfg.followMovies, nameA, nameB) ? 1 : 0;
+
+        if (wantFollow != g_followMovie)
+        {
+            _InterlockedExchange(&g_followMovie, wantFollow);
+            if (logIt)
+                Log(">>> FLASHGUI: %s -- \"%s\"",
+                    wantFollow ? "*** FOLLOW THIS SCREEN ***"
+                    : "--- follow off ---", shown);
+        }
+    }
+
+    if (!changed || !logIt) return;
 
     Log(">>> FLASHGUI: %d movie(s) playing, top = 0x%08X",
         count, (unsigned)(uintptr_t)top);
 
-    // ONE DUMP, EVER. The movie's NAME is the point of all this and its offset
-    // is not known yet -- so dump the object head once and read the layout off
-    // the log, exactly as the two getters above were solved. Repeating it every
-    // change would bury the transcript this function exists to produce.
+    // The NAME is the whole point, so try to read it every time the top changes.
+    // One run of opening screens then produces a transcript rather than a layout
+    // puzzle to solve in a second run.
+    if (top) GsDumpStringSlots(top, "top");
+
+    // ONE HEX DUMP, EVER -- the fallback for when no slot reads as a string, so
+    // the layout can still be worked out by eye the way both getters were.
+    // Repeating it every change would bury the transcript above.
     static bool dumped = false;
     if (top && !dumped && Readable(top, 64))
     {
@@ -722,11 +1071,11 @@ static void FlashGuiTick()
         Log(">>> FLASHGUI: top movie object head (find the name field here):");
         for (int line = 0; line < 4; ++line)
         {
-            const uint8_t* const b = (const uint8_t*)top + line * 16;
+            const uint8_t* const b2 = (const uint8_t*)top + line * 16;
             Log(">>> FLASHGUI:   +0x%02X  %08X %08X %08X %08X",
                 line * 16,
-                *(const unsigned*)(b + 0), *(const unsigned*)(b + 4),
-                *(const unsigned*)(b + 8), *(const unsigned*)(b + 12));
+                *(const unsigned*)(b2 + 0), *(const unsigned*)(b2 + 4),
+                *(const unsigned*)(b2 + 8), *(const unsigned*)(b2 + 12));
         }
     }
 }

@@ -193,7 +193,31 @@ struct VrConfig
     int   menuMaxIndexed = 8;
     int   menuMaxDraw = 0;      // RETRACTED (S31), default 0
     char  menuList[256] = {};
-    char  anchorList[256] = {};   // in-game UIs that belong on the world-locked quad
+    char  anchorList[256] = {};   // SUPERSEDED by anchorMovies -- draw-count
+                                  // signatures, rejected on evidence. Kept
+                                  // reading so an old config cannot break.
+
+    // Which interface screens belong on the WORLD-LOCKED quad, by Flash movie
+    // name. Substring, case-insensitive, matched against both the requested and
+    // the resolved filename. Anything not listed stays on the HUD panel and
+    // scales with HudWidthDeg, which is what the radial and the equip screens
+    // want. MEASURED names live in dist/BioshockVR.ini.
+    char  anchorMovies[512] = {};
+
+    // Screens whose interface must NOT be captured at all -- the ones whose text
+    // belongs inside panels that are 3D world geometry. Same match rules as
+    // anchorMovies. See GameState_SceneMovieUp().
+    char  sceneMovies[512] = {};
+
+    // Screens shown as the WHOLE composed frame, like the pause menu, on a panel
+    // that follows your head instead of staying where it opened. Same match
+    // rules. See GameState_FollowMovieUp().
+    char  followMovies[512] = {};
+
+    // Read-only. Logs textured full-screen-ish quads with their viewport, once a
+    // second, so an effect that covers only part of the view can be identified
+    // by walking in and out of it. Silent unless such a draw happens.
+    int   waterProbe = 1;
 
     // debug / probe --------------------------------------------------------------
     bool  drawHook = true;

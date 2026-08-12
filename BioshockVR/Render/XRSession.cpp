@@ -5,6 +5,7 @@
 #include "Render/XRSession.h"
 #include "Input/InputHook.h"
 #include "Input/Swing.h"
+#include "Game/GameState.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -1297,6 +1298,15 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
             XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(g_sc[0], &ri);
 
+            // ---- FOLLOW MODE: RE-PLACE THE PANEL EVERY FRAME ----------------
+            // A screen named in FollowMovies wants the whole composed frame --
+            // which this quad already is -- but on a panel that stays in front of
+            // you rather than pinned where it opened. Dropping the anchor each
+            // frame makes the block below recompute it from the current head
+            // pose, so nothing else has to change.
+            const bool followHead = GameState_FollowMovieUp();
+            if (followHead) g_menuAnchorSet = false;
+
             // Drop a stale anchor if the head has since moved a long way --
             // headset picked up off a desk, player stood up, room-scale step.
             if (g_menuAnchorSet)
@@ -1347,8 +1357,12 @@ void XR_SubmitMenuMono(ID3D11Texture2D* image)
                 g_menuAnchorHead[0] = hp[0];
                 g_menuAnchorHead[1] = hp[1];
                 g_menuAnchorHead[2] = hp[2];
-                Log(">>> MENU anchored at yaw %.1f deg, head (%.2f %.2f %.2f) m",
-                    yaw * 57.2958f, hp[0], hp[1], hp[2]);
+                // SILENT IN FOLLOW MODE. This block now runs every frame there,
+                // and one line per frame would bury the log it shares with every
+                // other diagnostic.
+                if (!followHead)
+                    Log(">>> MENU anchored at yaw %.1f deg, head (%.2f %.2f %.2f) m",
+                        yaw * 57.2958f, hp[0], hp[1], hp[2]);
             }
 
             quad.space = g_space;                        // world-locked

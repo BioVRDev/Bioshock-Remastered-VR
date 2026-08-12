@@ -11,6 +11,7 @@
 #include "Camera/CameraHook.h"
 #include "Hud/DrawHook.h"
 #include "Input/InputHook.h"
+#include "Game/GameState.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -461,7 +462,17 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 }
             }
 
-            const bool anchorUi = DrawHook_AnchorUp();
+            // Two sources, and only the second one is trusted going forward.
+            // DrawHook_AnchorUp() is the draw-count signature list, which is
+            // empty and stays empty -- counts false-fire during ordinary play.
+            // GameState_AnchorMovieUp() asks the game which named Flash movie is
+            // on top, so it cannot be confused by geometry.
+            // A FOLLOW screen takes the same route as an anchored one -- both
+            // want the whole composed frame on the menu quad. They differ only
+            // in how often that quad's pose is recomputed, which XRSession
+            // decides. Routing them together here is what keeps that true.
+            const bool anchorUi = DrawHook_AnchorUp() ||
+                GameState_AnchorMovieUp() || GameState_FollowMovieUp();
 
             // Theater is a RENDERING-MODE decision, not a menu feature. Gating
             // it behind EnableMenuScreen means turning menus off also disables
