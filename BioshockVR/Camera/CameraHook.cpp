@@ -2385,8 +2385,10 @@ static void TwoHandTick(void* handsActor, const FRotator& want,
     //
     // This is the first caller of Input_Pulse in the project; the action was
     // created and bound long ago and has never fired.
+    // FULL STRENGTH, BY REQUEST. A 0.35 / 40 ms tick was inaudible to the
+    // hardware; until a pulse is felt at all there is nothing to tune down from.
     if (g_thEligible && !wasEligible)
-        Input_Pulse(g_freeHand, 0.35f, 40);
+        Input_Pulse(g_freeHand, 1.0f, 200);
 
     const bool grip = Input_GripDown(g_freeHand);
     static bool prevGrip = false;

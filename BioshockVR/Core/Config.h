@@ -294,7 +294,10 @@ struct VrConfig
     // the engine wrote" adopts both -- which is why HandAnim=1 still swayed. They
     // separate cleanly by SIZE: measured idle drift is 1-5 deg, while a reload or
     // a weapon switch peaks at 41-135. 12 sits in that gap.
-    int   handAnimMinDeg = 12;
+    // LOWERED from 12 on measurement: the weapon cluster adopted 7 times against
+    // the off hand's 223, and the Tommy gun's recoil never crossed it. The
+    // rejected-peak log line says what to set this to if it is still wrong.
+    int   handAnimMinDeg = 5;
 
     // ...and how long an animation keeps the engine's pose once it has started.
     // Without this a reload would snap back to rigid after its first big frame,
@@ -350,8 +353,14 @@ struct VrConfig
     // A GENEROUS RADIUS IS CHEAP NOW, and it was not before: with
     // TwoHandBlockRadial the cost of a near-miss is nothing at all, where it used
     // to be a plasmid wheel in your face.
-    int   twoHandGrab = 40;      // cm to engage
-    int   twoHandRelease = 55;   // cm to let go -- LARGER on purpose, hysteresis
+    // RE-MEASURED after the grab point was fixed, and the numbers moved a long
+    // way. With a correct anchor the tester's hand reads **3-7 cm** on the gun,
+    // where the old broken anchor floored at 13-16 and forced a 40 cm radius to
+    // be reachable at all. 40 then meant *"I can grip it with both arms out
+    // straight and my hand about a foot away"* -- correct, and the fault was the
+    // radius outliving the bug it was compensating for.
+    int   twoHandGrab = 15;      // cm to engage
+    int   twoHandRelease = 25;   // cm to let go -- LARGER on purpose, hysteresis
     int   twoHandToggle = 0;     // 0 hold, 1 press to grab and press to let go
     int   twoHandProbe = 1;      // Cycle 1's distance log. Read-only
 

@@ -679,6 +679,20 @@ void Input_Pulse(int hand, float amplitude, int ms)
     const XrResult r =
         pfnHaptic(g_sess, &hi, (const XrHapticBaseHeader*)&v);
 
+    // LOG EVERY PULSE. "I did not feel it" and "it was never sent" are the same
+    // report from the outside, and the API has already returned success once
+    // while nothing happened. Throttled only lightly -- pulses are rare events.
+    {
+        static DWORD lastPulseLog = 0;
+        const DWORD nowP = GetTickCount();
+        if (nowP - lastPulseLog >= 250)
+        {
+            lastPulseLog = nowP;
+            Log(">>> HAPTIC: %s hand, amp %.2f, %d ms -> result %d",
+                (hand == HAND_RIGHT) ? "right" : "left", amplitude, ms, (int)r);
+        }
+    }
+
     if (r != XR_SUCCESS)
     {
         static bool told = false;

@@ -1290,7 +1290,29 @@ static bool CaptureClusterRef(const ClusterSpec& c, int hand)
 
         const bool playing = lastBig[hand] &&
             (now - lastBig[hand]) < (DWORD)g_cfg.handAnimHoldMs;
-        if (!playing) return true;             // breathing, not an animation
+
+        // WHAT WE TURNED DOWN, and why it is worth a line. MEASURED, Build AB:
+        // the weapon cluster adopted 7 times against the off hand's 223, and the
+        // tester saw recoil on every gun EXCEPT the Tommy gun -- whose per-shot
+        // wrist movement simply never reached 12 deg. A threshold picked from
+        // one distribution cannot be checked against another it never logs, so
+        // this reports the largest thing it REJECTED. Set HandAnimMinDeg just
+        // under whatever the missing animation turns out to produce.
+        static float rejPeak[2] = { 0.f, 0.f };
+        static DWORD rejLog[2] = { 0, 0 };
+        if (!playing)
+        {
+            if (deg == deg && deg > rejPeak[hand]) rejPeak[hand] = deg;
+            if (now - rejLog[hand] >= 3000)
+            {
+                rejLog[hand] = now;
+                Log(">>> HANDANIM: cluster %d rejected -- largest movement %.1f deg "
+                    "in the last 3 s, threshold %d. Lower it to catch this.",
+                    hand, rejPeak[hand], g_cfg.handAnimMinDeg);
+                rejPeak[hand] = 0.f;
+            }
+            return true;                       // breathing, not an animation
+        }
 
         memcpy(g_clRef[hand], live, sizeof(ClusterBone) * (size_t)c.count);
 
@@ -1706,7 +1728,15 @@ bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
             }
         }
 
-        const bool still = g_wpLastMoved && (now - g_wpLastMoved) >= kSettleStillMs;
+        // A MINIMUM BEFORE STILLNESS COUNTS. Many draw animations pause part-way
+        // through, and 150 ms of quiet inside a pause is not the end of the
+        // animation -- reported as the shotgun's grip landing *"slightly off"*
+        // while the Tommy gun's was right, which is what one animation pausing
+        // and another not looks like.
+        static const DWORD kSettleMinMs = 350;
+        const bool longEnough = (now - g_wpKeyChanged) >= kSettleMinMs;
+        const bool still = longEnough && g_wpLastMoved &&
+            (now - g_wpLastMoved) >= kSettleStillMs;
         const bool timedOut =
             (now - g_wpKeyChanged) >= (DWORD)g_cfg.weaponSwitchSettleMs;
         if (!still && !timedOut) return false;

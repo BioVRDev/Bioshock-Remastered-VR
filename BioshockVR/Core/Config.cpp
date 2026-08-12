@@ -231,7 +231,7 @@ void Config_Load(const char* iniPath)
     g_cfg.leftHanded = CfgIntRange("LeftHanded", 0, 0, 1);
     g_cfg.leftHandedSwapSticks = CfgIntRange("LeftHandedSwapSticks", 1, 0, 1);
     g_cfg.handAnim = CfgIntRange("HandAnim", 0, 0, 1);
-    g_cfg.handAnimMinDeg = CfgIntRange("HandAnimMinDeg", 12, 0, 180);
+    g_cfg.handAnimMinDeg = CfgIntRange("HandAnimMinDeg", 5, 0, 180);
     g_cfg.handAnimHoldMs = CfgIntRange("HandAnimHoldMs", 1200, 0, 10000);
     for (int s3 = 0; s3 < 9; ++s3)
     {
@@ -246,8 +246,8 @@ void Config_Load(const char* iniPath)
     g_cfg.bone43Rot = CfgIntRange("WeaponHandBone43Rot", 1, 0, 1);
     g_cfg.weaponSwitchSettleMs = CfgIntRange("WeaponSwitchSettleMs", 600, 0, 5000);
     g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
-    g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 40, 1, 200);
-    g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 55, 1, 300);
+    g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 15, 1, 200);
+    g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 25, 1, 300);
     g_cfg.twoHandBlockRadial = CfgIntRange("TwoHandBlockRadial", 0, 0, 1);
     g_cfg.twoHandToggle = CfgIntRange("TwoHandToggle", 0, 0, 1);
     g_cfg.twoHandProbe = CfgIntRange("TwoHandProbe", 1, 0, 1);

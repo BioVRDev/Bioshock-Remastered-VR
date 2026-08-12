@@ -497,12 +497,18 @@ SHIM_EXPORT XRAPI_ATTR XrResult XRAPI_CALL xrApplyHapticFeedback(
     const EVRInputError ie = g_vr.input->TriggerHapticVibrationAction(
         a->vrHandle, 0.0f, seconds, freq, amp, vr::k_ulInvalidInputValueHandle);
 
+    // SAY IT ONCE, EITHER WAY. A silent success is indistinguishable from a
+    // silent failure when the only other evidence is a human saying they felt
+    // nothing -- and SteamVR returns None for a well-formed call to an action
+    // whose binding is not actually live on the current controller.
     static bool told = false;
-    if (ie != EVRInputError_VRInputError_None && !told)
+    if (!told)
     {
         told = true;
-        SLOG("!!! input: TriggerHapticVibrationAction -> %d. Haptics are off for "
-             "this session; everything else still works.", (int)ie);
+        SLOG("input: first haptic pulse -> %d  (%.0f Hz, %.2f amp, %.0f ms). "
+             "Result 0 means SteamVR ACCEPTED it; if nothing is felt the binding "
+             "for /actions/gamepad/out/haptic_* is not live on this controller.",
+             (int)ie, freq, amp, seconds * 1000.0f);
     }
     return XR_SUCCESS;
 }
