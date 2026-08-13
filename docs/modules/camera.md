@@ -236,11 +236,20 @@ absent. `AimSource=2` ("write nothing, let the game keep its heading") **cannot
 work** — with `ModYaw` on the game has no input from which to update that
 heading, so it freezes permanently. See `docs/INVARIANTS.md`.
 
-### Aim decoupling still needs one measurement
+### Aim decoupling — ANSWERED, by asking
 
-Whether the firing trace reads `Controller.Rotation` or the weapon socket. If the
-socket, the seam exists. `AWeapon::GetPerfectFireStart` is now located at vtable
-slot `+0x304` (`docs/ENGINE-MAP.md`) and **answers it by asking**.
+The open question was whether the firing trace reads `Controller.Rotation` or the
+weapon socket. `AWeapon::GetPerfectFireStart` answers it outright: **both, and
+neither is the problem**. The direction out-param is `[pawn+0x450]+0x1E4`, which
+is the aim field and therefore already ours; the *origin* out-param is the pawn's
+own `Location`, and that is the bug. `Game/FireSeam.cpp` substitutes it.
+
+Two publishes leave this file for that seam, and where they sit is load-bearing.
+The muzzle goes out from `DriveHands` **before the `handsGrip` subtraction**,
+because at that line `wx/wy/wz` is still the tracked hand — after it, the value
+is the actor origin, which sits at the eye. The aim goes out beside
+`PublishShotDir` and is deliberately the **controller** composition rather than
+`want`: in the modes where the head owns the aim field, `want` carries the head.
 
 ### A known artifact, diagnosed and deferred
 
@@ -257,6 +266,11 @@ Empty today, returning false, and introduced *before* its callers on purpose.
 Three planned features want the same substitution — the gun barrel (bones 43→44),
 the wrench tip, and the two-handed grip. Precedence when they arrive: barrel/tip
 first (weapon-slot scoped), two-handing second, none while the head owns the aim.
+
+> **This is the aim RAY, not the shot's origin, and they are different problems.**
+> `AimOverride` changes where the ray points; `Game/FireSeam.cpp` changes where
+> the shot starts. A feature that wants the bullet to leave the barrel wants the
+> second one. Only reach for this seam when the *direction* is what is wrong.
 
 This codebase has already paid once for two features reaching the same place
 independently; a resolver built first means the third adds a clause, not a site.

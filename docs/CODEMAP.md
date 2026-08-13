@@ -55,6 +55,7 @@ BioshockVR/
   Hands/    HandsProbe, ArmHide              -> docs/modules/hands.md
   Game/     GameState, EngineExec, GameIni   -> docs/modules/gamestate.md
             EngineBridge                     -> docs/modules/enginebridge.md
+            FireSeam                         -> docs/ENGINE-MAP.md
 OpenXRShim/src/                              -> docs/modules/shim.md
 ```
 
@@ -225,6 +226,25 @@ point safe from **any** thread and merely copies into a fixed 16-slot ring.
 
 Load `docs/modules/gamestate.md` when a feature needs to issue a console command,
 especially from a detection made on the XR thread.
+
+### `Game/FireSeam.cpp` (~470) — where the shot starts, and which way it goes
+
+The **only detour this mod places on the firing path**, and the only feature
+whose failure mode is a crash rather than a wrong number. Hooks
+`AWeapon::GetPerfectFireStart` through the **held weapon's vtable slot `+0x304`**
+— never an RVA — and substitutes the origin (the muzzle) and optionally the
+rotation (the controller aim) in the out-parameters the engine hands back.
+
+Nothing is hooked unless `FireSeam` is non-zero; `FireSeam=1` is observe-only.
+Four things must all hold before a single byte is written: the install passed the
+**`ret imm` argument-count check**, the weapon's owner is the player's pawn, the
+CalcView snapshot is fresh, and the destination is writable.
+
+Reads no engine state inside the detour except the owner pointer. `CameraHook`
+publishes the muzzle from `DriveHands` (before the grip subtraction, where
+`wx/wy/wz` is still the tracked hand) and the aim beside `PublishShotDir`;
+`HandsProbe` supplies the weapon pointer and the per-slot `MuzzleOffset`.
+→ **`docs/ENGINE-MAP.md`** § *`AWeapon::GetPerfectFireStart`*
 
 ### `Input/Zone.h` (68) — arm / fire / re-arm, header-only
 

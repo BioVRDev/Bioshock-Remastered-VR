@@ -32,13 +32,17 @@ Cutscene Black Bar Removal: https://www.nexusmods.com/bioshock/mods/81?tab=descr
     openxr_loader_steam.dll      the SteamVR one
     openvr_api.dll               needed by the SteamVR one
     Setup.bat
+    Uninstall.bat
+    README.txt
     changelog.txt
+    logs\CollectLogs.bat
 ```
 
-`Setup.bat` copies whichever loader you choose onto the name the mod actually
-loads, `openxr_loader.dll`, so that file appears after setup rather than in the
-download. It also writes `Uninstall.bat` and `logs\CollectLogs.bat` for you —
-neither is in the package.
+`Setup.bat` renames whichever loader you choose onto the name the mod actually
+loads, `openxr_loader.dll`, so **that file appears after setup rather than in the
+download — and the game will not start in VR until you run it.** `Setup.bat` also
+writes its own copies of `Uninstall.bat` and `logs\CollectLogs.bat`, so a package
+missing either one still ends up complete.
 
 3. **Run `Setup.bat` once, with the game closed.** It asks which headset you
    have and which runtime to use, then installs the matching loader.
@@ -74,7 +78,8 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 
 ## Requirements
 
-- BioShock Remastered on PC (developed and tested against the Steam build)
+- BioShock Remastered on PC. **Steam and Epic are both supported and both
+  tested** — Epic installs under `Build\FinalEpic` and `Setup.bat` finds it
 - Any OpenXR headset. Quest and Pico work through the standard loader (Link,
   Air Link, or Virtual Desktop). **Lighthouse headsets — Index, Vive, Bigscreen
   Beyond, Varjo — work through a bundled SteamVR shim**, because SteamVR's own
@@ -82,10 +87,10 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
   32-bit. `Setup.bat` picks the right one for you; start SteamVR before the game
   if you choose that path.
 - **Only Meta Touch controllers are tested.** Index, Vive wand and WMR/Reverb
-  bindings exist and are built from each device's published layout, but nobody on
-  the project owns that hardware, so they are best-effort. The log names the
-  controller profile it matched and how many buttons bound — worth sending either
-  way if you have one
+  bindings exist and are built from each device's published layout, but I do not
+  own that hardware, so they are best-effort. The log names the controller
+  profile it matched and how many buttons bound — worth sending either way if you
+  have one
 - Windows 10 or 11
 
 ---
@@ -186,7 +191,7 @@ into `BioshockVR.ini`.
 | <kbd>F11</kbd> / <kbd>F12</kbd> | HUD panel smaller / larger |
 | <kbd>Del</kbd> | cycle which HUD property F11/F12 edits |
 | <kbd>Home</kbd> | toggle the HUD panel off, to compare |
-| <kbd>Numpad 9</kbd> | cycle what the axis keys edit: gun position / gun angle / aim / off-hand position / off-hand angle |
+| <kbd>Numpad 9</kbd> | cycle what the axis keys edit: gun position / gun angle / crosshair / off-hand position / off-hand angle / muzzle |
 | <kbd>Numpad 8 2 4 6 0 5</kbd> | adjust the current mode |
 | <kbd>Numpad 7</kbd> | change step size |
 
@@ -200,13 +205,13 @@ call.
 
 ### Weapons still to tune
 
-Tuned: **wrench, pistol, shotgun, machine gun, plasmids**.
+Tuned: **wrench, pistol, shotgun, machine gun, crossbow, grenade launcher,
+chemical thrower**, and every plasmid individually.
 
-Not yet tuned: **crossbow, grenade launcher, chemical thrower, research camera**.
-Those fall back to a generic offset and will sit wrong in your hand. Perfectly
-usable — they just want five minutes each with the numpad. If you tune one, the
-values land in your ini, and a pull request or a paste in the issues is very
-welcome.
+Not yet tuned: **the research camera**. It falls back to a generic offset and
+will sit wrong in your hand. Perfectly usable — it just wants five minutes with
+the numpad. If you tune it, the values land in your ini, and a pull request or a
+paste in the issues is very welcome.
 
 ---
 
@@ -226,20 +231,12 @@ and works on any build.
 resolutions by any reliable formula — this was measured and the scaling law was
 ruled out. Change either and expect to re-tune.
 
-**The gene machines put their text in the wrong place.** At a Gene Bank or
-Gatherer's Garden the description and slot labels sit on the HUD panel in front
-of you rather than inside the green panels they belong to. Those panels are part
-of the room, so a panel that follows your head can never line up with them. The
-screen is still usable and the text is still readable; it just is not where it
-should be. `PanelMovies` in the ini is the setting to experiment with here.
-
 **Walking through water draws its effect as a square** rather than covering your
 whole view.
 
-**In-engine cutscenes still track your head.** Only pre-rendered ones are moved to
-the flat screen. Scripted sequences themselves — where they walk you, which way
-they turn you — are handled, but the camera during an in-engine cutscene is not
-detached the way a pre-rendered one is.
+**Pre-rendered cutscenes that play during the game are not anchored to the room
+yet**, so they still follow your head. Scripted sequences themselves — where they
+walk you, which way they turn you — are handled.
 
 **The quest arrow drifts with the weapon** before settling back to where it
 should be.
@@ -249,6 +246,10 @@ should be.
 **The desktop mirror runs at about half the headset's framerate.** That is how
 the game submits frames to its own window, not a performance problem. For
 recording, use SteamVR's display view instead.
+
+**`dxgi.dll` and `winmm.dll` are shared filenames.** `Uninstall.bat` asks before
+removing either, and keeps your tuned `BioshockVR.ini` as `BioshockVR.ini.bak` —
+rename it back on a reinstall and every weapon stays calibrated.
 
 **SteamVR performance can degrade after about 30 minutes** with Virtual Desktop
 on Meta headsets. This is a Meta driver issue rather than something the mod can
@@ -321,14 +322,35 @@ to x64. If `dumpbin /dependents dxgi.dll` lists `DXGI.dll`, you've linked
 Built on the [OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK) and
 [MinHook](https://github.com/TsudaKageyu/minhook).
 
-Huge thanks to **VOID** and
-[mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr).
-Several of the hardest parts here — disabling the reticle through the engine's
-own console path, the bone indices for hiding the arms without losing the weapon,
-and the render-target approach to capturing the whole interface at once — were
-possible because that work is public. Genuinely saved weeks.
+Huge thanks to **Eye-will**, who playtested every new build and gave
+consistently sharp, genuinely useful feedback. A lot of what got fixed this
+release got fixed because they took the time to describe exactly what they saw.
 
-That project is MIT-licensed, and its author has additionally given explicit
-permission to use the code however this one needs to. **This section names each
-system that came from there, and it gets a new line every time another one
-does** — that is the deal, and it is worth more than a licence header.
+Thanks also to **VOID**, and to the developer of the other BioShock VR project,
+[mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr).
+That project is MIT-licensed and its author has additionally given me explicit
+permission to use the code however this one needs to. Several of the hardest
+parts here exist because of it:
+
+- **Disabling the game's flat 2D reticle through the engine's own console path**
+  (`bReticleDisabled` via `Exec`), which is what let a proper VR crosshair
+  replace it
+- **The hand rig's bone map** — which bones are the wrists, which five per side
+  are forearm, and which one the weapon hangs off. That is what makes it possible
+  to hide the arms without losing the gun. Two independent efforts produced the
+  same numbers, value for value, which is also what made them trustworthy
+- **Capturing the whole interface in one render-target pass**, which is how the
+  HUD gets lifted onto its own panel
+- **The animation-preserving skeletal drive** — freeze the cluster's reference
+  while driving it. That is the idea behind the weapon-hand freeze, and it is
+  what killed weapon sway and made the crosshair calibratable at all
+- **Bones 43 → 44 as the barrel axis**, reading the muzzle from the model instead
+  of guessing at it with a tuned constant
+- **`AWeapon::GetPerfectFireStart` at weapon vtable slot `+0x304`**, and the
+  technique of substituting our own values into its out-parameters
+- **`SetDrawScale` needing a revision-bump protocol**, which explained a dead end
+  of ours: the offset was right all along, the bare poke was not
+
+**This section names each system that came from there, and it gets a new line
+every time another one does** — that is the deal, and it is worth more than a
+licence header.

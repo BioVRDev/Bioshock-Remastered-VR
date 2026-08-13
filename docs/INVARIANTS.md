@@ -105,6 +105,28 @@ handoff disagree, this file wins.
   between Steam and Epic, so locate by the string, never by the row.
 - Any address you did not derive must be INI-overridable and verified before use
   (`EngineExec`, `ArmHide` both do this). Fail closed on mismatch.
+- **Before detouring an engine function, verify its own `ret imm` matches the
+  argument count you will call it with.** A mismatch does not crash: in a Release
+  build the stack is corrupted silently, and the Debug-only RTC check that would
+  have caught it does not exist in the shipping configuration. `FireSeam.cpp`
+  scans forward for the first `C2 xx 00` and refuses on disagreement. This is the
+  guard that made `GetPerfectFireStart` safe to call after a year of being safe
+  only to look at.
+- **An engine seam runs for the whole level, not just for you.** AI weapons
+  inherit `AWeapon`, so `GetPerfectFireStart` fires on every splicer's shot.
+  Ownership must be proved before substituting anything —
+  `[weapon+0x454] == HandsProbe_GetPawn()`, pointer identity against the pawn we
+  already located, which is stronger than any vtable compare.
+- **A detour must read a published snapshot, not walk engine state.** It runs
+  inside an engine call; the hands actor, the bone array and the XR runtime are
+  all off limits there. `FireSeam` reads one stamped struct and one owner
+  pointer. **The stamp is also the gameplay gate, and that is free**: `DriveHands`
+  already stands down for a cutscene, a UI panel, a scripted window and
+  `SixDofHands=0`, so a stale snapshot means exactly "the hands are not ours" —
+  with no second predicate to keep in sync.
+- **An FRotator out-param reads as `0.000 0.000 0.000`.** Rotation units are
+  int32s whose float reinterpretation is a denormal. Classify engine out-params
+  by **bit pattern**, never by index, and log a rotator as integers.
 - **`AActor::Location = +0x1D8`**, one unit = 1 cm. `+0x1A0` was a bad early scan.
 - **Bone 43 is untouchable.** Telekinesis release walks the attachment path
   through it; moving or scaling it crashes the game.
@@ -119,6 +141,14 @@ handoff disagree, this file wins.
   with the sleeve pass running. The engine re-flags each tick and our writes
   stick because they land after evaluation. **Do not generalise this to scripted
   sequences**: the M7-S4 latch was real and is recorded below.
+- **All three projects link `/MT`, and `dxgi.dll` is the one that must.** It is
+  the injection point: if it cannot load, nothing happens and **there is no log**,
+  because the component that writes the log is what failed to load. Built `/MD`
+  it imports `VCRUNTIME140.dll` plus UCRT stubs and needs the **x86** VC++
+  redistributable, which many machines lack. Found in 1.0.3 packaging —
+  `dxgiproxy.vcxproj` had no `<RuntimeLibrary>` element at all, so it silently
+  defaulted to `/MD` while the other two were explicit. `dumpbin /dependents
+  dxgi.dll` must print `KERNEL32.dll` and nothing else.
 - **The build stamp does not always advance.** `dllmain build:` carries
   `__TIME__` from `Core/dllmain.cpp`, so an incremental build that does not
   recompile that file ships a new DLL reporting an old time — observed
@@ -302,6 +332,16 @@ handoff disagree, this file wins.
   the shim; its bindings are generated from string literals in `shim_input.cpp`.
 
 ### Locomotion and the aim field
+- **`CursorOffsetN` rotates the aim RAY and cannot move the shot's ORIGIN, and
+  that distinction is a whole class of bug.** The engine starts every shot at the
+  pawn's own `Location` — the player's body — so the crosshair's ray and the
+  bullet's ray are separated by a fixed WORLD DISPLACEMENT rather than an angle.
+  An angular correction can only cancel that at one distance, which is why a
+  crosshair tuned by bullet hole at three metres is wrong at ten, and why the
+  weapons whose projectile you can actually see (crossbow, grenade launcher,
+  chemical thrower) read as firing from the chest. The `dist/` values are the
+  size of the compensation: `CursorOffset0` was `-15, -8, -11`. **Fixing it means
+  moving the origin, not tuning the angle** — `Game/FireSeam.h`.
 - **The game's movement stick has a SQUARE deadzone, so ROTATING it distorts the
   direction.** `User.ini` binds both movement lanes with a per-axis threshold:
 

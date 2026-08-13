@@ -579,8 +579,43 @@ Measured 2026-08-11: slot `+0x304` → `0x0FB96840`, module base `0x0F970000`, s
 for the same function. Two projects, no shared code, same address. Valid MSVC
 prologue `55 8B EC 83 EC 18 53 56`.
 
-**Located, never called.** A `__thiscall` returning a struct by hidden pointer is
-the shape that unbalanced the stack in that other project.
+**Hooked since 2026-08-12** (`Game/FireSeam.cpp`), behind `FireSeam`, default 0.
+
+```
+__thiscall void GetPerfectFireStart(FVector* outA, FVector* outB, FVector* outC)
+                                                                   // ret 0xC
+
+    outA <- ownerPawn+0x1D8      the pawn's Location -- the player's BODY
+    outB <- [pawn+0x450]+0x1E4   the controller's Rotation, and this IS the
+                                 fire direction
+```
+
+`AWeapon::ApplyAimError` (rva `0x226AA0`) runs **after** this and reads what is
+left behind, so per-weapon spread survives a substitution untouched. That is why
+this is the seam and the trace is not.
+
+The owning pawn is at **`[weapon+0x454]`** — the implementation itself reads it,
+and it is how a player's shot is told from a splicer's. **AI weapons inherit
+`AWeapon` and hit this seam constantly**; substituting without that check would
+aim the whole level with the player's controller.
+
+**Three guards decide whether it is safe to hook, and only the third is
+unobvious.** In module and executable; a plausible MSVC prologue; and **the
+function's own `ret imm` must equal the argument count we are about to call it
+with**. A mismatch there does not crash — in a Release build it corrupts the
+stack silently. `FireSeam.cpp` scans forward for the first `C2 xx 00` and
+refuses on disagreement.
+
+> **AN FRotator OUT-PARAM READS AS `0.000 0.000 0.000`.** Rotation units are
+> int32s whose float reinterpretation is a denormal, so a perfectly good rotator
+> prints as three zeros and looks like an untouched slot. This cost the other
+> project a whole session. Every out-param here is classified by **bit pattern**,
+> never by index, and a rotator is logged as integers.
+
+`UAttackAbility::GetPerfectFireStart` (plasmids, rva `0x1BC220`) is the same
+family but is a **direct call target rather than a vtable slot**, so it needs a
+hardcoded RVA and carries storefront exposure the weapon seam does not. Not
+hooked.
 
 ## CalcView call sites
 
