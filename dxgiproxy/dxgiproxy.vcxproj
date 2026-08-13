@@ -103,6 +103,14 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <!-- /MT, matching BioshockVR and OpenXRShim. This was ABSENT, so it
+           defaulted to /MD and dxgi.dll shipped importing VCRUNTIME140.dll and
+           three UCRT stubs. That is a VC++ x86 redistributable dependency on
+           THE INJECTION POINT: if it cannot load, nothing at all happens and
+           there is no log to explain it, because the thing that writes the log
+           is what failed to load. 1.02's dxgi.dll depended on KERNEL32 alone.
+           Verify with `dumpbin /dependents dxgi.dll` before any release. -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
