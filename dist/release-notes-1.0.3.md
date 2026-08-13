@@ -170,13 +170,25 @@ Credits
     because they took the time to describe exactly what they saw.
 *   **GingasVR** for the OpenXR to OpenVR shim, the Lighthouse hardware testing,
     and the writeup that came with it.
-*   **VOID** for his massive contributions to this project.
-*   The developer of [mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr),
-    whose MIT licensed work is public and who gave me explicit permission to use
-    it however this mod needed. Several of the hardest parts here exist because
-    of it: disabling the game's 2D reticle through the engine's own console path,
-    the hand rig's bone map, capturing the whole interface in one render target
-    pass, the animation preserving skeletal drive that is the idea behind
-    freezing the weapon hand, reading the barrel direction from the model's own
-    bones, and locating the engine function that decides where a shot starts.
+*   **VOID**, developer of [mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr),
+    for his massive contributions to this project. His work is MIT licensed and
+    public, and he gave me explicit permission to use it however this mod needed.
+    Several of the hardest parts here exist because of that:
+
+    *   Disabling the game's 2D reticle through the engine's own console path,
+        which is what let a proper VR crosshair replace it
+    *   The hand rig's bone map: which bones are the wrists, which five per side
+        are forearm, and which one the weapon hangs off. That is what makes it
+        possible to hide the arms without losing the gun
+    *   Capturing the whole interface in one render target pass, which is how
+        the HUD gets lifted onto its own panel
+    *   The animation preserving skeletal drive, which is the idea behind
+        freezing the weapon hand. That is what killed weapon sway and made the
+        crosshair calibratable at all
+    *   Reading the barrel direction from the model's own bones instead of
+        guessing at it with a tuned constant
+    *   Locating the engine function that decides where a shot starts and which
+        way it goes, and the technique for substituting our own values into it
+
+    His research is public, and it saved me weeks.
 *   Everyone who sent logs.

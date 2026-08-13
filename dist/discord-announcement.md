@@ -82,8 +82,8 @@ Big thanks to **Eye-will**, who playtested every new build and gave me
 consistently sharp, genuinely useful feedback. A lot of what got fixed this
 release got fixed because they took the time to describe exactly what they saw.
 
-And to the dev of the other BioShock VR project
-(<https://github.com/mohamad-balouza/bioshock-vr>) for letting me use their
-work. The reticle removal, the hand rig's bone map, the interface capture and
-the skeletal drive that killed weapon sway all trace back to their research.
-Saved me weeks — full credit list is in the readme.
+And to **VOID**, dev of the other BioShock VR project
+(<https://github.com/mohamad-balouza/bioshock-vr>), for letting me use his work.
+The reticle removal, the hand rig's bone map, the interface capture and the
+skeletal drive that killed weapon sway all trace back to his research. Saved me
+weeks, and the full credit list is in the readme.

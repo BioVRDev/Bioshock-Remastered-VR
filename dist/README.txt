@@ -224,10 +224,10 @@ A huge thank you to Eye-will, who playtested every new build and gave me
 consistently sharp, genuinely useful feedback. A lot of what got fixed this
 release got fixed because they took the time to describe exactly what they saw.
 
-And to the developer of the other BioShock VR project,
-github.com/mohamad-balouza/bioshock-vr. Their work is MIT licensed and they gave
-me explicit permission to use it however this mod needed, and several of the
-hardest parts here exist because of it:
+And to VOID, developer of github.com/mohamad-balouza/bioshock-vr, for his
+massive contributions to this project. His work is MIT licensed and he gave me
+explicit permission to use it however this mod needed. Several of the hardest
+parts here exist because of that:
 
   * Disabling the game's flat 2D reticle through the engine's own console path,
     which is what let a proper VR crosshair replace it
@@ -243,4 +243,4 @@ hardest parts here exist because of it:
   * Locating the engine function that decides where a shot starts and which way
     it goes, and the technique for substituting our own values into it
 
-Their research is public, and it saved me weeks.
+His research is public, and it saved me weeks.

@@ -326,11 +326,11 @@ Huge thanks to **Eye-will**, who playtested every new build and gave
 consistently sharp, genuinely useful feedback. A lot of what got fixed this
 release got fixed because they took the time to describe exactly what they saw.
 
-Thanks also to **VOID**, and to the developer of the other BioShock VR project,
-[mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr).
-That project is MIT-licensed and its author has additionally given me explicit
-permission to use the code however this one needs to. Several of the hardest
-parts here exist because of it:
+Thanks also to **VOID**, developer of
+[mohamad-balouza/bioshock-vr](https://github.com/mohamad-balouza/bioshock-vr),
+for his massive contributions to this project. That work is MIT-licensed and he
+has additionally given me explicit permission to use the code however this one
+needs to. Several of the hardest parts here exist because of it:
 
 - **Disabling the game's flat 2D reticle through the engine's own console path**
   (`bReticleDisabled` via `Exec`), which is what let a proper VR crosshair
