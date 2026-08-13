@@ -590,7 +590,31 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             // starved is a 250 ms timer and drawMenu is per-frame; both can
             // change between two Presents 4 ms apart.
             static bool pairMono = false;
-            if (eye == 0) pairMono = (theater || ordinaryMenu);
+            static bool monoEveryPresent = false;
+            if (eye == 0)
+            {
+                pairMono = (theater || ordinaryMenu);
+
+                // ---- AND WHETHER THE EYE INDEX MEANS ANYTHING -------------
+                // MEASURED FROM THE CODE, and it is the loading-screen frame
+                // rate: when the camera is STARVED there is no stereo pair.
+                // CameraHook_NextEye's underrun branch just flips g_lastEye to
+                // keep the compositor fed, so two consecutive Presents carry
+                // the SAME image with a synthetic 0 then 1 stamped on them.
+                //
+                // The every-other-Present rule below exists to stop a flat quad
+                // being fed left, right, left -- one IPD of horizontal shimmer,
+                // reported as "you can see both frames being submitted". That
+                // is a real bug when the game IS rendering stereo behind a
+                // paused or anchored screen. During a load it cannot happen,
+                // because there is no second view to alternate with -- so
+                // skipping every other Present halves the rate and buys
+                // nothing. Loading screens ran at 15 instead of 30.
+                //
+                // `starved` alone, deliberately NOT `theater`: a cutscene is
+                // still producing camera views, so its pair is genuine.
+                monoEveryPresent = starved;
+            }
 
             if (pairMono)
             {
@@ -617,7 +641,12 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
                 // compositor reprojects the frames we skip; and with the view
                 // now held still behind an interface there is nothing moving in
                 // the image for the halved rate to show.
-                if (eye == 0) XR_SubmitMenuMono(bb);
+                //
+                // EXCEPT WHEN THE EYE INDEX IS SYNTHETIC -- see the latch above.
+                // A loading screen has no second view to shimmer against, and
+                // it is the one mono case whose image is genuinely ANIMATING,
+                // so the halved rate is visible there and nowhere else.
+                if (eye == 0 || monoEveryPresent) XR_SubmitMenuMono(bb);
             }
             else
             {
