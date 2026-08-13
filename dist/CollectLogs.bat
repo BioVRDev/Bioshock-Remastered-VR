@@ -157,6 +157,9 @@ if exist "%LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log" (
 for %%V in (
     "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final"
     "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic"
+    "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\Final"
+    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Epic Games\BioshockRemastered\Build\FinalEpic"
+    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Epic Games\BioshockRemastered\Build\Final"
 ) do (
     if exist "%%~V\BioshockVR.ini" (
         copy /y "%%~V\BioshockVR.ini" "BioshockVR.virtualstore.ini" >nul

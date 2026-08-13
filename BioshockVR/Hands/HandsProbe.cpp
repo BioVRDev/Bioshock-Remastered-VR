@@ -240,6 +240,12 @@ static float g_cursorBySlot[9][3] = {};
 static int  g_wepSlot = -1;       // active weapon slot, -1 until the first switch
 int HandsProbe_WeaponSlot() { return g_wepSlot; }
 
+// M6-S4. Which plasmid is live, as an index into the pawn's AvailableAbilities.
+// -1 whenever that cannot be answered, which includes holding a weapon and
+// includes per-plasmid tuning being off -- so every consumer falls back to the
+// shared slot-8 numbers on its own.
+static int  g_plasId = -1;
+
 // Set by UpdateHandMode, far below, where it is derived and documented. Hoisted
 // for the same reason as the three above: the free-hand tuning modes need to
 // know which hand is free, and that is exactly this question.
@@ -392,6 +398,21 @@ static void PollGripKeys()
             Cfg_WriteVec3(what, val);
             Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   [SAVED]",
                 what, val[0], val[1], val[2], units);
+        }
+        // M6-S4: A PLASMID SAVES TO ITS OWN KEY. Slot 8 is every plasmid at
+        // once, so writing GripOffset8 here is what made tuning Electrobolt
+        // move Telekinesis. Only when the plasmid is actually identified --
+        // otherwise fall through to the slot key below, which is today's
+        // behaviour and is still correct.
+        else if (g_wepSlot == 8 && g_plasId >= 0)
+        {
+            const char* pw = (g_editMode == 0) ? "PlasmidGrip"
+                : (g_editMode == 1) ? "PlasmidRot" : "PlasmidCursor";
+            char key[32];
+            _snprintf_s(key, sizeof(key), _TRUNCATE, "%s%d", pw, g_plasId);
+            Cfg_WriteVec3(key, val);
+            Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   [SAVED]",
+                key, val[0], val[1], val[2], units);
         }
         else if (g_wepSlot >= 0 && g_wepSlot < 9)
         {
@@ -1713,6 +1734,45 @@ static float g_gripBySlot[9][3] = {};
 static float g_rotBySlot[9][3] = {};
 static bool  g_gripInit = false;
 
+// ---- M6-S4: WHICH PLASMID IS IN YOUR HAND -------------------------------
+// Returns 0..kPlasmidMax-1, or -1 for "not a plasmid, or cannot tell".
+//
+// SELF-VALIDATING, and that is what makes a wrong offset harmless rather than
+// dangerous: the class sitting at AbilityClassOffset must actually BE one of
+// the entries of the class list at AbilityListOffset. A wrong offset pair
+// cannot produce that coincidence, so it returns -1 and every plasmid falls
+// back to slot 8 -- exactly today's behaviour.
+static int ResolvePlasmidId(const void* pawn)
+{
+    if (!g_cfg.perPlasmidTuning) return -1;
+    if (!pawn || g_cfg.abilityClassOff <= 0 || g_cfg.abilityListOff <= 0)
+        return -1;
+
+    const uint8_t* const p = (const uint8_t*)pawn;
+
+    if (!Readable(p + g_cfg.abilityClassOff, 4)) return -1;
+    const void* const cls = *(void* const*)(p + g_cfg.abilityClassOff);
+    if (!cls) return -1;                    // a weapon is in hand, not a plasmid
+
+    // AvailableAbilities is a TArray: {data, count, max}.
+    if (!Readable(p + g_cfg.abilityListOff, 12)) return -1;
+    const uint8_t* const h = p + g_cfg.abilityListOff;
+    void* const data = *(void* const*)h;
+    const int count = *(const int*)(h + 4);
+    if (!data || count < 1 || count > VrConfig::kPlasmidMax) return -1;
+    if (!Readable(data, (size_t)count * 4)) return -1;
+
+    for (int i = 0; i < count; ++i)
+        if (((void* const*)data)[i] == cls) return i;
+
+    return -1;                              // not in the list -- do not guess
+}
+
+int HandsProbe_PlasmidId()
+{
+    return ResolvePlasmidId(g_pawn);
+}
+
 static int ResolveWeaponSlot(const void* hands)
 {
     if (!hands || g_cfg.gunPtrOff <= 0 || !g_cfg.gunPtrBase) return -1;
@@ -1817,34 +1877,75 @@ static void UpdateWeaponGrip(const void* hands)
     }
 
     const int slot = ResolveWeaponSlot(hands);
-    if (slot < 0 || slot == g_wepSlot) return;
+
+    // M6-S4: THE KEY IS THE PAIR, not the slot. Every plasmid is slot 8, so
+    // Electrobolt -> Telekinesis does not move the slot and would otherwise not
+    // count as a switch at all -- which is exactly why they have been sharing one
+    // set of numbers. -1 for anything that is not an identified plasmid, so a
+    // weapon keeps behaving as it always has.
+    const int plas = (slot == 8) ? ResolvePlasmidId(g_pawn) : -1;
+    if (slot < 0 || (slot == g_wepSlot && plas == g_plasId)) return;
 
     if (g_wepSlot >= 0)
     {
-        for (int a = 0; a < 3; ++a)
+        // Save back to whichever table the OUTGOING thing came from.
+        if (g_wepSlot == 8 && g_plasId >= 0)
         {
-            g_gripBySlot[g_wepSlot][a] = g_cfg.handsGrip[a];
-            g_rotBySlot[g_wepSlot][a] = g_cfg.handsRot[a];
-            g_cursorBySlot[g_wepSlot][a] = g_cfg.cursorRot[a];
+            for (int a = 0; a < 3; ++a)
+            {
+                g_cfg.plasmidGrip[g_plasId][a] = g_cfg.handsGrip[a];
+                g_cfg.plasmidRot[g_plasId][a] = g_cfg.handsRot[a];
+                g_cfg.plasmidCursor[g_plasId][a] = g_cfg.cursorRot[a];
+            }
+            Log(">>> GRIP: saved  plasmid %d          PlasmidGrip%d=%.1f,%.1f,%.1f  PlasmidRot%d=%.0f,%.0f,%.0f",
+                g_plasId,
+                g_plasId, g_cfg.plasmidGrip[g_plasId][0], g_cfg.plasmidGrip[g_plasId][1], g_cfg.plasmidGrip[g_plasId][2],
+                g_plasId, g_cfg.plasmidRot[g_plasId][0], g_cfg.plasmidRot[g_plasId][1], g_cfg.plasmidRot[g_plasId][2]);
         }
-        Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
-            g_wepSlot, kWepName[g_wepSlot],
-            g_wepSlot, g_gripBySlot[g_wepSlot][0], g_gripBySlot[g_wepSlot][1], g_gripBySlot[g_wepSlot][2],
-            g_wepSlot, g_rotBySlot[g_wepSlot][0], g_rotBySlot[g_wepSlot][1], g_rotBySlot[g_wepSlot][2]);
+        else
+        {
+            for (int a = 0; a < 3; ++a)
+            {
+                g_gripBySlot[g_wepSlot][a] = g_cfg.handsGrip[a];
+                g_rotBySlot[g_wepSlot][a] = g_cfg.handsRot[a];
+                g_cursorBySlot[g_wepSlot][a] = g_cfg.cursorRot[a];
+            }
+            Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
+                g_wepSlot, kWepName[g_wepSlot],
+                g_wepSlot, g_gripBySlot[g_wepSlot][0], g_gripBySlot[g_wepSlot][1], g_gripBySlot[g_wepSlot][2],
+                g_wepSlot, g_rotBySlot[g_wepSlot][0], g_rotBySlot[g_wepSlot][1], g_rotBySlot[g_wepSlot][2]);
+        }
     }
 
     g_wepSlot = slot;
-    for (int a = 0; a < 3; ++a)
-    {
-        g_cfg.handsGrip[a] = g_gripBySlot[slot][a];
-        g_cfg.handsRot[a] = g_rotBySlot[slot][a];
-        g_cfg.cursorRot[a] = g_cursorBySlot[slot][a];
-    }
+    g_plasId = plas;
 
-    Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
-        slot, kWepName[slot],
-        g_cfg.handsGrip[0], g_cfg.handsGrip[1], g_cfg.handsGrip[2],
-        g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2]);
+    if (slot == 8 && plas >= 0)
+    {
+        for (int a = 0; a < 3; ++a)
+        {
+            g_cfg.handsGrip[a] = g_cfg.plasmidGrip[plas][a];
+            g_cfg.handsRot[a] = g_cfg.plasmidRot[plas][a];
+            g_cfg.cursorRot[a] = g_cfg.plasmidCursor[plas][a];
+        }
+        Log(">>> GRIP: LIVE   plasmid %d          pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
+            plas,
+            g_cfg.handsGrip[0], g_cfg.handsGrip[1], g_cfg.handsGrip[2],
+            g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2]);
+    }
+    else
+    {
+        for (int a = 0; a < 3; ++a)
+        {
+            g_cfg.handsGrip[a] = g_gripBySlot[slot][a];
+            g_cfg.handsRot[a] = g_rotBySlot[slot][a];
+            g_cfg.cursorRot[a] = g_cursorBySlot[slot][a];
+        }
+        Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
+            slot, kWepName[slot],
+            g_cfg.handsGrip[0], g_cfg.handsGrip[1], g_cfg.handsGrip[2],
+            g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2]);
+    }
 
     ApplyIdleAnim(hands, slot);
 }

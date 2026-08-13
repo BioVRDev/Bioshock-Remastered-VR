@@ -1325,8 +1325,18 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     static bool gripLOn = false, gripROn = false;
     const float onT = g_cfg.gripThreshold;
     const float offT = g_cfg.gripThreshold - g_cfg.gripHysteresis;
+    const bool prevGripLOn = gripLOn;
     gripLOn = gripLOn ? (s.gripL > offT) : (s.gripL > onT);
     gripROn = gripROn ? (s.gripR > offT) : (s.gripR > onT);
+
+    // WHAT THE AXIS ACTUALLY DID, at the moment it crossed. Diagnostic: the
+    // two-handed grab keeps letting go between shotgun shots and the button is
+    // the suspect, but "the squeeze dipped" and "the runtime stopped reporting
+    // the squeeze" look identical from the far end. This prints the value that
+    // caused the transition, so the next log says which.
+    if (gripLOn != prevGripLOn)
+        Log(">>> GRIPAXIS: left %s at %.3f   (on >%.2f, off <=%.2f)",
+            gripLOn ? "PRESSED " : "released", s.gripL, onT, offT);
 
     // Published for the two-handed grip, which needs the SAME hysteresised
     // answer this function acts on -- a second threshold test against the raw
@@ -1652,8 +1662,32 @@ static void FillFromPad(const PadState& s, XI_STATE* out)
     //
     // Eligibility still suppresses it on non-blocked slots, which is what keeps
     // the one-handed weapons behaving exactly as they do today.
+    //
+    // A GRIP THAT BEGAN AS A GRAB STAYS A GRAB UNTIL IT IS LET GO.
+    //
+    // Eligibility alone is not enough, because it can LAPSE while you are still
+    // holding on. Reported: the plasmid wheel coming up between shotgun shots
+    // while two-handing. A blast breaks the hold two ways -- the recoil throws the
+    // distance past the release radius for a frame, and pulling the trigger
+    // relaxes the squeeze below the grip threshold -- and either one drops
+    // eligibility while the button is still down. The held button is then read as
+    // a fresh radial press, in the middle of a firefight.
+    //
+    // Deciding on the RISING EDGE and latching until release makes the whole class
+    // of transient irrelevant: what the press MEANT was settled when it started,
+    // and nothing that happens mid-press can reinterpret it. That also keeps the
+    // one-frame property the eligibility test was chosen for -- the edge is
+    // evaluated here, in the same place, on the same frame.
+    static bool s_prevGripL = false;
+    static bool s_gripWasGrab = false;
+    const bool grabbable =
+        CameraHook_TwoHandEligible() || CameraHook_TwoHandGripped();
+    if (gripLOn && !s_prevGripL) s_gripWasGrab = grabbable;   // the edge decides
+    if (!gripLOn)                s_gripWasGrab = false;
+    s_prevGripL = gripLOn;
+
     if (gripLOn && g_cfg.dpadModifier != 3 &&
-        !CameraHook_TwoHandEligible() && !CameraHook_TwoHandBlocksRadial())
+        !grabbable && !s_gripWasGrab && !CameraHook_TwoHandBlocksRadial())
         btn |= XI_LSHOULDER;
     if (gripROn)                           btn |= XI_RSHOULDER;
 

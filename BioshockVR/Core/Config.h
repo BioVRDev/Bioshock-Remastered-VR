@@ -135,6 +135,37 @@ struct VrConfig
     float rotSlot[9][3] = {};                   // per-weapon rotation, from ini
     float cursorRot[3] = { 0.f, 0.f, 0.f };     // CursorOffset p,y,r deg. LIVE
     float cursorSlot[9][3] = {};                // per-weapon, from the ini
+
+    // ---- M6-S4: PER-PLASMID TUNING --------------------------------------
+    // Every plasmid shares weapon slot 8, so tuning Electrobolt moves
+    // Telekinesis with it. These give each its own numbers, keyed by the
+    // plasmid's index in the pawn's AvailableAbilities list.
+    //
+    // THE INDEX IS ACQUISITION ORDER, which is the honest description: the
+    // list is appended to as you find plasmids. Anyone playing the story in
+    // order gets the same numbering, and if yours differs the numpad retunes
+    // it in seconds -- but do not read the index as a fixed plasmid identity.
+    // (PossibleAbilities, which IS config-ordered and would have been a stable
+    // key, is EMPTY in the shipped game -- it appears in no game ini and the
+    // scan finds no array of that size. Measured 2026-08-12.)
+    //
+    // Each is seeded from slot 8, so an ini with none of these keys behaves
+    // exactly as it does today.
+    static const int kPlasmidMax = 12;
+    float plasmidGrip[kPlasmidMax][3] = {};
+    float plasmidRot[kPlasmidMax][3] = {};
+    float plasmidCursor[kPlasmidMax][3] = {};
+    int   perPlasmidTuning = 0;   // off until a headset confirms it
+
+    // pawn+N. ActiveAbility is a Class<Ability>, and AvailableAbilities is the
+    // TArray declared immediately after it -- which is how these two were
+    // located: the 2-entry class array at +0xF28 matched the two plasmids owned,
+    // putting ActiveAbility at +0xF24. Both are ini-settable because a wrong
+    // value must be fixable without a rebuild, and because they will differ on
+    // another storefront. 0 disables per-plasmid tuning entirely.
+    int   abilityClassOff = 0;
+    int   abilityListOff = 0;
+
     int   handsArmCalls = 600;    // CalcView calls before the probe arms
     int   handsRetryCalls = 600;  // calls between STAGE A retries
     int   idleAnimMode = 0;       // 0 off, 1 entry[0], 2 HandsDown, 3 Equipping
@@ -332,6 +363,13 @@ struct VrConfig
     // are holding, so the equip animation plays before the pose is captured.
     // Capturing on the change frame freezes a half-drawn weapon.
     int   weaponSwitchSettleMs = 600;
+
+    // How long "what you are holding" must READ THE SAME before a change is
+    // believed. The key goes null on any frame the engine has not written
+    // CurrentHoldable, which a shotgun's fire and pump animations do routinely --
+    // measured at eleven weapon "changes" in a session containing two. Each false
+    // one re-derives the grab point somewhere new. 0 disables the debounce.
+    int   weaponKeyDebounceMs = 150;
 
     // ---- M6-S2: THE TWO-HANDED GRIP -------------------------------------
     // Bring your off hand to the fore-end of a two-handed weapon and squeeze the

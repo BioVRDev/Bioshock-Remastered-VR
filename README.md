@@ -28,11 +28,17 @@ Cutscene Black Bar Removal: https://www.nexusmods.com/bioshock/mods/81?tab=descr
     dxgi.dll                     loads the mod
     BioshockVR.dll               the mod
     BioshockVR.ini               settings
-    openxr_loader.dll            OpenXR runtime -- Setup picks which
-    openxr_loader_steam.dll      the SteamVR one, until Setup picks
+    openxr_loader_standard.dll   the normal OpenXR loader
+    openxr_loader_steam.dll      the SteamVR one
+    openvr_api.dll               needed by the SteamVR one
     Setup.bat
-    Uninstall.bat
+    changelog.txt
 ```
+
+`Setup.bat` copies whichever loader you choose onto the name the mod actually
+loads, `openxr_loader.dll`, so that file appears after setup rather than in the
+download. It also writes `Uninstall.bat` and `logs\CollectLogs.bat` for you —
+neither is in the package.
 
 3. **Run `Setup.bat` once, with the game closed.** It asks which headset you
    have and which runtime to use, then installs the matching loader.
@@ -51,9 +57,15 @@ before the game ever starts, which breaks that loop for good:
 - windowed mode instead of exclusive fullscreen
 - anisotropic filtering to x16
 
-It finds `Bioshock.ini` on its own, backs it up first, and changes ten keys in
-place using the same Windows API the game itself uses — it does not rewrite the
-file. If anything looks wrong afterwards it restores the backup automatically.
+It finds `Bioshock.ini` on its own, backs it up first, and changes fourteen
+values across eleven settings in place, using the same Windows API the game
+itself uses — it does not rewrite the file. If anything looks wrong afterwards it
+restores the backup automatically.
+
+It also asks which headset you have and which runtime to use, and writes two mod
+settings from your answers: the d-pad modifier button, and whether holding X+Y
+pauses the game (on for SteamVR, where the menu button is unreliable; off
+otherwise).
 
 Run it again any time you change `ResolutionX`, `ResolutionY` or
 `GameFovDegrees` in `BioshockVR.ini`.
@@ -69,7 +81,11 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
   OpenXR runtime does not support 32-bit games and BioShock Remastered is
   32-bit. `Setup.bat` picks the right one for you; start SteamVR before the game
   if you choose that path.
-- WMR / Reverb controller bindings are provisional and untested on hardware
+- **Only Meta Touch controllers are tested.** Index, Vive wand and WMR/Reverb
+  bindings exist and are built from each device's published layout, but nobody on
+  the project owns that hardware, so they are best-effort. The log names the
+  controller profile it matched and how many buttons bound — worth sending either
+  way if you have one
 - Windows 10 or 11
 
 ---
@@ -105,8 +121,13 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 
 **Hands and weapons**
 - 6-DOF weapon holding driven by the right controller
+- The weapon holds still. The game animates the arm the gun hangs off, which made
+  it drift and breathe in your hand and made a calibrated crosshair impossible;
+  that idle animation is frozen while you hold it
+- Two-handed grip — reach across with your free hand and take hold of the barrel
 - The hand that is not holding your weapon appears and follows its own
   controller, on the weapons that hide it
+- Haptics on firing and on the actions that earn them
 - Aim, crosshair and the actual shot all derive from one value, so where the dot
   is is where the bullet goes
 - Per-weapon grip position and angle, tunable live in the headset and saved
@@ -121,10 +142,16 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
   sits at a comfortable depth instead of being painted onto the world
 - Adjustable size and position, tunable live
 - Menus appear on a screen fixed in the room
-- Individual screens can be placed by name — `AnchorMovies`, `FollowMovies` and
-  `SceneMovies` in the ini decide whether a given screen stays put in the room,
-  follows your head, or is left exactly where the game drew it. The settings ship
-  empty; the ini lists the screen names
+- The map, the manual, the upgrade machine, the Gene Bank and the whole
+  plasmid/tonic flow stay put in the room instead of riding your head, including
+  when you click from one page of a machine screen through to the next
+- Individual screens can be moved between four routes by name — `AnchorMovies`,
+  `FollowMovies`, `SceneMovies` and `PanelMovies` in the ini decide whether a
+  screen stays put in the room, follows your head, is left exactly where the game
+  drew it, or is split with the interface flat and the world still in stereo. The
+  ini lists the screen names and ships the tested set
+- The quest arrow is placed in the world in front of you rather than riding your
+  gun at eye level
 
 **Cutscenes and scripted scenes**
 - Pre-rendered cutscenes play on a screen anchored in the room. You can look
@@ -138,10 +165,14 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 - Your arms and hands appear only while the scene is actually animating them
 
 **Controls**
-- Touch and Index controllers mapped to a virtual gamepad
+- Touch, Index, Vive wand and WMR controllers mapped to a virtual gamepad — see
+  *Requirements* for which of those are actually tested
 - Right stick click jumps; zoom is unbound because it breaks the weapon
   calibration
-- D-pad modifier on the right thumbrest
+- D-pad modifier on the right thumbrest, with the button configurable — it lands
+  where a thumb rests on trackpad headsets and the Rift CV1, and `Setup.bat` moves
+  it for you when you say which headset you have
+- Hold X+Y to pause, for runtimes where the menu button does not come through
 
 ---
 
@@ -200,7 +231,7 @@ Gatherer's Garden the description and slot labels sit on the HUD panel in front
 of you rather than inside the green panels they belong to. Those panels are part
 of the room, so a panel that follows your head can never line up with them. The
 screen is still usable and the text is still readable; it just is not where it
-should be. Not yet fixed.
+should be. `PanelMovies` in the ini is the setting to experiment with here.
 
 **Walking through water draws its effect as a square** rather than covering your
 whole view.
@@ -210,10 +241,19 @@ the flat screen. Scripted sequences themselves — where they walk you, which wa
 they turn you — are handled, but the camera during an in-engine cutscene is not
 detached the way a pre-rendered one is.
 
-**Weapon idle sway remains.** The weapon hangs off a bone of the arm mesh, so it
-inherits the authored idle animation. Hiding the arms doesn't stop it.
+**The quest arrow drifts with the weapon** before settling back to where it
+should be.
 
-**Cutscene letterbox bars are still there**, now on the flat screen.
+**Your arms sit slightly low and forward in some scripted scenes.**
+
+**The desktop mirror runs at about half the headset's framerate.** That is how
+the game submits frames to its own window, not a performance problem. For
+recording, use SteamVR's display view instead.
+
+**SteamVR performance can degrade after about 30 minutes** with Virtual Desktop
+on Meta headsets. This is a Meta driver issue rather than something the mod can
+fix; [VirtualDesktopSwitcher](https://github.com/webhead2oo9/VirtualDesktopSwitcher)
+resolves it for some people.
 
 ---
 
@@ -228,15 +268,23 @@ that never reaches the display.
 
 ## Reporting a problem
 
-Open an issue and **attach `BioshockVR.log`**, which appears next to
-`BioshockVR.dll`. The config block at the top shows every setting the mod
-actually read, and answers most "it's not working" reports immediately.
+**Run `logs\CollectLogs.bat`** and attach the zip it makes. It gathers every log
+plus the config files, including the copies Windows can silently redirect your
+settings into — which is the cause of most "I changed it and nothing happened"
+reports.
+
+If you would rather attach one file, it is **`logs\BioshockVR.log`**, in a `logs`
+folder beside `BioshockHD.exe`. The config block at the top shows every setting
+the mod actually read, and answers most "it's not working" reports immediately.
+
+If the game folder is not writable, the mod falls back to
+`%LOCALAPPDATA%\BioshockVR\logs\` instead and says so in the log.
 
 Quick self-checks:
 
 | Symptom | Cause |
 |---|---|
-| Nothing happens at all | Is `BioshockVR_loader.log` next to the exe? If not, `dxgi.dll` isn't loading — check all files are in the same folder |
+| Nothing happens at all | Is there a `logs\BioshockVR_loader.log`? If not, `dxgi.dll` isn't loading — check all files are in the same folder. If there is, it names the reason, including which file is missing |
 | Wrong resolution, or fullscreen | Run `Setup.bat` with the game closed |
 | `could not find Bioshock.ini` | Launch the game once so it creates one, quit, run setup again |
 | World too big or too small | `EyeSeparation` is half your IPD in cm |
@@ -246,13 +294,21 @@ Quick self-checks:
 
 ## Building from source
 
-- Visual Studio 2022, **Win32 / x86** — the game is 32-bit and the mod must match
-- Two projects: `BioshockVR` (the mod) and `dxgiproxy` (the loader, builds as
-  `dxgi.dll`)
+- Visual Studio 2022, **Win32 / x86** — the game is 32-bit and the mod must match.
+  `Release | Win32` is the only configuration that produces working output for
+  any of the three
+- Three projects: `BioshockVR` (the mod), `dxgiproxy` (the loader, builds as
+  `dxgi.dll`), and `OpenXRShim` (the SteamVR shim, builds as `openxr_loader.dll`)
 - Dependencies: OpenXR SDK, [MinHook](https://github.com/TsudaKageyu/minhook)
 
-Build both, then copy `BioshockVR.dll`, `dxgi.dll`, `BioshockVR.ini` and
-`Setup.bat` next to `BioshockHD.exe`.
+Build all three, then next to `BioshockHD.exe` put `BioshockVR.dll`, `dxgi.dll`,
+`BioshockVR.ini`, `Setup.bat`, the shim renamed to `openxr_loader_steam.dll`, the
+32-bit `openxr_loader_standard.dll`, and `openvr_api.dll` from Valve's OpenVR
+SDK. Then run `Setup.bat`, which puts the loader you pick in place.
+
+**Copying only the mod and the proxy gives you a package that cannot load** — the
+mod statically imports `openxr_loader.dll`, so with no loader present Windows
+refuses to load it, and the proxy reports it as a missing file.
 
 If you get `unresolved external symbol` from `dxgi.def`, the proxy project is set
 to x64. If `dumpbin /dependents dxgi.dll` lists `DXGI.dll`, you've linked

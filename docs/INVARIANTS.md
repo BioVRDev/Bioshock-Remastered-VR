@@ -543,6 +543,44 @@ handoff disagree, this file wins.
 
 ## Falsified — do not retry without new evidence
 
+### Reading authored bone data for a cluster we are driving — MEASURED 2026-08-12
+
+**54 of 54 samples at exactly `0.00 cm`.** Build AJ's `ANCHORPROBE` compared the
+wrist position written by `WriteCluster` against what the bone array read on the
+next frame, while driving. It never changed. `SetDirty(0)` at the write site does
+exactly what it claims: the render pass does not rebuild over us.
+
+**This is easy to get wrong in the other direction**, and the reason is recorded
+here so nobody re-derives it: **M6-S1 measured the array still evaluating in
+ordinary play with the dirty byte cleared**, and that is also true. The difference
+is whether *we* are writing that cluster on that frame.
+
+**The route round it is not to read.** Capture the value once while the engine
+still owns the cluster and express it as a **rigid offset from a bone we control**.
+The two-hand grab point does this: an offset in the weapon hand's own frame, valid
+because `WeaponHandDrive` makes the weapon rigid relative to that hand.
+
+### A threshold that separates idle animation from real animation — FOUR failures
+
+Tried at **6° and 25°** for the off-hand haptic, and **25° and 45°** for
+`OffHandYield`. Every value either fires continuously on the engine's ~3 s idle
+loop or never fires at all. The reason was already in the record: the B43 pass
+measured **idle peaking at 41–135°**, which is the same size as a real animation.
+
+**Two populations that overlap cannot be separated by a threshold.** Where a
+bracketing signal exists, use it — the off-hand haptic is gated on
+`GameState_ScriptedAnim()`, the flag that actually brackets the syringe animation
+it was written for. Where none exists, the open route is to **suppress the idle
+animation first** (`IdleAnimMode`) so anything still moving is real.
+
+### `PossibleAbilities` as a stable plasmid key — EMPTY in the shipped game
+
+The M6-S4 card's premise. It is a `config` array, so its order would have been
+fixed by the ini and the index a stable identity. **It appears in no game ini**
+(`Default.ini`, `DefUser.ini`, `Bioshock.ini` all checked) **and no array of that
+size exists on the pawn.** The usable key is the `AvailableAbilities` index, which
+is **acquisition order** — see `docs/ENGINE-MAP.md` § *Abilities*.
+
 ### The HUD square (solved)
 - **The scene-sampling "world leak guard" is dead.** The theory was that a
   full-screen post-process pass sampling the scene target was being captured as

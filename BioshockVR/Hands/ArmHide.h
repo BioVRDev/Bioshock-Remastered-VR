@@ -165,6 +165,11 @@ bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3]);
 // owns the bones and the grab point above can never be latched.
 bool ArmHide_PoseSettling();
 
+// Has this weapon's grab point been captured as a rigid offset from the weapon
+// hand? While true the two-hand anchor no longer needs the engine to own the
+// off-hand cluster, so the tracker does not have to yield the settle window.
+bool ArmHide_GrabPointCached(int hand);
+
 // Whether the weapon currently in hand may adopt the engine's animation
 // (HandAnim, per slot). Published by the caller because ArmHide deliberately
 // knows nothing about weapon slots. Off for the wrench by design -- a canned

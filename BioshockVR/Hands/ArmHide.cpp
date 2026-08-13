@@ -319,6 +319,14 @@ static const float    kHiddenScale = 0.0001f;      // NEVER exactly zero
 // sway-follower, and nothing logs a complaint.
 static bool g_clDriven[2] = { false, false };
 
+// THE GRAB POINT, IN THE WEAPON HAND'S OWN FRAME. Captured once from a live
+// reading of the engine's authored pose, then used to reconstruct the anchor on
+// every frame where the engine no longer owns the off-hand cluster. Cleared with
+// the anchor on a weapon change, because a different weapon is a different grab
+// point. See ArmHide_FreeHandAnchor.
+static float g_grabLocal[2][3] = {};
+static bool  g_grabLocalValid[2] = { false, false };
+
 // ===========================================================================
 //  WHICH BONE THE MOTION GATE SAMPLES -- AND WHY IT CANNOT BE A CONSTANT
 //
@@ -1186,6 +1194,7 @@ static void ClusterStateReset()
         g_clDriven[h] = false;
         g_freezeOwns[h] = false;
         g_anchorValid[h] = false;      // a new rig is a new grab point
+        g_grabLocalValid[h] = false;   // and a new offset to take for it
     }
     g_roleHand[kRoleFree] = -1;
 }
@@ -1711,6 +1720,17 @@ static int    g_settleN = 0;
 
 bool ArmHide_PoseSettling() { return g_wpSettling; }
 
+// TRUE once this weapon's grab point has been captured as an offset from the
+// weapon hand. While it is true the off hand no longer has to stand down during
+// the settle, because the anchor can be reconstructed without the engine owning
+// the cluster -- which is what gives the player their hand back immediately on a
+// weapon switch. See the rigid-offset block in ArmHide_FreeHandAnchor.
+bool ArmHide_GrabPointCached(int hand)
+{
+    if (hand != HAND_LEFT && hand != HAND_RIGHT) return false;
+    return g_grabLocalValid[hand];
+}
+
 bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
 {
     if (!handsActor) return false;
@@ -1718,13 +1738,47 @@ bool ArmHide_FreezeWeaponHand(void* handsActor, int hand, const void* poseKey)
     if (!LocateSkeleton(handsActor)) return false;
 
     const DWORD now = GetTickCount();
-    if (poseKey != g_wpPoseKey)
+
+    // THE KEY HAS TO HOLD STILL BEFORE IT COUNTS AS A NEW WEAPON.
+    //
+    // MEASURED 2026-08-12: `what you are holding changed` fired ELEVEN times in a
+    // three-minute session in which the player switched weapon twice. The key is
+    // `hold ? hold : abil`, so any frame where the engine has not written
+    // CurrentHoldable reads NULL -- and a shotgun's fire and pump animations
+    // produce exactly that. Each blip is TWO changes, hold -> null -> hold, and
+    // each one drops the anchor and re-derives the grab point.
+    //
+    // THAT IS THE MOVING GRAB POINT, and it is why it moved to a DIFFERENT place
+    // each time rather than simply drifting: the settle either catches the rig
+    // still or hits its ceiling and averages the idle loop, and those two land on
+    // different points of the weapon. Reported as the grip starting correct, then
+    // moving to the middle of the barrel, then up the barrel, then back.
+    //
+    // It is also the "invisible stick": while the window is open there is no grab
+    // point at all, and a hand that is already gripped has nothing to hold on to.
+    //
+    // A real weapon change still lands -- the incoming weapon is a stable non-null
+    // key, so it commits one debounce later, which is imperceptible beside the
+    // WeaponSwitchSettleMs window that follows it.
+    static const void* s_pendKey = nullptr;
+    static DWORD       s_pendSince = 0;
+    static bool        s_pendInit = false;
+    if (!s_pendInit) { s_pendInit = true; s_pendKey = g_wpPoseKey; s_pendSince = now; }
+    if (poseKey != s_pendKey) { s_pendKey = poseKey; s_pendSince = now; }
+
+    const bool keyHeld =
+        (now - s_pendSince) >= (DWORD)g_cfg.weaponKeyDebounceMs;
+
+    if (poseKey != g_wpPoseKey && keyHeld)
     {
         g_wpPoseKey = poseKey;
         // A DIFFERENT WEAPON HAS A DIFFERENT GRAB POINT. Drop the latch so it is
         // re-taken from the settled pose of what you are now holding, rather than
         // leaving the previous weapon's fore-end as the target.
         g_anchorValid[HAND_LEFT] = g_anchorValid[HAND_RIGHT] = false;
+        // A DIFFERENT WEAPON IS A DIFFERENT GRAB POINT, so the cached offset goes
+        // with it. Leaving it would put the shotgun's fore-end on the pistol.
+        g_grabLocalValid[HAND_LEFT] = g_grabLocalValid[HAND_RIGHT] = false;
         ArmHide_ReleaseWeaponHand();      // stamps the settle window itself
         Log(">>> WEAPONHAND: what you are holding changed -- released for %d ms so "
             "the equip can play, then re-freezing on the NEW pose.",
@@ -1860,6 +1914,62 @@ bool ArmHide_FreeHandAnchor(void* handsActor, int hand, float outModel[3])
             memcpy(g_anchorPos[hand], b.position, sizeof(g_anchorPos[hand]));
             g_anchorValid[hand] = true;
         }
+    }
+
+    // ---- THE GRAB POINT AS A RIGID OFFSET FROM THE WEAPON HAND --------------
+    //
+    // MEASURED 2026-08-12, Build AJ, 54 of 54 samples at EXACTLY 0.00 cm: while we
+    // drive a cluster the array still holds OUR OWN WRITE when we read it next
+    // frame. The engine does not re-evaluate over it -- SetDirty(0) at the write
+    // site is doing precisely what it says. So the guard above cannot simply be
+    // relaxed, and reading the authored pose while tracking is impossible.
+    //
+    // THE WAY ROUND IT IS THAT THE GRAB POINT DOES NOT MOVE ON THE WEAPON. The
+    // weapon is rigid relative to the weapon hand -- that is the whole premise of
+    // WeaponHandDrive, and why bone 43's rotation is written to keep the gun
+    // attached. So capture the grab point ONCE, as an offset in the weapon hand's
+    // own frame, and it can be reconstructed every frame from that hand alone.
+    //
+    // What that buys, and it is the whole point:
+    //   - the off hand never has to stand down, so it tracks your controller from
+    //     the first frame of a weapon switch. No hand posed on the gun for
+    //     0.5-1 s, and no one-frame arm while the engine's pose is on show.
+    //   - the grab point stops MOVING between draws. It was re-derived on every
+    //     re-capture and the two settle paths land on different points, which is
+    //     the reported "middle of the barrel, then up the barrel, then back".
+    //   - hiding the game's own off hand becomes possible, because the anchor no
+    //     longer depends on that hand being posed where we can read it.
+    const int wepHand = (hand == HAND_LEFT) ? HAND_RIGHT : HAND_LEFT;
+    const ClusterSpec wc = SpecFor(wepHand);
+
+    BoneTransform wb = {};
+    const bool haveWep = g_bones && wc.wrist < g_boneCount &&
+        SafeRead(&g_bones[wc.wrist], &wb, sizeof(wb)) &&
+        ScaleLooksNormal(wb.scale);
+
+    // CAPTURE, on any frame where the anchor was read straight from the engine.
+    if (haveWep && g_anchorValid[hand] && !g_clDriven[hand])
+    {
+        const float d[3] = { g_anchorPos[hand][0] - wb.position[0],
+                             g_anchorPos[hand][1] - wb.position[1],
+                             g_anchorPos[hand][2] - wb.position[2] };
+        const float inv[4] = { -wb.rotation[0], -wb.rotation[1],
+                               -wb.rotation[2],  wb.rotation[3] };
+        QRotate(inv, d, g_grabLocal[hand]);
+        g_grabLocalValid[hand] = true;
+    }
+
+    // RECONSTRUCT, on the frames where the engine no longer owns the cluster.
+    // Only ever fills in for a read we could not take -- a live read always wins,
+    // so this cannot drift away from the truth while the engine is still posing.
+    if (haveWep && g_grabLocalValid[hand] && g_clDriven[hand])
+    {
+        float rot[3];
+        QRotate(wb.rotation, g_grabLocal[hand], rot);
+        g_anchorPos[hand][0] = wb.position[0] + rot[0];
+        g_anchorPos[hand][1] = wb.position[1] + rot[1];
+        g_anchorPos[hand][2] = wb.position[2] + rot[2];
+        g_anchorValid[hand] = true;
     }
 
     if (!g_anchorValid[hand])

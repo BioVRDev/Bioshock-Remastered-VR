@@ -292,8 +292,43 @@ weapon**, so its gun-following cannot be fixed by detaching it. See
 5 MachineGun   6 ChemicalThrower   7 ResearchCamera   8 Plasmid (mod-added, shared)
 ```
 
-MachineGun placement is the disambiguator against the decoy array. **All plasmids
-share slot 8**, so Electrobolt and Telekinesis overwrite each other's calibration.
+MachineGun placement is the disambiguator against the decoy array. All plasmids
+share slot 8; **which plasmid** is answered separately, below.
+
+## Abilities — `ActiveAbility` and `AvailableAbilities`, measured M6-S4, 2026-08-12
+
+| Field | Offset | Type |
+|---|---|---|
+| `ShockPlayer.ActiveAbility` | `pawn+0x0F24` | `Class<Ability>*` |
+| `ShockPlayer.AvailableAbilities` | `pawn+0x0F28` | TArray `{data, count, max}` |
+
+**How they were located, and what ruled out the alternative.** The scan reported
+two pawn fields holding the equipped ability's class, `+0x0E44` and `+0x0F24`, and
+they could not be separated by observation — every logged switch was to the same
+plasmid, so both matched every time. Declaration order settled it:
+
+```unrealscript
+var private travel Class<Ability> ActiveAbility;        // :374
+var travel array< Class<Ability> > AvailableAbilities;  // :375
+var config array< Class<Ability> > PossibleAbilities;   // :376
+```
+
+A 4-byte class pointer immediately followed by a 12-byte TArray. The scan found a
+**2-entry class array at `+0x0F28`** — matching the two plasmids owned at the time
+— which places `ActiveAbility` at `+0x0F24` exactly. The rival `+0x0E44` sits
+*after* a 4-entry array at `+0x0E34` and fits no part of that ordering.
+
+**Confirmed live, and the confirmation is self-validating:** the resolver only
+accepts an index when the class at `+0x0F24` is actually an entry of the array at
+`+0x0F28`. **96 resolutions in one session, zero fallbacks.**
+
+> **`PossibleAbilities` is EMPTY in the shipped game.** It is `config`-ordered and
+> would have been a stable identity key, but it appears in **no** game ini
+> (`Default.ini`, `DefUser.ini`, `Bioshock.ini` all checked) and no array of that
+> size exists on the pawn. So the only available key is the **`AvailableAbilities`
+> index, which is acquisition order** — stable within a playthrough, not across
+> one. Both offsets are ini-settable (`AbilityClassOffset`, `AbilityListOffset`)
+> because they will differ on another storefront.
 
 ## Skeleton
 

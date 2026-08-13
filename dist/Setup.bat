@@ -52,8 +52,14 @@ for /f "tokens=2 delims==" %%A in ('wmic path win32_VideoController get Name /va
 
 rem ---- find BioshockVR.ini ---------------------------------------------------
 set "MODINI=%~dp0BioshockVR.ini"
+rem  BOTH Epic folder names are probed. Our own files disagreed about whether
+rem  Epic ships Build\FinalEpic or Build\Final, and nobody here owns an Epic
+rem  install to settle it -- so stop guessing and look for both. A name that
+rem  does not exist simply fails its `if exist` and costs nothing.
 if not exist "%MODINI%" if exist "C:\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic\BioshockVR.ini" set "MODINI=C:\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic\BioshockVR.ini"
+if not exist "%MODINI%" if exist "C:\Program Files\Epic Games\BioshockRemastered\Build\Final\BioshockVR.ini" set "MODINI=C:\Program Files\Epic Games\BioshockRemastered\Build\Final\BioshockVR.ini"
 if not exist "%MODINI%" if exist "C:\Program Files (x86)\Epic Games\BioshockRemastered\Build\FinalEpic\BioshockVR.ini" set "MODINI=C:\Program Files (x86)\Epic Games\BioshockRemastered\Build\FinalEpic\BioshockVR.ini"
+if not exist "%MODINI%" if exist "C:\Program Files (x86)\Epic Games\BioshockRemastered\Build\Final\BioshockVR.ini" set "MODINI=C:\Program Files (x86)\Epic Games\BioshockRemastered\Build\Final\BioshockVR.ini"
 if not exist "%MODINI%" if exist "C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final\BioshockVR.ini" set "MODINI=C:\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final\BioshockVR.ini"
 if exist "%MODINI%" goto :gotmodini
 
@@ -71,6 +77,7 @@ echo.
 echo   It usually looks like one of these:
 echo     C:\Program Files ^(x86^)\Steam\steamapps\common\BioShock Remastered\Build\Final
 echo     C:\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic
+echo     C:\Program Files\Epic Games\BioshockRemastered\Build\Final
 echo.
 
 :askmodini
@@ -131,10 +138,17 @@ echo   Wanted:      %RESX% x %RESY%, FOV %FOV%, anisotropy x%ANISO%
 call :log "wanted: %RESX%x%RESY% fov %FOV% aniso %ANISO%"
 
 rem ---- which store is THIS install? ------------------------------------------
-rem  Epic ships Build\FinalEpic, Steam ships Build\Final. Anyone who owns both,
-rem  or who copied BioshockVR.ini between them, ends up with a GameIniPath
-rem  pointing at the wrong store's config.
+rem  Anyone who owns both stores, or who copied BioshockVR.ini between them,
+rem  ends up with a GameIniPath pointing at the wrong store's config.
+rem
+rem  DETECTED FROM "Epic Games", NOT FROM THE FOLDER NAME. Our own files
+rem  disagreed about Epic's folder: Setup said Build\FinalEpic, the ini and the
+rem  README said Build\Final. Whichever is right, an Epic install lives under an
+rem  "Epic Games" parent folder and a Steam one does not -- so ask the question
+rem  that has an answer we can actually check. The old FinalEpic test is kept as
+rem  a second signal, because it costs one line and cannot make things worse.
 set "STORE=STEAM"
+if not "%GAMEDIR:Epic Games=%"=="%GAMEDIR%" set "STORE=EPIC"
 if not "%GAMEDIR:FinalEpic=%"=="%GAMEDIR%" set "STORE=EPIC"
 echo   Store:       %STORE%   (from the folder name)
 call :log "store: %STORE%"
@@ -441,6 +455,25 @@ if "%MODE%"=="STD" if "%HAS32%"=="0" (
     echo            OpenXR will most likely find no headset and run flat.
     call :log "WARNING: native chosen with no usable 32-bit runtime"
 )
+
+rem ---- pause chord, which depends on the runtime -----------------------------
+rem  Hold X+Y to pause. On the SHIM the menu button is not reliably delivered,
+rem  so the chord is how you reach the pause menu at all. On native OpenXR the
+rem  menu button works and the chord only costs you two buttons that can fire it
+rem  by accident -- so it is off there.
+rem
+rem  WRITTEN BOTH WAYS, not just when switching on: someone who runs this again
+rem  and changes runtime must get the matching value, and a one-way write would
+rem  leave the old one in place.
+set "CHORD=0"
+if "%MODE%"=="SHIM" set "CHORD=1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$src='using System;using System.Runtime.InteropServices;namespace W32{public class Ini{[DllImport(\"kernel32\",CharSet=CharSet.Unicode)]public static extern bool WritePrivateProfileString(string a,string b,string c,string d);}}'; Add-Type -TypeDefinition $src -ErrorAction SilentlyContinue; [void][W32.Ini]::WritePrivateProfileString('VR','ControllerPauseChord','%CHORD%','%MODINI%')" 2>nul
+if "%CHORD%"=="1" (
+    echo   Controls:    hold X+Y to pause, enabled for SteamVR.
+) else (
+    echo   Controls:    pause is the menu button; the X+Y chord is off.
+)
+call :log "pause chord: ControllerPauseChord=%CHORD% for MODE=%MODE%"
 
 rem ---- install the loader ----------------------------------------------------
 rem  These are RENAMES, not copies. Exactly two loader files should exist:
@@ -1293,6 +1326,9 @@ rem ===========================================================================
 ::C:for %%V in (
 ::C:    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final"
 ::C:    "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic"
+::C:    "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\Final"
+::C:    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Epic Games\BioshockRemastered\Build\FinalEpic"
+::C:    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Epic Games\BioshockRemastered\Build\Final"
 ::C:) do (
 ::C:    if exist "%%~V\BioshockVR.ini" (
 ::C:        copy /y "%%~V\BioshockVR.ini" "BioshockVR.virtualstore.ini" >nul

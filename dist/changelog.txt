@@ -1,26 +1,55 @@
+Massively improved polish and compatibility, with a few giant additions
+
+Entire codebase refactor and workflow overhaul for much faster changes in the future
+
 Improved Epic support
 Improved SteamVR runtime support
-Improved Controller support and fixes
-Improved logging and error reporting setup
-Improved setup script to let you manually select runtime
-Improved crosshair logic to be more consistent
-Improved scripted scenes - your arms and hands now appear only while the game is
-  actually animating them, instead of hanging frozen in your view
-Improved scripted scenes - they now go where they are meant to, instead of being
-  steered by where you were looking
+Improved Controller support and fixes including for WMR/Reverb controllers
+Improved logging and error reporting setup with auto log maker
+Improved setup script to let you manually select runtime and auto selects default profile based on hardware
+Improved crosshair logic to be more consistent. Guns can actually be used ADS now without a reticle
+Improved scripted scenes so your arms and hands now appear only while the game is actually animating them, instead of hanging frozen in your view
+Improved scripted scenes so they now go where they are meant to, instead of being steered by where you were looking
+Improved scripted scenes so you can rotate freely during cutscenes, but the game will also point you in the right direction for important moments
+Improved scripted scenes with immersive cursor hide
+Improved many, many new customization options in the INI
+Improved performance
+Improved default INI settings for compatibility and comfort
+Decoupled locomotion and aiming completely
+Decoupled weapon and bone system
+Disabled weapon sway for more accurate iron sights
 
 Fixed health and plasmid HUD meters
+Fixed cutscene black bars
 Fixed multiple bugs in the binding INI configs
 Fixed the crosshair showing when you are not holding anything
-Fixed the camera shaking during normal play
+Fixed the screenshake/injected rotation during normal play
+Fixed all(hopefully) UI elements now anchor to the game world
+Fixed quest arrow position and scale
+Fixed rotational slew when entering scripted event
+Fixed inconsistent turn speed
+Fixed pause and radial menus submitting both frames causing jutter in the background
+Fixed desktop mirror to only submit one of the frames instead of two to remove jutter(best experience for recording though is SteamVRs display view)
 
 Added uninstall script
-Added support for WMR/Reverb controllers
-Added manual weapon swing(Very Early and doesn't work great yet)
-Added head based movement option
+Added manual weapon swing(Very early but big improvements are coming soon)
+Added multiple different locomotion modes for a wide range
 Added snap turn option
-Added more binding options for swapping dpad layout
-Added a real tracked free hand - the hand that is not holding your weapon now
-  follows your own controller instead of being hidden, and turns with it
+Added more binding options for swapping dpad layout and modifier keys
+Added a real tracked second hand the hand that is not holding your weapon now follows your own controller instead of being hidden, and turns with it
 Added the same for your free hand while holding a plasmid
 Added live in-headset tuning for hand position and rotation, saved automatically
+Added two hand weapon grip for weapons
+Added haptic feedback in several areas
+Added customizable tuning keys
+
+Known Issues:
+Degraded SteamVR performance after 30 minutes with VirtualDesktop on Meta headsets - Known issue with meta drivers and not something I can fix. If you have this problem, this can fix it for some people: https://github.com/webhead2oo9/VirtualDesktopSwitcher
+
+Quest arrow is slightly coupled with the weapon rotation, but it resets back to the correct position quickly
+
+Arm height is slightly too low and forward in some scripted events(just move forward for them a little bit lol)
+
+Desktop mirror runs at about half the framerate of the headset. This is not an issue with performance and instead the way the game submits frames to the actual game window.
+
+A lot of the work on the polish and mechanics have been in the early game so I cant test every feature on every part of the game, but hopefully my systems that have been built hold up in every area

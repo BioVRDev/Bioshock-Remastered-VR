@@ -245,6 +245,7 @@ void Config_Load(const char* iniPath)
     }
     g_cfg.bone43Rot = CfgIntRange("WeaponHandBone43Rot", 1, 0, 1);
     g_cfg.weaponSwitchSettleMs = CfgIntRange("WeaponSwitchSettleMs", 600, 0, 5000);
+    g_cfg.weaponKeyDebounceMs = CfgIntRange("WeaponKeyDebounceMs", 150, 0, 2000);
     g_cfg.twoHandGrip = CfgIntRange("TwoHandGrip", 0, 0, 1);
     g_cfg.twoHandGrab = CfgIntRange("TwoHandGrabRadius", 12, 1, 200);
     g_cfg.twoHandRelease = CfgIntRange("TwoHandReleaseRadius", 20, 1, 300);
@@ -324,6 +325,31 @@ void Config_Load(const char* iniPath)
         _snprintf_s(key, sizeof(key), _TRUNCATE, "HideInactiveHand%d", s);
         g_cfg.hideHandSlot[s] = CfgIntRange(key, g_cfg.hideInactiveHand, 0, 1);
     }
+    // ---- M6-S4: per-plasmid tables ---------------------------------------
+    // Read AFTER the per-weapon loop above, because every plasmid entry is
+    // seeded from slot 8 -- so a config with none of these keys keeps behaving
+    // exactly as it does today, and one with only PlasmidGrip3 overrides that
+    // plasmid alone.
+    g_cfg.perPlasmidTuning = CfgIntRange("PerPlasmidTuning", 0, 0, 1);
+    g_cfg.abilityClassOff = CfgHex("AbilityClassOffset", g_cfg.abilityClassOff);
+    g_cfg.abilityListOff = CfgHex("AbilityListOffset", g_cfg.abilityListOff);
+    for (int p = 0; p < VrConfig::kPlasmidMax; ++p)
+    {
+        for (int a = 0; a < 3; ++a)
+        {
+            g_cfg.plasmidGrip[p][a] = g_cfg.gripSlot[8][a];
+            g_cfg.plasmidRot[p][a] = g_cfg.rotSlot[8][a];
+            g_cfg.plasmidCursor[p][a] = g_cfg.cursorSlot[8][a];
+        }
+        char pk[32];
+        _snprintf_s(pk, sizeof(pk), _TRUNCATE, "PlasmidGrip%d", p);
+        CfgVec3(pk, g_cfg.plasmidGrip[p]);
+        _snprintf_s(pk, sizeof(pk), _TRUNCATE, "PlasmidRot%d", p);
+        CfgVec3(pk, g_cfg.plasmidRot[p]);
+        _snprintf_s(pk, sizeof(pk), _TRUNCATE, "PlasmidCursor%d", p);
+        CfgVec3(pk, g_cfg.plasmidCursor[p]);
+    }
+
     g_cfg.handsNudgeZ = CfgFloat("HandsNudgeZ", g_cfg.handsNudgeZ, -500.f, 500.f);
     g_cfg.handsNudgeYaw = CfgFloat("HandsNudgeYaw", g_cfg.handsNudgeYaw, -180.f, 180.f);
     g_cfg.handsNudgePitch = CfgFloat("HandsNudgePitch", g_cfg.handsNudgePitch, -180.f, 180.f);
@@ -374,6 +400,12 @@ void Config_Load(const char* iniPath)
     g_cfg.swingTravel = CfgFloat("SwingTravelMetres", 0.15f, 0.0f, 1.0f);
     g_cfg.gripThreshold = CfgFloat("GripThreshold", 0.80f, 0.30f, 0.99f);
     g_cfg.gripHysteresis = CfgFloat("GripHysteresis", 0.15f, 0.00f, 0.50f);
+    // ECHOED HERE, next to the read, because these two were NOT in the echo and
+    // that cost a cycle: the ini said one thing and there was no way to confirm
+    // the mod agreed. The echo is this project's authority on what took.
+    CfgEcho("GripThreshold", "%.2f on, %.2f off  (hysteresis %.2f)",
+        g_cfg.gripThreshold, g_cfg.gripThreshold - g_cfg.gripHysteresis,
+        g_cfg.gripHysteresis);
     g_cfg.headRelativeMove = CfgIntRange("HeadRelativeMove", 1, 0, 1);
 
     // MUST come after AimSource and HeadRelativeMove: those two seed it, so an
@@ -590,6 +622,11 @@ void Config_Load(const char* iniPath)
         (int)g_cfg.hideArmSleeves, g_cfg.armHideHandsVt, g_cfg.armHideSkelVt);
     CfgEcho("HandRigProbe", "%d", (int)g_cfg.handRigProbe);
     CfgEcho("PlasmidProbe", "%d", (int)g_cfg.plasmidProbe);
+    CfgEcho("PerPlasmidTuning", "%d  class +0x%X, list +0x%X  %s",
+        g_cfg.perPlasmidTuning, g_cfg.abilityClassOff, g_cfg.abilityListOff,
+        (g_cfg.perPlasmidTuning && g_cfg.abilityClassOff && g_cfg.abilityListOff)
+        ? "(each plasmid keeps its own grip)"
+        : "(off -- every plasmid shares slot 8)");
     CfgEcho("OffHandTracked", "%d  %s", g_cfg.offHandTracked,
         g_cfg.offHandTracked == 0 ? "(off)" :
         g_cfg.offHandTracked == 1 ? "(position)" :
@@ -650,6 +687,10 @@ void Config_Load(const char* iniPath)
         : "(attach bone rotation left to the engine -- the gun will sway)");
     CfgEcho("WeaponSwitchSettleMs", "%d ms  (equip animation plays, then the pose "
         "is captured)", g_cfg.weaponSwitchSettleMs);
+    CfgEcho("WeaponKeyDebounceMs", "%d ms  %s", g_cfg.weaponKeyDebounceMs,
+        g_cfg.weaponKeyDebounceMs > 0
+        ? "(a blink of 'nothing in hand' mid-animation is not a weapon change)"
+        : "(off -- every read of the held object is believed immediately)");
     CfgEcho("LeftHandAxisMap", "%d,%d,%d   (1 fwd, 2 right, 3 up; signed)",
         g_cfg.leftHandAxis[0], g_cfg.leftHandAxis[1], g_cfg.leftHandAxis[2]);
     CfgEcho("LeftHandOffset", "%.1f fwd, %.1f right, %.1f up (cm)",

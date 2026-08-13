@@ -2396,16 +2396,6 @@ static void TwoHandTick(void* handsActor, const FRotator& want,
     // no "keep vibrating" call. The interval is shorter than the pulse so the
     // next one starts before the last has finished, which is what makes it read
     // as continuous rather than as a stutter.
-    if (g_cfg.hapticGrabZone && g_thEligible)
-    {
-        static DWORD lastBuzz = 0;
-        const DWORD nowB = GetTickCount();
-        if (nowB - lastBuzz >= (DWORD)g_cfg.hapticGrabEveryMs)
-        {
-            lastBuzz = nowB;
-            Input_Pulse(g_freeHand, g_cfg.hapticGrabAmp, g_cfg.hapticGrabMs);
-        }
-    }
     (void)wasEligible;
 
     const bool grip = Input_GripDown(g_freeHand);
@@ -2421,6 +2411,42 @@ static void TwoHandTick(void* handsActor, const FRotator& want,
     {
         if (!g_thGripped && g_thEligible && rising) g_thGripped = true;
         if (g_thGripped && (!grip || dCm > g_cfg.twoHandRelease)) g_thGripped = false;
+    }
+
+    // WHY THE GRAB LET GO, named at the instant it happens. The two candidates
+    // are indistinguishable afterwards -- the 0.5 s probe below samples far too
+    // slowly to catch a release between shotgun shots, and by the time it prints,
+    // the hand has usually moved back inside the radius anyway. MEASURED at
+    // 10.6 cm with a 23 cm release radius, so distance was already ruled out
+    // once; this says so directly instead of by inference.
+    {
+        static bool prevGripped = false;
+        if (prevGripped && !g_thGripped)
+            Log(">>> TWOHAND: let go -- %s  (grip %d, %.1f cm, release %d)",
+                !grip ? "THE BUTTON came up" : "MOVED out of range",
+                (int)grip, dCm, g_cfg.twoHandRelease);
+        prevGripped = g_thGripped;
+    }
+
+    // THE BUZZ MEANS "YOU COULD GRAB HERE", SO IT STOPS ONCE YOU HAVE.
+    // Reported: *"the rumble keeps going even when you are gripped on the weapon.
+    // It should stop when gripping."* Correct -- the buzz is a search aid for a
+    // grab point you cannot see, and once you are holding the weapon there is
+    // nothing left to search for. Continuing to buzz also spends the one signal
+    // that would otherwise tell you the grab had LET GO.
+    //
+    // RESOLVED AFTER THE GRIP, not before it. Sitting above the block it read
+    // last frame's g_thGripped, so the buzz survived a frame into the grab and
+    // fired again the instant a grab was released -- the two moments it must not.
+    if (g_cfg.hapticGrabZone && g_thEligible && !g_thGripped)
+    {
+        static DWORD lastBuzz = 0;
+        const DWORD nowB = GetTickCount();
+        if (nowB - lastBuzz >= (DWORD)g_cfg.hapticGrabEveryMs)
+        {
+            lastBuzz = nowB;
+            Input_Pulse(g_freeHand, g_cfg.hapticGrabAmp, g_cfg.hapticGrabMs);
+        }
     }
 
     // CYCLE 1 IS THIS LINE. Falsifiable and it gates everything above: with the
@@ -2777,6 +2803,24 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
                 if (h == weaponHand && ws >= 0 && ws <= 8 &&
                     !g_cfg.hapticRecoilSlot[ws]) continue;
 
+                // THE OFF HAND KICKS ONLY DURING A SCRIPTED HAND ANIMATION, and
+                // a THRESHOLD CANNOT REPLACE THIS TEST. Measured 2026-08-12: the
+                // engine animates the hidden off hand on a ~3 s idle loop whose
+                // peaks are the same SIZE as a real shot -- the B43 pass already
+                // recorded idle reaching 41 to 135 deg -- so every value of
+                // HapticRecoilMinDeg either buzzes forever or never fires. Raising
+                // it to 25 was tried in a headset and the rumble was unchanged.
+                //
+                // The syringe this was written for IS a scripted hand animation,
+                // so the signal that brackets it is the honest gate.
+                //
+                // It cost more than a stray buzz: the off hand was vibrating at
+                // full amplitude continuously, which DROWNED THE GRAB-ZONE BUZZ --
+                // the one haptic whose whole job is telling you where to grab a
+                // weapon you cannot see. Reported as "hard to tell where the grab
+                // was without the haptic feedback", with the grab itself working.
+                if (h != weaponHand && !GameState_ScriptedAnim()) continue;
+
                 const float imp = ArmHide_HandImpulseDeg(h);
                 if (imp >= (float)g_cfg.hapticRecoilMinDeg &&
                     nowK - lastKick[h] >= (DWORD)g_cfg.hapticRecoilMs)
@@ -3055,6 +3099,43 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
             // EXPERIMENTAL AND DEFAULT OFF. The failure mode is the tracked hand
             // dropping out during ordinary play, so the threshold is deliberately
             // high and the hold short.
+            // ---- HOW HARD IS THE ENGINE PUSHING THIS HAND, REALLY? ----------
+            // READ-ONLY, once a second, and it exists because a THRESHOLD HAS NOW
+            // FAILED THREE TIMES on this same question -- the off-hand haptic at
+            // 6 then 25 deg, and OffHandYield at 25 then 45. Every value either
+            // fires constantly on the idle loop or never fires at all, which is
+            // the signature of two populations that overlap rather than a number
+            // chosen badly.
+            //
+            // So stop choosing numbers and print the distribution instead: the
+            // running peak between lines, against the thresholds in force. Play
+            // normally, then reload and fire deliberately, and the two regimes
+            // either separate in this log or they provably do not. If they do
+            // not, the fix is to SUPPRESS THE IDLE ANIMATION first (IdleAnimMode)
+            // so that anything left moving is a real animation -- which is the
+            // tester's own suggestion and the only route left.
+            {
+                static DWORD lastImp = 0;
+                static float peak[2] = { 0.f, 0.f };
+                const float iL = ArmHide_HandImpulseDeg(HAND_LEFT);
+                const float iR = ArmHide_HandImpulseDeg(HAND_RIGHT);
+                if (iL > peak[0]) peak[0] = iL;
+                if (iR > peak[1]) peak[1] = iR;
+
+                const DWORD nowI = GetTickCount();
+                if (nowI - lastImp >= 1000)
+                {
+                    lastImp = nowI;
+                    Log(">>> IMPULSE: left now %.1f peak %.1f | right now %.1f "
+                        "peak %.1f  (deg/frame; yield >=%d, haptic >=%d, "
+                        "handanim >=%d)",
+                        iL, peak[0], iR, peak[1],
+                        g_cfg.offHandYieldMinDeg, g_cfg.hapticRecoilMinDeg,
+                        g_cfg.handAnimMinDeg);
+                    peak[0] = peak[1] = 0.f;
+                }
+            }
+
             static DWORD s_yieldUntil = 0;
             if (g_cfg.offHandYield)
             {
@@ -3066,9 +3147,27 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 s_yieldUntil && GetTickCount() < s_yieldUntil;
 
             const bool thSlot = g_cfg.twoHandGrip && TwoHandableSlot(wslot);
+            // THE STAND-DOWN ONLY APPLIES UNTIL THE GRAB POINT HAS BEEN TAKEN.
+            // It exists to give the anchor latch frames the engine owns, and once
+            // the point is cached as a rigid offset from the weapon hand it can be
+            // reconstructed without them -- so from the second equip of a weapon
+            // onward the hand is yours from the first frame of the switch.
+            //
+            // That is what removes the two things reported together: the off hand
+            // sitting posed on the weapon for 0.5-1 s after every switch, and the
+            // single frame of arm across the view while the engine's pose shows.
+            //
+            // Which hand is free is derived here rather than read from
+            // g_freeHand, which is not assigned until further down -- reading it
+            // would ask about last frame's hand on the one frame that matters.
+            const int freeHandNow =
+                HandsProbe_AbilityMode() ? HAND_RIGHT : HAND_LEFT;
+            const bool needSettleForAnchor =
+                ArmHide_PoseSettling() && !ArmHide_GrabPointCached(freeHandNow);
+
             g_leftTrackOn = handsFree && g_cfg.offHandTracked > 0 && !yielding &&
                 (hideHand || (thSlot && !CameraHook_TwoHandGripped() &&
-                              !ArmHide_PoseSettling()));
+                              !needSettleForAnchor));
 
             // Visible, and nobody else's: not hidden by the inactive-hand pass
             // and not driven by the tracker. On those slots the game poses this
