@@ -253,12 +253,28 @@ if not defined GIPCHECK (
 )
 
 rem ===========================================================================
-rem  HEADSET -- recorded only, never acted on.
+rem  HEADSET -- recorded, AND now acted on for one setting.
 rem
 rem  We cannot support every headset, but we can know which ones people have
 rem  and which ones keep turning up in bug reports. Kept separate from the
 rem  runtime question so a headset nobody has heard of still records itself
 rem  and still gets a working runtime.
+rem
+rem  THIS USED TO BE PURELY DECORATIVE, and one default made that expensive.
+rem  ControllerDpadModifier=1 means "right thumbrest", which on a TRACKPAD
+rem  headset (Index, Beyond, Varjo, Somnium) resolves to trackpad TOUCH -- and
+rem  the modifier is HELD, not pulsed. A thumb resting where the hardware
+rem  expects it to rest therefore suppresses all movement: the player cannot
+rem  walk, at default settings, with nothing in the log explaining why.
+rem
+rem  The Rift CV1 has the same problem for the opposite reason -- no thumbrest
+rem  sensor at all, so the modifier can never fire and the d-pad is unreachable.
+rem
+rem  Quest 2 and later DO have a thumbrest and keep the default.
+rem
+rem  Writing an ini key is the safest possible place to fix a hardware defect:
+rem  it changes no code, it is visible in the startup echo, and the user can
+rem  override it afterwards.
 rem ===========================================================================
 echo.
 echo   -----------------------------------------
@@ -297,6 +313,34 @@ if "%HMD%"=="16" (
     set "HMDNAME="
     set /p "HMDNAME=  Type the headset name: "
     if not defined HMDNAME set "HMDNAME=unspecified (other)"
+)
+
+rem ---- the one setting the answer decides ----------------------------------
+rem  6 Index, 9 Beyond, 13 Varjo, 15 Somnium -- trackpad controllers, where the
+rem  default modifier lands on the thumb's resting place and stops you walking.
+rem  5 Rift S / CV1 -- the CV1 has no thumbrest sensor, so mode 1 never fires.
+set "DPADFIX="
+if "%HMD%"=="5"  set "DPADFIX=2"
+if "%HMD%"=="6"  set "DPADFIX=2"
+if "%HMD%"=="9"  set "DPADFIX=2"
+if "%HMD%"=="13" set "DPADFIX=2"
+if "%HMD%"=="15" set "DPADFIX=2"
+
+if defined DPADFIX (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$src='using System;using System.Runtime.InteropServices;namespace W32{public class Ini{[DllImport(\"kernel32\",CharSet=CharSet.Unicode)]public static extern bool WritePrivateProfileString(string a,string b,string c,string d);}}'; Add-Type -TypeDefinition $src -ErrorAction SilentlyContinue; [void][W32.Ini]::WritePrivateProfileString('VR','ControllerDpadModifier','%DPADFIX%','%MODINI%')" 2>nul
+    echo.
+    echo   Controls:    set ControllerDpadModifier=%DPADFIX% for your headset.
+    echo                Your controllers put the d-pad modifier somewhere your
+    echo                thumb rests, which would have stopped you walking.
+    call :log "headset fix: ControllerDpadModifier=%DPADFIX% for !HMDNAME!"
+)
+
+if "%HMD%"=="12" (
+    echo.
+    echo   Note:        Reverb / WMR controllers have a DIGITAL grip. If the
+    echo                plasmid wheel does not open, that is the known cause --
+    echo                say so in a bug report and include your logs.
+    call :log "headset note: WMR digital grip caveat shown"
 )
 call :log "--- headset ---"
 call :log "user reported: !HMDNAME!"
@@ -352,13 +396,22 @@ if "%HAS32%"=="1" (
 )
 :askruntime
 echo.
-echo     1  Native OpenXR     Oculus, VDXR, Pimax, WMR
+echo     1  Native OpenXR     Oculus, VDXR, Pimax, WMR      [recommended]
 echo     2  SteamVR           via the OpenVR shim
 echo     3  Unknown           use only if 1 and 2 both fail
 echo     0  Cancel
 echo.
+echo     Press Enter to take the recommended option.
+echo.
 set "PICK="
-set /p "PICK=  Runtime: "
+set /p "PICK=  Runtime [1]: "
+
+rem  NATIVE OPENXR IS THE DEFAULT. It routes to whatever runtime the system has
+rem  active, so it works on Meta, VDXR, WMR, Varjo and Pimax without the shim in
+rem  the way -- and it is the path the mod's own controller bindings apply to.
+rem  The shim remains the answer when no 32-BIT OpenXR runtime is registered,
+rem  which is the case this used to default to for everyone.
+if not defined PICK set "PICK=1"
 
 set "MODE="
 if "%PICK%"=="1" set "MODE=STD"
@@ -476,6 +529,8 @@ if errorlevel 1 (
 if exist "%GAMEDIR%%LDR_SHIM%" goto :loaderverifyfail
 if not exist "%GAMEDIR%%LDR_LIVE%" goto :loaderverifyfail
 if not exist "%GAMEDIR%%LDR_STD%" goto :loaderverifyfail
+set "SETUPFAIL=1"
+set "FAILWHY=loader names did not verify"
 echo.
 echo   Loader:      SteamVR shim activated.
 echo                Start SteamVR BEFORE launching the game.
@@ -555,6 +610,8 @@ call :log "loader: renamed openxr_loader_standard.dll to openxr_loader.dll"
 goto :loaderdone
 
 :loadercorrupt
+set "SETUPFAIL=1"
+set "FAILWHY=loader files are not valid DLLs"
 echo.
 echo   ERROR: one or more OpenXR loader files are tiny or are not valid DLLs.
 echo          The old Setup logger overwrote them with text. Setup will not move
@@ -565,6 +622,8 @@ call :log "ERROR: loader validation failed; clean DLLs must be re-extracted"
 goto :loaderdone
 
 :loadermissing
+set "SETUPFAIL=1"
+set "FAILWHY=the loader pair is incomplete"
 echo.
 echo   ERROR: the loader pair is incomplete. Setup needs both the standard loader
 echo          and the Steam shim so either selection can always be undone.
@@ -573,6 +632,8 @@ call :log "ERROR: loader pair incomplete"
 goto :loaderdone
 
 :loaderambiguous
+set "SETUPFAIL=1"
+set "FAILWHY=the three-loader state is ambiguous"
 echo.
 echo   ERROR: all three loader names exist, but the live DLL matches neither saved
 echo          DLL. Setup cannot safely guess which file is which. Re-extract the
@@ -581,6 +642,8 @@ call :log "ERROR: ambiguous three-loader state"
 goto :loaderdone
 
 :loaderwritefail
+set "SETUPFAIL=1"
+set "FAILWHY=a loader rename failed"
 echo.
 echo   ERROR: a loader rename failed. Close BioShock and SteamVR, then run Setup
 echo          as administrator. Any completed first rename was rolled back.
@@ -607,6 +670,19 @@ for /l %%I in (1,1,%NINI%) do (
     findstr /n "WindowedViewportX= FullscreenViewportX= StartupFullscreen= HorizontalFOV= LevelOfAnisotropy=" "!INI%%I!"
 )
 echo.
+rem ---- DO NOT CLAIM SUCCESS AFTER A FAILURE --------------------------------
+rem  Every loader ERROR branch above used to fall through to "Done. Launch the
+rem  game with your headset on." A user who had just been told the loader pair
+rem  was incomplete scrolled two screens and was told to put the headset on.
+rem  The same was true after the not-writable warning, which fires near the top
+rem  and was never consulted again.
+if defined SETUPFAIL goto :setupfailed
+if "%WRITEOK%"=="0" (
+    set "SETUPFAIL=1"
+    set "FAILWHY=the game folder is not writable"
+    goto :setupfailed
+)
+
 echo   Done. Launch the game with your headset on.
 echo   Above you should see %RESX%, StartupFullscreen=False, and
 echo   LevelOfAnisotropy=%ANISO% on the D3D lines.
@@ -614,6 +690,30 @@ echo.
 echo   Setup was recorded in logs\setup.log
 echo   If anything goes wrong, run logs\CollectLogs.bat and send the zip.
 call :log "--- setup finished ok ---"
+goto :end
+
+:setupfailed
+echo.
+echo  ============================================================
+echo   SETUP DID NOT COMPLETE
+echo  ============================================================
+echo.
+echo   Reason: %FAILWHY%
+echo.
+echo   The game will most likely start WITHOUT VR until this is fixed.
+echo   Scroll up for the ERROR line -- it says exactly what to do.
+echo.
+echo   The two most common fixes:
+echo     * Close BioShock and SteamVR, right-click Setup.bat and pick
+echo       "Run as administrator".
+echo     * Re-extract the mod package into the game folder and try again.
+echo.
+echo   Setup was recorded in logs\setup.log -- send that if you are stuck.
+call :log "--- setup FAILED: %FAILWHY% ---"
+echo.
+pause
+endlocal
+exit /b 1
 
 :end
 echo.
@@ -1041,7 +1141,7 @@ rem ===========================================================================
 ::C:setlocal
 ::C:title BioshockVR - Collect Logs
 ::C:
-::C:set "BUILD=2026-07-31-c"
+::C:set "BUILD=2026-08-12-a"
 ::C:
 ::C:REM ============================================================================
 ::C:REM  CollectLogs.bat        LIVES IN THE logs\ FOLDER
@@ -1064,7 +1164,15 @@ rem ===========================================================================
 ::C:if "%DT%"=="" set "STAMP=report"
 ::C:
 ::C:set "ISSUE=ISSUE.txt"
+::C:REM DESKTOP IS NOT ALWAYS %USERPROFILE%\Desktop. Under OneDrive Known Folder
+::C:REM Move -- on by default for a large share of consumer Windows 11 -- it lives at
+::C:REM %USERPROFILE%\OneDrive\Desktop, and Compress-Archive then fails with "could
+::C:REM not find a part of the path", which reads to the user as the tool being
+::C:REM broken. Prefer the redirected one, and fall back to this folder if neither
+::C:REM exists so the bundle is always produced somewhere.
 ::C:set "ZIP=%USERPROFILE%\Desktop\BioshockVR-logs-%STAMP%.zip"
+::C:if exist "%USERPROFILE%\OneDrive\Desktop\" set "ZIP=%USERPROFILE%\OneDrive\Desktop\BioshockVR-logs-%STAMP%.zip"
+::C:if not exist "%USERPROFILE%\Desktop\" if not exist "%USERPROFILE%\OneDrive\Desktop\" set "ZIP=%~dp0BioshockVR-logs-%STAMP%.zip"
 ::C:
 ::C:cls
 ::C:echo.
@@ -1120,7 +1228,8 @@ rem ===========================================================================
 ::C:echo     5  Flat 2D image, no VR
 ::C:echo     6  Warped or stretched image / distortion
 ::C:echo     7  A feature does not work correctly
-::C:echo     8  Other
+::C:echo     8  Bad performance - low framerate or stutter
+::C:echo     9  Other
 ::C:echo.
 ::C:set "WHAT="
 ::C:set /p "WHAT=  Number: "
@@ -1133,7 +1242,9 @@ rem ===========================================================================
 ::C:if "%WHAT%"=="5" set "WHATTXT=Flat 2D image, no VR"
 ::C:if "%WHAT%"=="6" set "WHATTXT=Warped or stretched image / distortion"
 ::C:if "%WHAT%"=="7" set "WHATTXT=A feature does not work correctly"
-::C:if "%WHAT%"=="8" (
+::C:if "%WHAT%"=="8" set "WHATTXT=Performance - low framerate or stutter"
+::C:if "%WHAT%"=="8" set "PERF=1"
+::C:if "%WHAT%"=="9" (
 ::C:    set "WHATTXT="
 ::C:    set /p "WHATTXT=  Describe the problem: "
 ::C:    if not defined WHATTXT set "WHATTXT=Other (not described)"
@@ -1151,10 +1262,82 @@ rem ===========================================================================
 ::C:>>"%ISSUE%" echo ------------------------------------------------------------
 ::C:>>"%ISSUE%" echo  FILES IN THIS ZIP
 ::C:>>"%ISSUE%" echo ------------------------------------------------------------
-::C:for %%F in (*.log *.ini *.txt *.copy) do >>"%ISSUE%" echo   %%F   (%%~zF bytes, %%~tF)
+::C:REM The list is written FURTHER DOWN, after every copy above has happened. It
+::C:REM used to be built here, before them, so it never mentioned the files it was
+::C:REM supposed to describe. A manifest exists to be trusted.
 ::C:
 ::C:REM The mod config goes in too -- almost every report needs it.
 ::C:if exist "..\BioshockVR.ini" copy /y "..\BioshockVR.ini" "BioshockVR.ini.copy" >nul
+::C:
+::C:REM ============================================================================
+::C:REM  GATHER FROM EVERY PLACE A LOG CAN ACTUALLY LAND
+::C:REM
+::C:REM  This used to zip its own folder and nothing else, which fails in exactly the
+::C:REM  case it exists for. Three redirections can move the evidence somewhere this
+::C:REM  folder is not:
+::C:REM
+::C:REM    1. The mod relocates its log to LocalAppData when the game folder is not
+::C:REM       writable -- the normal case for a Program Files install without admin.
+::C:REM    2. VirtualStore silently redirects a 32-bit game's writes to Program Files
+::C:REM       into a per-user shadow copy. The write SUCCEEDS and the file appears
+::C:REM       nowhere the user looks. That is why tuned settings "don't save".
+::C:REM    3. The game's own Bioshock.ini lives under the user profile, and it is the
+::C:REM       file Setup modified -- the direct cause of the two commonest reports.
+::C:REM ============================================================================
+::C:
+::C:if exist "%LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log" (
+::C:    copy /y "%LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log" "BioshockVR.localappdata.log" >nul
+::C:    echo   [i] Also collected the LocalAppData copy of the mod log.
+::C:)
+::C:
+::C:for %%V in (
+::C:    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final"
+::C:    "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic"
+::C:) do (
+::C:    if exist "%%~V\BioshockVR.ini" (
+::C:        copy /y "%%~V\BioshockVR.ini" "BioshockVR.virtualstore.ini" >nul
+::C:        echo   [!] VirtualStore copy found - your settings are being redirected.
+::C:    )
+::C:    if exist "%%~V\logs\BioshockVR.log" copy /y "%%~V\logs\BioshockVR.log" "BioshockVR.virtualstore.log" >nul
+::C:)
+::C:
+::C:for %%G in (
+::C:    "%APPDATA%\My Games\BioshockHD\Bioshock\Bioshock.ini"
+::C:    "%APPDATA%\BioshockHD\Bioshock\Bioshock.ini"
+::C:    "%APPDATA%\My Games\Bioshock Epic HD\Bioshock\Bioshock.ini"
+::C:    "%APPDATA%\Bioshock Epic HD\Bioshock\Bioshock.ini"
+::C:) do (
+::C:    if exist "%%~G" copy /y "%%~G" "Bioshock.game.ini.copy" >nul
+::C:)
+::C:
+::C:REM ============================================================================
+::C:REM  PERFORMANCE SUMMARY -- only when the user picked the performance option.
+::C:REM
+::C:REM  Every number here is ALREADY in the log. The point is to lift it to the top
+::C:REM  so a framerate complaint arrives with its own evidence instead of a
+::C:REM  paragraph of prose, and it cannot disagree with the log it came from.
+::C:REM ============================================================================
+::C:if defined PERF (
+::C:    > "PERFORMANCE.txt" echo ============================================================
+::C:    >>"PERFORMANCE.txt" echo  BioshockVR performance summary
+::C:    >>"PERFORMANCE.txt" echo ============================================================
+::C:    >>"PERFORMANCE.txt" echo.
+::C:    >>"PERFORMANCE.txt" echo ---- what the mod was asked to render ----
+::C:    if exist "BioshockVR.log" findstr /c:"ResolutionX" /c:"ResolutionY" /c:"GameFovDegrees" /c:"ForegroundFovValue" /c:"MirrorPresentEvery" "BioshockVR.log" >>"PERFORMANCE.txt"
+::C:    >>"PERFORMANCE.txt" echo.
+::C:    >>"PERFORMANCE.txt" echo ---- frame timing ----
+::C:    if exist "BioshockVR.log" findstr /c:"PER PRESENT" /c:"PER SUBMIT" /c:"frames:" /c:"EYEQ" "BioshockVR.log" >>"PERFORMANCE.txt"
+::C:    >>"PERFORMANCE.txt" echo.
+::C:    >>"PERFORMANCE.txt" echo ---- runtime and GPU ----
+::C:    if exist "BioshockVR.log" findstr /c:"XR: runtime" /c:"adapter LUID" "BioshockVR.log" >>"PERFORMANCE.txt"
+::C:    >>"PERFORMANCE.txt" echo.
+::C:    >>"PERFORMANCE.txt" echo ---- machine ----
+::C:    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor; $v=Get-CimInstance Win32_VideoController; 'OS  : '+$o.Caption; 'CPU : '+($c.Name -join ', '); 'RAM : '+[math]::Round($o.TotalVisibleMemorySize/1MB,1)+' GB'; foreach($g in $v){'GPU : '+$g.Name+'  driver '+$g.DriverVersion} } catch { 'machine details unavailable' }" >>"PERFORMANCE.txt" 2>nul
+::C:    echo   [i] Performance summary written.
+::C:)
+::C:
+::C:REM Now that everything has been gathered, describe what is actually here.
+::C:for %%F in (*.log *.ini *.txt *.copy) do >>"%ISSUE%" echo   %%F   (%%~zF bytes, %%~tF)
 ::C:
 ::C:echo.
 ::C:echo   Zipping...

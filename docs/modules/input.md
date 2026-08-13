@@ -137,6 +137,33 @@ the grip never opens the wheel at all, in or out of the zone. A near-miss should
 do nothing rather than throw a menu at you, and removing that cost is what allows
 a generous grab radius. One-handed weapons keep the proximity-gated behaviour.
 
+## Five interaction profiles, and which path they apply to
+
+`Input_XrCreate` suggests bindings for **Touch, Index, Vive, WMR and
+simple_controller**, each in its own `xrSuggestInteractionProfileBindings` call.
+Separate calls on purpose: one call carrying every profile fails as a unit, so a
+single unsupported path on one device would silently cost the bindings for all of
+them. The per-profile log line names which families this build offered.
+
+**These tables apply only on the standard OpenXR loader.** The shim discards
+suggested bindings and binds by action name from its own manifests. Both need
+editing when a control changes.
+
+Two device facts are load-bearing rather than stylistic:
+
+- **Vive wands and WMR have no analog squeeze.** Grip binds from `squeeze/click`;
+  a boolean into a float action reads 1.0 and clears `GripThreshold`, where the
+  analog path reads a permanent zero and costs the plasmid radial, the weapon
+  wheel and the two-handed grip.
+- **Vive and WMR have a menu button on each controller**, unlike Touch. Both are
+  bound — a free button matters most on the hardware with the fewest.
+
+`rest_l`/`rest_r` are deliberately **unbound on WMR**: the shim reaches them
+through trackpad touch, which puts the d-pad modifier on the same pad as the face
+buttons, so pressing A or B would also stop you walking. Unbound makes modes 1
+and 4 inert rather than harmful, and `Setup.bat` writes mode 2 for the headsets
+that need it.
+
 ## Every `xr*` call must be exported by the shim
 
 `BioshockVR.dll` statically imports `openxr_loader.dll`, which on the SteamVR path

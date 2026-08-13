@@ -141,8 +141,30 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     }
     else
     {
-        Say(L"BioshockVR.dll NOT found beside dxgi.dll");
-        Breadcrumb(selfDir, L"FAIL: BioshockVR.dll not found beside dxgi.dll");
+        // ---- SAY WHY, BECAUSE "NOT FOUND" IS USUALLY A LIE --------------
+        // This branch fires on ANY LoadLibrary failure, and a genuinely missing
+        // file is the LEAST likely of them -- the message sent people hunting
+        // for a DLL sitting right there in the folder.
+        //
+        // The realistic causes are all distinguishable for free, and one of them
+        // is our own bug rather than the user's: BioshockVR.dll statically
+        // imports openxr_loader.dll, so calling any xr* function the active
+        // loader does not export makes Windows refuse to load the mod. That has
+        // happened twice in this project.
+        const DWORD e = GetLastError();
+        const wchar_t* why =
+            (e == ERROR_MOD_NOT_FOUND)   ? L"FAIL: BioshockVR.dll could not load -- a DEPENDENCY is missing (126). Usually openxr_loader.dll or openvr_api.dll is absent from this folder."
+          : (e == ERROR_PROC_NOT_FOUND)  ? L"FAIL: BioshockVR.dll could not load -- a required EXPORT is missing (127). The mod and openxr_loader.dll are mismatched versions; reinstall the package as a set."
+          : (e == ERROR_BAD_EXE_FORMAT)  ? L"FAIL: BioshockVR.dll could not load -- WRONG BITNESS (193). This is a 64-bit DLL in a 32-bit game; get the x86 package."
+          : (e == ERROR_FILE_NOT_FOUND)  ? L"FAIL: BioshockVR.dll is genuinely missing from this folder (2)."
+          : (e == ERROR_ACCESS_DENIED)   ? L"FAIL: BioshockVR.dll could not load -- ACCESS DENIED (5). Antivirus may have quarantined it."
+                                         : L"FAIL: BioshockVR.dll could not load. See the error code on the next line.";
+        Say(L"BioshockVR.dll failed to load");
+        Breadcrumb(selfDir, why);
+
+        wchar_t code[128] = {};
+        _snwprintf_s(code, _TRUNCATE, L"FAIL: LoadLibraryW GetLastError = %lu", e);
+        Breadcrumb(selfDir, code);
     }
     return TRUE;
 }

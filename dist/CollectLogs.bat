@@ -5,7 +5,7 @@ rem  printed as "[] Zipping failed." and told you nothing.
 setlocal
 title BioshockVR - Collect Logs
 
-set "BUILD=2026-07-31-c"
+set "BUILD=2026-08-12-a"
 
 REM ============================================================================
 REM  CollectLogs.bat        LIVES IN THE logs\ FOLDER
@@ -28,7 +28,15 @@ set "STAMP=%DT:~0,4%-%DT:~4,2%%DT:~6,2%-%DT:~8,2%%DT:~10,2%"
 if "%DT%"=="" set "STAMP=report"
 
 set "ISSUE=ISSUE.txt"
+REM DESKTOP IS NOT ALWAYS %USERPROFILE%\Desktop. Under OneDrive Known Folder
+REM Move -- on by default for a large share of consumer Windows 11 -- it lives at
+REM %USERPROFILE%\OneDrive\Desktop, and Compress-Archive then fails with "could
+REM not find a part of the path", which reads to the user as the tool being
+REM broken. Prefer the redirected one, and fall back to this folder if neither
+REM exists so the bundle is always produced somewhere.
 set "ZIP=%USERPROFILE%\Desktop\BioshockVR-logs-%STAMP%.zip"
+if exist "%USERPROFILE%\OneDrive\Desktop\" set "ZIP=%USERPROFILE%\OneDrive\Desktop\BioshockVR-logs-%STAMP%.zip"
+if not exist "%USERPROFILE%\Desktop\" if not exist "%USERPROFILE%\OneDrive\Desktop\" set "ZIP=%~dp0BioshockVR-logs-%STAMP%.zip"
 
 cls
 echo.
@@ -84,7 +92,8 @@ echo     4  Black screen
 echo     5  Flat 2D image, no VR
 echo     6  Warped or stretched image / distortion
 echo     7  A feature does not work correctly
-echo     8  Other
+echo     8  Bad performance - low framerate or stutter
+echo     9  Other
 echo.
 set "WHAT="
 set /p "WHAT=  Number: "
@@ -97,7 +106,9 @@ if "%WHAT%"=="4" set "WHATTXT=Black screen"
 if "%WHAT%"=="5" set "WHATTXT=Flat 2D image, no VR"
 if "%WHAT%"=="6" set "WHATTXT=Warped or stretched image / distortion"
 if "%WHAT%"=="7" set "WHATTXT=A feature does not work correctly"
-if "%WHAT%"=="8" (
+if "%WHAT%"=="8" set "WHATTXT=Performance - low framerate or stutter"
+if "%WHAT%"=="8" set "PERF=1"
+if "%WHAT%"=="9" (
     set "WHATTXT="
     set /p "WHATTXT=  Describe the problem: "
     if not defined WHATTXT set "WHATTXT=Other (not described)"
@@ -115,10 +126,82 @@ REM ================================================================ write it
 >>"%ISSUE%" echo ------------------------------------------------------------
 >>"%ISSUE%" echo  FILES IN THIS ZIP
 >>"%ISSUE%" echo ------------------------------------------------------------
-for %%F in (*.log *.ini *.txt *.copy) do >>"%ISSUE%" echo   %%F   (%%~zF bytes, %%~tF)
+REM The list is written FURTHER DOWN, after every copy above has happened. It
+REM used to be built here, before them, so it never mentioned the files it was
+REM supposed to describe. A manifest exists to be trusted.
 
 REM The mod config goes in too -- almost every report needs it.
 if exist "..\BioshockVR.ini" copy /y "..\BioshockVR.ini" "BioshockVR.ini.copy" >nul
+
+REM ============================================================================
+REM  GATHER FROM EVERY PLACE A LOG CAN ACTUALLY LAND
+REM
+REM  This used to zip its own folder and nothing else, which fails in exactly the
+REM  case it exists for. Three redirections can move the evidence somewhere this
+REM  folder is not:
+REM
+REM    1. The mod relocates its log to LocalAppData when the game folder is not
+REM       writable -- the normal case for a Program Files install without admin.
+REM    2. VirtualStore silently redirects a 32-bit game's writes to Program Files
+REM       into a per-user shadow copy. The write SUCCEEDS and the file appears
+REM       nowhere the user looks. That is why tuned settings "don't save".
+REM    3. The game's own Bioshock.ini lives under the user profile, and it is the
+REM       file Setup modified -- the direct cause of the two commonest reports.
+REM ============================================================================
+
+if exist "%LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log" (
+    copy /y "%LOCALAPPDATA%\BioshockVR\logs\BioshockVR.log" "BioshockVR.localappdata.log" >nul
+    echo   [i] Also collected the LocalAppData copy of the mod log.
+)
+
+for %%V in (
+    "%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Steam\steamapps\common\BioShock Remastered\Build\Final"
+    "%LOCALAPPDATA%\VirtualStore\Program Files\Epic Games\BioshockRemastered\Build\FinalEpic"
+) do (
+    if exist "%%~V\BioshockVR.ini" (
+        copy /y "%%~V\BioshockVR.ini" "BioshockVR.virtualstore.ini" >nul
+        echo   [!] VirtualStore copy found - your settings are being redirected.
+    )
+    if exist "%%~V\logs\BioshockVR.log" copy /y "%%~V\logs\BioshockVR.log" "BioshockVR.virtualstore.log" >nul
+)
+
+for %%G in (
+    "%APPDATA%\My Games\BioshockHD\Bioshock\Bioshock.ini"
+    "%APPDATA%\BioshockHD\Bioshock\Bioshock.ini"
+    "%APPDATA%\My Games\Bioshock Epic HD\Bioshock\Bioshock.ini"
+    "%APPDATA%\Bioshock Epic HD\Bioshock\Bioshock.ini"
+) do (
+    if exist "%%~G" copy /y "%%~G" "Bioshock.game.ini.copy" >nul
+)
+
+REM ============================================================================
+REM  PERFORMANCE SUMMARY -- only when the user picked the performance option.
+REM
+REM  Every number here is ALREADY in the log. The point is to lift it to the top
+REM  so a framerate complaint arrives with its own evidence instead of a
+REM  paragraph of prose, and it cannot disagree with the log it came from.
+REM ============================================================================
+if defined PERF (
+    > "PERFORMANCE.txt" echo ============================================================
+    >>"PERFORMANCE.txt" echo  BioshockVR performance summary
+    >>"PERFORMANCE.txt" echo ============================================================
+    >>"PERFORMANCE.txt" echo.
+    >>"PERFORMANCE.txt" echo ---- what the mod was asked to render ----
+    if exist "BioshockVR.log" findstr /c:"ResolutionX" /c:"ResolutionY" /c:"GameFovDegrees" /c:"ForegroundFovValue" /c:"MirrorPresentEvery" "BioshockVR.log" >>"PERFORMANCE.txt"
+    >>"PERFORMANCE.txt" echo.
+    >>"PERFORMANCE.txt" echo ---- frame timing ----
+    if exist "BioshockVR.log" findstr /c:"PER PRESENT" /c:"PER SUBMIT" /c:"frames:" /c:"EYEQ" "BioshockVR.log" >>"PERFORMANCE.txt"
+    >>"PERFORMANCE.txt" echo.
+    >>"PERFORMANCE.txt" echo ---- runtime and GPU ----
+    if exist "BioshockVR.log" findstr /c:"XR: runtime" /c:"adapter LUID" "BioshockVR.log" >>"PERFORMANCE.txt"
+    >>"PERFORMANCE.txt" echo.
+    >>"PERFORMANCE.txt" echo ---- machine ----
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor; $v=Get-CimInstance Win32_VideoController; 'OS  : '+$o.Caption; 'CPU : '+($c.Name -join ', '); 'RAM : '+[math]::Round($o.TotalVisibleMemorySize/1MB,1)+' GB'; foreach($g in $v){'GPU : '+$g.Name+'  driver '+$g.DriverVersion} } catch { 'machine details unavailable' }" >>"PERFORMANCE.txt" 2>nul
+    echo   [i] Performance summary written.
+)
+
+REM Now that everything has been gathered, describe what is actually here.
+for %%F in (*.log *.ini *.txt *.copy) do >>"%ISSUE%" echo   %%F   (%%~zF bytes, %%~tF)
 
 echo.
 echo   Zipping...

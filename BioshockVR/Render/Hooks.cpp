@@ -289,6 +289,44 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         DescribeOnce(sc);
         g_lastTick = GetTickCount();
     }
+    else if (XR_IsInit())
+    {
+        // ---- DID THE BACKBUFFER CHANGE SIZE UNDER US? -------------------
+        // The eye swapchains are sized ONCE, from the first frame. If the game's
+        // backbuffer is later recreated at a different size -- the player changes
+        // resolution in the game's own options, or a fullscreen toggle -- the
+        // per-eye CopyResource is then copying between mismatched textures.
+        //
+        // CopyResource RETURNS NOTHING. A dimension mismatch is dropped with a
+        // debug-layer message and nothing else, so the headset holds its last
+        // good frame or goes black while `frames`, `submitted`, `EYEQ` and the
+        // session state all keep reading perfectly normal. That is the second of
+        // the two failures in this mod that lie green, and it is reachable by a
+        // user simply trying a lower resolution to fix their framerate -- which
+        // the shipped ini actively tells them to do.
+        //
+        // Detect and say so. Re-creating the swapchains mid-session is the fuller
+        // fix and is a bigger change than this session should make untested; a
+        // named line beats a black screen and no explanation.
+        static DWORD lastSizeLog = 0;
+        DXGI_SWAP_CHAIN_DESC d = {};
+        if (SUCCEEDED(sc->GetDesc(&d)) && d.BufferDesc.Width && d.BufferDesc.Height &&
+            (d.BufferDesc.Width != g_bbW || d.BufferDesc.Height != g_bbH))
+        {
+            const DWORD nowS = GetTickCount();
+            if (nowS - lastSizeLog >= 5000)
+            {
+                lastSizeLog = nowS;
+                Log("!!! RESOLUTION CHANGED under the VR swapchains: %ux%u -> %ux%u",
+                    g_bbW, g_bbH, d.BufferDesc.Width, d.BufferDesc.Height);
+                Log("!!! The headset image is sized for the OLD value and the copy");
+                Log("!!! is being dropped, so the view will be black or frozen while");
+                Log("!!! everything else in this log still looks healthy.");
+                Log("!!! RESTART THE GAME. To change resolution permanently, set");
+                Log("!!! ResolutionX / ResolutionY in BioshockVR.ini instead.");
+            }
+        }
+    }
 
     ++g_frames;
 
@@ -302,15 +340,53 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
         g_msGame += (double)(nowIn.QuadPart - g_lastPresentReturn.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
     }
 
-    if (!g_xrTried && g_dev && g_ctx && g_bbW && g_bbH)
+    // ---- XR INIT IS NO LONGER ONE-SHOT, AND THAT WAS THE BIGGEST HOLE ----
+    // g_xrTried was set BEFORE the attempt and g_xrDead latched on failure, so a
+    // single early failure killed VR for the entire session with no retry.
+    //
+    // THAT COLLIDES WITH A FACT THIS FILE ALREADY RECORDS: the game launches
+    // BEFORE the runtime finishes starting. A cold SteamVR start -- driver load,
+    // room setup, headset wake -- routinely takes longer than the game takes to
+    // reach its first Present. The user then sees the game flat on the monitor,
+    // the headset showing the runtime's void, and no way out but a relaunch.
+    //
+    // Retry on a slow cadence for the first minute instead. The cost of a failed
+    // attempt is one function call that returns false; the cost of not retrying
+    // is the single most likely "it didn't work" report we can receive.
+    if (!g_xrDead && !XR_IsInit() && g_dev && g_ctx && g_bbW && g_bbH)
     {
-        g_xrTried = true;
+        static DWORD firstTry = 0;
+        static DWORD lastTry = 0;
+        static int   tries = 0;
+        const DWORD nowT = GetTickCount();
+        if (!firstTry) firstTry = nowT;
 
-        Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
-        if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
+        const bool due = (tries == 0) || (nowT - lastTry >= 3000);
+        const bool windowOpen = (nowT - firstTry) < 60000;
+
+        if (!windowOpen)
         {
             g_xrDead = true;
-            Log("!!! XR_Init FAILED. Running flat. Game is unaffected.");
+            Log("!!! XR_Init gave up after %d attempts over 60 s. Running flat.", tries);
+            Log("!!! Start your VR runtime and put the headset on BEFORE launching,");
+            Log("!!! then relaunch the game. The game itself is unaffected.");
+        }
+        else if (due)
+        {
+            lastTry = nowT;
+            ++tries;
+
+            if (tries == 1)
+                Log(">>> Attempting XR_Init on the game's device (%ux%u)...", g_bbW, g_bbH);
+            else
+                Log(">>> XR_Init retry %d (%.0f s in) -- the runtime may still be "
+                    "starting up.", tries, (nowT - firstTry) / 1000.0);
+
+        if (!XR_Init(g_dev, g_ctx, g_bbW, g_bbH))
+        {
+            // NOT fatal any more -- the window above decides that.
+            if (tries == 1)
+                Log(">>> XR_Init did not take yet. Retrying for up to 60 s.");
         }
         else
         {
@@ -389,6 +465,7 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* sc, UINT SyncInterval, UINT F
             }
 
         }
+        }   // close the retry window's `else if (due)`
 
         // Camera hook on the render thread at the first frame -- NOT at DllMain,
         // where the exe may still be packed.

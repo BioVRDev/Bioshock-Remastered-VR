@@ -72,3 +72,7 @@ coordination/
 # already covers. They carry Windows usernames and machine details and must not
 # be committed. The KNOWLEDGE from them is tracked instead, in
 # docs/LOG-PLAYBOOK.md -- see the /debuglogs skill.
+
+# Third-party redistributables staged for packaging. Documented in
+# dist/runtime/FILES.md; not vendored, because they carry their own licences.
+dist/runtime/*.dll

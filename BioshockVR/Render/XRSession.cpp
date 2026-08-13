@@ -342,8 +342,56 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     XrResult r = xrCreateInstance(&ici, &g_inst);
     if (XR_FAILED(r))
     {
-        Log(">>> XR: xrCreateInstance FAILED (%d) - is Virtual Desktop Streamer running", (int)r);
-        Log(">>> XR: and the Quest connected BEFORE the game launched?");
+        // NAME THE CAUSE, NOT ONE PRODUCT. This is the catch-all for every
+        // runtime-acquisition failure, and it used to hardcode Virtual Desktop
+        // and the Quest -- so an Index user whose SteamVR was not running got
+        // told to check a streaming app they do not own. Worse than no hint.
+        //
+        // The distinct causes are not distinguishable from the mod's log alone,
+        // and the mod's log is the one people send. So say which loader is in
+        // front and whether the shim left a log of its own; the shim's own
+        // failure lines are good, they were simply unreachable from here.
+        const char* rn = "unknown";
+        switch ((int)r)
+        {
+        // XR_ERROR_RUNTIME_UNAVAILABLE is deliberately absent: it postdates the
+        // OpenXR 1.0.10 headers this project pins, and naming it here would tie
+        // the build to a newer SDK for one string.
+        case XR_ERROR_INSTANCE_LOST:         rn = "XR_ERROR_INSTANCE_LOST"; break;
+        case XR_ERROR_RUNTIME_FAILURE:       rn = "XR_ERROR_RUNTIME_FAILURE"; break;
+        case XR_ERROR_INITIALIZATION_FAILED: rn = "XR_ERROR_INITIALIZATION_FAILED"; break;
+        case XR_ERROR_API_VERSION_UNSUPPORTED: rn = "XR_ERROR_API_VERSION_UNSUPPORTED"; break;
+        case XR_ERROR_EXTENSION_NOT_PRESENT: rn = "XR_ERROR_EXTENSION_NOT_PRESENT"; break;
+        default: break;
+        }
+
+        char shimLog[MAX_PATH] = {};
+        {
+            char dir[MAX_PATH] = {};
+            GetModuleFileNameA(nullptr, dir, MAX_PATH);
+            char* sl = strrchr(dir, '\\');
+            if (sl) *(sl + 1) = 0;
+            _snprintf_s(shimLog, sizeof(shimLog), _TRUNCATE,
+                "%slogs\\openxr_shim.log", dir);
+        }
+        const bool haveShimLog =
+            (GetFileAttributesA(shimLog) != INVALID_FILE_ATTRIBUTES);
+
+        Log(">>> XR: xrCreateInstance FAILED -- %s (%d)", rn, (int)r);
+        if (haveShimLog)
+        {
+            Log(">>> XR: the SteamVR shim is in front (logs\\openxr_shim.log exists).");
+            Log(">>> XR: READ THAT FILE -- it names the real cause: SteamVR not");
+            Log(">>> XR: running, openvr_api.dll missing, or an interface mismatch.");
+        }
+        else
+        {
+            Log(">>> XR: the STANDARD OpenXR loader is in front (no shim log).");
+            Log(">>> XR: Check that your runtime is running and the headset is");
+            Log(">>> XR: awake BEFORE the game starts, and that a 32-bit OpenXR");
+            Log(">>> XR: runtime is registered -- a 64-bit-only one cannot serve");
+            Log(">>> XR: this game. Setup.bat can switch you to the SteamVR shim.");
+        }
         return false;
     }
 
@@ -363,6 +411,50 @@ bool XR_Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, unsigned w, unsigned h
     XRCHK(pfnGetReq(g_inst, g_sysId, &req), "xrGetD3D11GraphicsRequirements");
     Log(">>> XR: runtime wants adapter LUID %08X:%08X",
         (unsigned)req.adapterLuid.HighPart, (unsigned)req.adapterLuid.LowPart);
+
+    // ---- AND COMPARE IT, WHICH NOBODY WAS DOING -------------------------
+    // This value was logged and then ignored: the session is created against
+    // the GAME's device, on whatever adapter the game happened to pick.
+    //
+    // ON A HYBRID LAPTOP THAT IS A BLACK HEADSET WITH A PERFECT LOG. The game
+    // can land on the iGPU while the headset is wired to the dGPU; instance,
+    // session and swapchains all succeed, `frames`/`submitted` climb, EYEQ reads
+    // 1/1, and the only symptom is one rate-limited compositor error in a
+    // DIFFERENT file. It is the most expensive shape a bug can have here.
+    //
+    // Logged loudly rather than refused: the mod cannot move the game to another
+    // adapter, and a refusal would take VR away from anyone whose runtime
+    // reports a LUID we merely fail to match. One line turns a mystery into a
+    // diagnosis, which is the whole job.
+    {
+        IDXGIDevice* dxgiDev = nullptr;
+        IDXGIAdapter* adap = nullptr;
+        if (SUCCEEDED(dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev)) &&
+            dxgiDev && SUCCEEDED(dxgiDev->GetAdapter(&adap)) && adap)
+        {
+            DXGI_ADAPTER_DESC ad = {};
+            if (SUCCEEDED(adap->GetDesc(&ad)))
+            {
+                const bool same =
+                    (ad.AdapterLuid.HighPart == req.adapterLuid.HighPart) &&
+                    (ad.AdapterLuid.LowPart == req.adapterLuid.LowPart);
+                Log(">>> XR: game is on adapter LUID %08X:%08X  (%ls)",
+                    (unsigned)ad.AdapterLuid.HighPart,
+                    (unsigned)ad.AdapterLuid.LowPart, ad.Description);
+                if (!same)
+                {
+                    Log("!!! XR: ADAPTER MISMATCH. The game is rendering on a");
+                    Log("!!! XR: different GPU from the one your headset is on.");
+                    Log("!!! XR: Expect a black or frozen headset while every other");
+                    Log("!!! XR: line in this log looks healthy. Force BioshockHD.exe");
+                    Log("!!! XR: onto the headset's GPU in Windows Graphics Settings");
+                    Log("!!! XR: (or your GPU control panel) and relaunch.");
+                }
+            }
+        }
+        if (adap) adap->Release();
+        if (dxgiDev) dxgiDev->Release();
+    }
 
     uint32_t viewCount = 0;
     XRCHK(xrEnumerateViewConfigurationViews(g_inst, g_sysId,

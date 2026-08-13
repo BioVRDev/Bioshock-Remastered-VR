@@ -181,6 +181,31 @@ handoff disagree, this file wins.
     were writing; there is no matching entry for arms shown for one frame, so
     that is the direction to guess in.
 
+- **An unbound input action is not an error anywhere in the stack, so a dead
+  controller produces a perfectly healthy log.** The runtime returns
+  `XR_SUCCESS` with `isActive == false`; `GetFloat`, `GetBool` and `GetVec2` each
+  collapse that to zero; the pad publishes neutral. `INPUT: action set ATTACHED`,
+  `OpenXR side READY` and `POLL: … synth high realpad 0` all print normally —
+  which is the exact signature `CLAUDE.md` § *Test loop* calls healthy.
+
+  **So the health lines cannot be used to conclude that input works.** The mod
+  now logs the bound interaction profile and a per-action `isActive` census once
+  after the first sync; that census is the only thing in the log that can
+  distinguish "not pressed" from "not bound".
+
+  The same collapse applies to any three-way failure squeezed into a boolean —
+  API error, inactive, and simply-not-pressed are indistinguishable by
+  construction. **When a getter can fail three ways and returns one `false`, the
+  diagnostic has to live beside the getter, not in the caller.**
+
+- **The mod's suggested bindings and the shim's manifests each apply on exactly
+  one path, and never both.** The shim discards
+  `xrSuggestInteractionProfileBindings` and binds by action name from its own
+  manifests, so `Input/InputHook.cpp`'s tables matter **only on the standard
+  OpenXR loader** and `OpenXRShim/src/shim_input.cpp`'s manifests matter **only
+  on the shim**. A control change needs editing in both. The log line
+  `>>> INPUT: bound profile (…) =` says which one was in force.
+
 - **Calling an `xr*` function the shim does not export stops the game launching,
   and the error message points at the wrong thing.** `BioshockVR.dll` statically
   imports `openxr_loader.dll`, which on the SteamVR path **is** the shim — so an
