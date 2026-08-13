@@ -19,8 +19,18 @@ A package assembled by hand from memory is a package that eventually ships broke
 | **`openvr_api.dll`** | Valve's OpenVR SDK, `bin/win32/` | no | **the SteamVR path fails and Setup used to report success anyway.** The shim loads it by name at runtime |
 | `BioshockVR.ini` | `dist/BioshockVR.ini` | no | the mod runs on built-in defaults, which are not the shipping defaults |
 | `Setup.bat` | `dist/Setup.bat` | no | no installer |
-| `Uninstall.bat` | written by Setup from its own embedded copy | no | no uninstaller |
-| `logs\CollectLogs.bat` | written by Setup from its own embedded copy | no | no support bundles |
+| `Uninstall.bat` | `dist/Uninstall.bat`, **and** Setup's embedded copy | no | no uninstaller |
+| `logs\CollectLogs.bat` | `dist/CollectLogs.bat`, **and** Setup's embedded copy | no | no support bundles |
+| `README.txt` | `dist/README.txt` | no | the package explains itself only online |
+| `changelog.txt` | `dist/changelog.txt` | no | — |
+
+> **The two scripts ship BOTH ways, and that is a duplication with a rule.**
+> They are in the package so a user who never reaches Setup still has them, and
+> Setup carries its own copy so a package missing either one still ends up
+> complete. The rule: **after editing `dist/Uninstall.bat` or
+> `dist/CollectLogs.bat`, regenerate Setup's `::U:`/`::C:` payload and prove it
+> byte-identical** — extract with `sed -n 's/^::U://p'` and diff. Two sources of
+> truth that are allowed to drift is exactly the bug this file was written for.
 
 ## There are two loaders, not three
 
@@ -83,6 +93,15 @@ return is harmless, a missing static import is fatal. `Input_Pulse`
 2. Rename the shim's output to `openxr_loader_steam.dll`.
 3. Take `openxr_loader_standard.dll` and `openvr_api.dll` from this folder.
 4. Run the import contract check above.
-5. Package with `BioshockVR.ini`, `Setup.bat` and `changelog.txt`.
-   `Uninstall.bat` and `CollectLogs.bat` are written by Setup and are **not**
-   packaged separately.
+5. **`dumpbin /dependents dxgi.dll` must list `KERNEL32.dll` and nothing else.**
+   All three projects are `/MT`; if the proxy is ever built `/MD` it imports
+   `VCRUNTIME140.dll` and the UCRT stubs, and a user without the **x86** VC++
+   redistributable gets silence — no VR, no log, no clue, because the component
+   that writes the log is the one that failed to load. Caught in 1.0.3 packaging
+   after `dxgiproxy.vcxproj` was found to have no `<RuntimeLibrary>` element at
+   all. 1.0.2's proxy depended on `KERNEL32.dll` alone; that is the target.
+6. Package with `BioshockVR.ini`, `Setup.bat`, `Uninstall.bat`,
+   `logs\CollectLogs.bat`, `README.txt` and `changelog.txt`, then regenerate and
+   verify Setup's embedded payload per the note above.
+7. **No `openxr_loader.dll` in the zip.** Setup creates it. A package that ships
+   one has, twice now, shipped the wrong file under that name.

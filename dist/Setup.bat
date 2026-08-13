@@ -23,7 +23,7 @@ rem ===========================================================================
 
 setlocal enabledelayedexpansion
 
-set "BUILD=2026-08-01-e"
+set "BUILD=2026-08-13-a"
 set "LDR_LIVE=openxr_loader.dll"
 set "LDR_SHIM=openxr_loader_steam.dll"
 set "LDR_STD=openxr_loader_standard.dll"
@@ -43,12 +43,17 @@ echo   Build: %BUILD%
 echo.
 
 rem ---- machine, for the log only ---------------------------------------------
-rem  No piping into find here either -- a blank line simply has no second
-rem  token, so the loop body is skipped for it. One less child process per line.
+rem  NO wmic. It is a Feature-on-Demand that Microsoft is removing from Windows
+rem  11, and on a machine without it every line here logged BLANK -- which reads
+rem  in a bug report as "the reporter has no GPU" rather than "the tool is gone".
+rem  Get-CimInstance is the supported replacement, is present on every Windows 10
+rem  and 11, and is the same call the performance block in CollectLogs already
+rem  uses. One idiom for machine facts, in both scripts.
+rem
+rem  Driver version is in here because it was not before, and a GPU driver is the
+rem  single most common cause of "black in the headset, perfect in the log".
 call :log "--- machine ---"
-for /f "tokens=2 delims==" %%A in ('wmic os get Caption /value 2^>nul') do call :log "os : %%A"
-for /f "tokens=2 delims==" %%A in ('wmic cpu get Name /value 2^>nul') do call :log "cpu: %%A"
-for /f "tokens=2 delims==" %%A in ('wmic path win32_VideoController get Name /value 2^>nul') do call :log "gpu: %%A"
+for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor; 'os : '+$o.Caption+' build '+$o.BuildNumber; 'cpu: '+($c.Name -join ', '); 'ram: '+[math]::Round($o.TotalVisibleMemorySize/1MB,1)+' GB'; foreach($g in (Get-CimInstance Win32_VideoController)){'gpu: '+$g.Name+'  driver '+$g.DriverVersion} } catch { 'machine details unavailable' }" 2^>nul`) do call :log "%%A"
 
 rem ---- find BioshockVR.ini ---------------------------------------------------
 set "MODINI=%~dp0BioshockVR.ini"
@@ -562,8 +567,12 @@ if errorlevel 1 (
 if exist "%GAMEDIR%%LDR_SHIM%" goto :loaderverifyfail
 if not exist "%GAMEDIR%%LDR_LIVE%" goto :loaderverifyfail
 if not exist "%GAMEDIR%%LDR_STD%" goto :loaderverifyfail
-set "SETUPFAIL=1"
-set "FAILWHY=loader names did not verify"
+rem  THE SETUPFAIL PAIR THAT USED TO SIT HERE BELONGED AT :loaderverifyfail, and
+rem  here it fired on the SUCCESS path -- so every SteamVR install renamed both
+rem  loaders correctly and then printed "SETUP DID NOT COMPLETE". Caught by the
+rem  packaging dry run, which is the only reason it was ever seen: the three
+rem  gotos above are what report a real verification failure, and reaching this
+rem  line means all three passed.
 echo.
 echo   Loader:      SteamVR shim activated.
 echo                Start SteamVR BEFORE launching the game.
@@ -684,6 +693,8 @@ call :log "ERROR: loader rename failed"
 goto :loaderdone
 
 :loaderverifyfail
+set "SETUPFAIL=1"
+set "FAILWHY=loader names did not verify"
 echo.
 echo   ERROR: loader rename commands returned success, but the final names are not
 echo          correct. Close the game and inspect logs\setup.log.
@@ -938,7 +949,7 @@ rem ===========================================================================
 
 ::U:@echo off
 ::U:rem ===========================================================================
-::U:rem  BioShock Remastered VR -- Uninstall            BUILD 2026-08-01-a
+::U:rem  BioShock Remastered VR -- Uninstall            BUILD 2026-08-13-a
 ::U:rem
 ::U:rem  Run this from the BioShock Remastered game folder, beside BioshockHD.exe.
 ::U:rem
@@ -951,7 +962,7 @@ rem ===========================================================================
 ::U:
 ::U:setlocal EnableExtensions DisableDelayedExpansion
 ::U:
-::U:set "BUILD=2026-08-01-a"
+::U:set "BUILD=2026-08-13-a"
 ::U:set "GAMEDIR=%~dp0"
 ::U:set "FAILED=0"
 ::U:set "RESTORED=0"
@@ -984,7 +995,10 @@ rem ===========================================================================
 ::U:echo   What will happen:
 ::U:echo.
 ::U:echo     - every Bioshock.ini.vrbackup found is restored in place
-::U:echo     - all BioShock VR DLLs, loader aliases, settings, scripts and logs go
+::U:echo     - all BioShock VR DLLs, loader aliases, scripts and logs go
+::U:echo     - your tuned BioshockVR.ini is KEPT, renamed to BioshockVR.ini.bak
+::U:echo     - dxgi.dll and winmm.dll are shared with ReShade and Special K, so
+::U:echo       you will be asked before either one is removed
 ::U:echo     - save games and original game files are not touched
 ::U:echo     - this uninstaller deletes itself last if everything succeeds
 ::U:echo.
@@ -1038,18 +1052,32 @@ rem ===========================================================================
 ::U:
 ::U:rem ---- current mod payload ---------------------------------------------------
 ::U:call :kill "BioshockVR.dll"
-::U:call :kill "BioshockVR.ini"
 ::U:call :kill "openvr_api.dll"
-::U:call :kill "dxgi.dll"
+::U:
+::U:rem ---- YOUR SETTINGS ARE KEPT ------------------------------------------------
+::U:rem  BioshockVR.ini is the one file here that is YOURS. Per-weapon grip, rotation
+::U:rem  and crosshair values are tuned by hand in the headset over hours and are
+::U:rem  written back into it as you go -- deleting it throws that away, and a
+::U:rem  reinstall would have restored it for free. Renamed, not removed.
+::U:call :keep "BioshockVR.ini"
+::U:
+::U:rem ---- shared filenames: ASK FIRST -------------------------------------------
+::U:rem  dxgi.dll and winmm.dll are how this mod is loaded, but they are also how
+::U:rem  ReShade, Special K and DXVK are loaded -- one filename, one owner. If the
+::U:rem  user installed one of those AFTER this mod, the file in this folder is
+::U:rem  theirs and deleting it silently breaks a tool we never installed.
+::U:call :asktokill "dxgi.dll"
+::U:call :asktokill "winmm.dll"
 ::U:
 ::U:rem ---- known older loader routes from this project ---------------------------
-::U:call :kill "winmm.dll"
 ::U:call :kill "FirstTimeSetup.bat"
 ::U:call :kill "SelectRuntime.bat"
 ::U:
 ::U:rem ---- installer and loose logs ---------------------------------------------
 ::U:call :kill "Setup.bat"
 ::U:call :kill "Setup_fixed.bat"
+::U:call :kill "README.txt"
+::U:call :kill "changelog.txt"
 ::U:call :kill "setup.log"
 ::U:call :kill "BioshockVR.log"
 ::U:call :kill "BioshockVR_loader.log"
@@ -1093,6 +1121,9 @@ rem ===========================================================================
 ::U:
 ::U::allclean
 ::U:echo   Done. BioShock VR files were removed and all found INI backups restored.
+::U:echo.
+::U:echo   Your tuned settings were kept as BioshockVR.ini.bak. Rename it back to
+::U:echo   BioshockVR.ini if you reinstall, and every weapon stays calibrated.
 ::U:echo   -----------------------------------------
 ::U:echo.
 ::U:echo   This uninstaller will now delete itself.
@@ -1156,6 +1187,42 @@ rem ===========================================================================
 ::U:echo     removed  %~1
 ::U:exit /b 0
 ::U:
+::U::keep
+::U:rem  %1 = filename relative to GAMEDIR. Renamed to .bak rather than deleted.
+::U:rem
+::U:rem  An existing .bak is overwritten deliberately: it is from an earlier
+::U:rem  uninstall of the same mod, and the file being renamed now is the newer
+::U:rem  tuning. Keeping the older one would preserve the wrong version.
+::U:if not exist "%GAMEDIR%%~1" exit /b 0
+::U:if exist "%GAMEDIR%%~1.bak" del /f /q "%GAMEDIR%%~1.bak" >nul 2>&1
+::U:move /y "%GAMEDIR%%~1" "%GAMEDIR%%~1.bak" >nul 2>&1
+::U:if exist "%GAMEDIR%%~1" (
+::U:    call :say "    [x] in use   %GAMEDIR%%~1"
+::U:    set "FAILED=1"
+::U:    exit /b 0
+::U:)
+::U:echo     KEPT     %~1 renamed to %~1.bak - your tuning is safe
+::U:exit /b 0
+::U:
+::U::asktokill
+::U:rem  %1 = filename relative to GAMEDIR, shared with other graphics mods.
+::U:rem
+::U:rem  Default is YES on Enter: the common case by far is that this file is ours.
+::U:rem  The prompt exists for the minority who installed ReShade afterwards, and
+::U:rem  for them a wrong answer is a broken tool with no clue why.
+::U:if not exist "%GAMEDIR%%~1" exit /b 0
+::U:echo.
+::U:echo     %~1 is used by this mod, and by ReShade, Special K and DXVK.
+::U:echo     If you installed one of those AFTER this mod, keep it.
+::U:set "DELOK="
+::U:set /p "DELOK=    Delete %~1? [Y/n]: "
+::U:if /i "%DELOK%"=="n" (
+::U:    call :say "    kept     %GAMEDIR%%~1  (at your request)"
+::U:    exit /b 0
+::U:)
+::U:call :kill "%~1"
+::U:exit /b 0
+::U:
 ::U::killdir
 ::U:rem  %1 = folder relative to GAMEDIR
 ::U:if not exist "%GAMEDIR%%~1" exit /b 0
@@ -1174,7 +1241,7 @@ rem ===========================================================================
 ::C:setlocal
 ::C:title BioshockVR - Collect Logs
 ::C:
-::C:set "BUILD=2026-08-12-a"
+::C:set "BUILD=2026-08-13-a"
 ::C:
 ::C:REM ============================================================================
 ::C:REM  CollectLogs.bat        LIVES IN THE logs\ FOLDER
@@ -1192,9 +1259,19 @@ rem ===========================================================================
 ::C:
 ::C:cd /d "%~dp0"
 ::C:
-::C:for /f "tokens=2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do set "DT=%%A"
-::C:set "STAMP=%DT:~0,4%-%DT:~4,2%%DT:~6,2%-%DT:~8,2%%DT:~10,2%"
-::C:if "%DT%"=="" set "STAMP=report"
+::C:REM  Clear anything a previous run left here BEFORE gathering. A copy whose
+::C:REM  source has since disappeared -- a VirtualStore folder that got cleaned up,
+::C:REM  a log from an install that was removed -- would otherwise ride along in this
+::C:REM  bundle looking exactly as current as the rest of it.
+::C:call :sweep
+::C:
+::C:REM  NO wmic. It is a Feature-on-Demand Microsoft is removing from Windows 11,
+::C:REM  and where it is missing this fell back to naming every bundle "report" --
+::C:REM  so two reports from the same person overwrote each other on the Desktop.
+::C:REM  PowerShell formats the stamp directly, which is fewer moving parts than
+::C:REM  slicing LocalDateTime by character offset ever was.
+::C:for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MMdd-HHmm'" 2^>nul`) do set "STAMP=%%A"
+::C:if not defined STAMP set "STAMP=report"
 ::C:
 ::C:set "ISSUE=ISSUE.txt"
 ::C:REM DESKTOP IS NOT ALWAYS %USERPROFILE%\Desktop. Under OneDrive Known Folder
@@ -1404,13 +1481,13 @@ rem ===========================================================================
 ::C:    echo        2. Right-click, "Send to", "Compressed (zipped) folder".
 ::C:    echo        3. Send that zip.
 ::C:    echo.
-::C:    if exist "%~dp0BioshockVR.ini.copy" del "%~dp0BioshockVR.ini.copy" >nul 2>&1
+::C:    REM  The gathered copies are deliberately LEFT here on failure -- they are
+::C:    REM  what the manual zip above is meant to contain.
 ::C:    pause
 ::C:    exit /b 1
 ::C:)
 ::C:
-::C:if exist "%~dp0ziperror.txt" del "%~dp0ziperror.txt" >nul 2>&1
-::C:if exist "%~dp0BioshockVR.ini.copy" del "%~dp0BioshockVR.ini.copy" >nul 2>&1
+::C:call :sweep
 ::C:
 ::C:echo.
 ::C:echo  ============================================================
@@ -1425,4 +1502,29 @@ rem ===========================================================================
 ::C:
 ::C:explorer /select,"%ZIP%"
 ::C:pause
+::C:exit /b 0
+::C:
+::C:REM ============================================================================
+::C:REM  SWEEP -- remove everything this script COPIED IN or GENERATED.
+::C:REM
+::C:REM  It used to delete only BioshockVR.ini.copy, so a second run re-zipped the
+::C:REM  first run's LocalAppData log, VirtualStore config, game ini and performance
+::C:REM  summary alongside the current ones. Stale evidence carrying a fresh
+::C:REM  timestamp is worse than no evidence: it sends whoever reads the bundle after
+::C:REM  a problem that was already fixed.
+::C:REM
+::C:REM  The real logs are NOT touched -- those belong to the mod, not to this
+::C:REM  script, and the folder must look afterwards exactly as it did before.
+::C:REM ============================================================================
+::C::sweep
+::C:for %%D in (
+::C:    "ISSUE.txt"
+::C:    "PERFORMANCE.txt"
+::C:    "ziperror.txt"
+::C:    "BioshockVR.ini.copy"
+::C:    "BioshockVR.localappdata.log"
+::C:    "BioshockVR.virtualstore.ini"
+::C:    "BioshockVR.virtualstore.log"
+::C:    "Bioshock.game.ini.copy"
+::C:) do if exist "%~dp0%%~D" del /f /q "%~dp0%%~D" >nul 2>&1
 ::C:exit /b 0

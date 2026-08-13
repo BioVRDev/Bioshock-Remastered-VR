@@ -1,55 +1,175 @@
-Massively improved polish and compatibility, with a few giant additions
+================================================================================
+ BioShock Remastered VR  |  1.0.3
+================================================================================
 
-Entire codebase refactor and workflow overhaul for much faster changes in the future
+The hands release. Both of your hands are now in the game, weapons hold still
+enough to actually aim down, and the scripted moments finally put you where they
+meant to. Underneath all of that, the whole codebase was rebuilt so the next
+release does not take as long as this one did.
 
-Improved Epic support
-Improved SteamVR runtime support
-Improved Controller support and fixes including for WMR/Reverb controllers
-Improved logging and error reporting setup with auto log maker
-Improved setup script to let you manually select runtime and auto selects default profile based on hardware
-Improved crosshair logic to be more consistent. Guns can actually be used ADS now without a reticle
-Improved scripted scenes so your arms and hands now appear only while the game is actually animating them, instead of hanging frozen in your view
-Improved scripted scenes so they now go where they are meant to, instead of being steered by where you were looking
-Improved scripted scenes so you can rotate freely during cutscenes, but the game will also point you in the right direction for important moments
-Improved scripted scenes with immersive cursor hide
-Improved many, many new customization options in the INI
-Improved performance
-Improved default INI settings for compatibility and comfort
-Decoupled locomotion and aiming completely
-Decoupled weapon and bone system
-Disabled weapon sway for more accurate iron sights
 
-Fixed health and plasmid HUD meters
-Fixed cutscene black bars
-Fixed multiple bugs in the binding INI configs
-Fixed the crosshair showing when you are not holding anything
-Fixed the screenshake/injected rotation during normal play
-Fixed all(hopefully) UI elements now anchor to the game world
-Fixed quest arrow position and scale
-Fixed rotational slew when entering scripted event
-Fixed inconsistent turn speed
-Fixed pause and radial menus submitting both frames causing jutter in the background
-Fixed desktop mirror to only submit one of the frames instead of two to remove jutter(best experience for recording though is SteamVRs display view)
+--------------------------------------------------------------------------------
+ HIGHLIGHTS
+--------------------------------------------------------------------------------
 
-Added uninstall script
-Added manual weapon swing(Very early but big improvements are coming soon)
-Added multiple different locomotion modes for a wide range
-Added snap turn option
-Added more binding options for swapping dpad layout and modifier keys
-Added a real tracked second hand the hand that is not holding your weapon now follows your own controller instead of being hidden, and turns with it
-Added the same for your free hand while holding a plasmid
-Added live in-headset tuning for hand position and rotation, saved automatically
-Added two hand weapon grip for weapons
-Added haptic feedback in several areas
-Added customizable tuning keys
+YOUR OTHER HAND EXISTS NOW
+  The hand that is not holding your weapon used to be hidden. It appears, it
+  follows your controller, and it turns with it, whether you are holding a
+  weapon or a plasmid. On the two-handed guns you can also reach across and take
+  hold of the barrel: grip where the game already draws its own hand on the
+  fore-end and the weapon points along both of your hands. Recoil no longer
+  shakes you loose from it.
 
-Known Issues:
-Degraded SteamVR performance after 30 minutes with VirtualDesktop on Meta headsets - Known issue with meta drivers and not something I can fix. If you have this problem, this can fix it for some people: https://github.com/webhead2oo9/VirtualDesktopSwitcher
+THE GUN HOLDS STILL, SO IT CAN BE AIMED
+  The game animates the arm your weapon hangs off, so the gun drifted and
+  breathed in your hand. That made a calibrated crosshair impossible and iron
+  sights pointless. The animation is now frozen while you hold a weapon. Every
+  weapon takes its own grip, angle and crosshair, tunable live in the headset on
+  the numpad and saved to your ini as you go. The crossbow, grenade launcher and
+  chemical thrower shipped untuned before. They are tuned now.
 
-Quest arrow is slightly coupled with the weapon rotation, but it resets back to the correct position quickly
+SCRIPTED SCENES GO WHERE THEY ARE SUPPOSED TO
+  Where a scene walked you used to depend on which way you happened to be
+  looking or pointing when it triggered, and the balcony fall could land you
+  several metres from where it intended. Scenes now land correctly and frame
+  themselves correctly no matter where you were aiming. You can still turn with
+  the right stick during one, and the scene reclaims its framing as it rotates.
+  Your arms and hands appear only while the game is genuinely animating them,
+  instead of hanging frozen in your view.
 
-Arm height is slightly too low and forward in some scripted events(just move forward for them a little bit lol)
+THE INTERFACE STAYS IN THE ROOM
+  The map, the manual, the upgrade machine, the Gene Bank and the whole
+  plasmid and tonic flow are placed in the world instead of riding your head.
+  That includes clicking through from one page of a machine screen to the next,
+  which is what broke most of them before. The world holds still behind a screen
+  while you read it.
 
-Desktop mirror runs at about half the framerate of the headset. This is not an issue with performance and instead the way the game submits frames to the actual game window.
+PER-PLASMID TUNING
+  Every plasmid shared one set of numbers, so tuning Electro Bolt moved
+  Telekinesis with it. Each plasmid keeps its own position, angle and crosshair
+  now, and switching between them restores what you set.
 
-A lot of the work on the polish and mechanics have been in the early game so I cant test every feature on every part of the game, but hopefully my systems that have been built hold up in every area
+
+--------------------------------------------------------------------------------
+ ADDED
+--------------------------------------------------------------------------------
+
+  * A real tracked second hand, with a weapon or a plasmid
+  * Two-handed grip on the weapons that support it
+  * Four movement modes. What steers your walking is now separate from what aims
+    your weapon, so any combination of the two works
+  * Snap turn, with an adjustable step
+  * Haptic feedback on firing, on the grab zone, and on the actions that earn it
+  * Live in-headset tuning for weapon position, angle, crosshair, off-hand
+    position and off-hand angle, saved automatically per weapon
+  * Manual weapon swing (early, and it will get better)
+  * Per-plasmid grip and crosshair calibration
+  * Setup asks which headset and which runtime you have and configures the
+    controls to match, including moving the d-pad modifier off the thumb rest on
+    trackpad controllers, where it silently stopped you walking
+  * Uninstall script, which restores your game config and keeps your tuning
+  * One-click log collector for bug reports
+  * Interaction profiles for Index, Vive and WMR controllers
+  * Around 130 settings in the ini, all documented in it
+
+--------------------------------------------------------------------------------
+ CHANGED
+--------------------------------------------------------------------------------
+
+  * Locomotion and aiming are completely decoupled
+  * Weapon sway disabled, so iron sights are usable
+  * Crosshair logic rebuilt to be consistent, and it hides itself when your
+    hands are empty or a scene is playing
+  * Native OpenXR is now the default runtime. The SteamVR shim is the fallback
+    for headsets with no 32-bit OpenXR runtime
+  * Turn speed no longer changes with how hard you push. The game's own response
+    curve is nearly vertical at the top of the stick, which was the whole of
+    "sometimes slow, sometimes fast"
+  * Better default ini settings for comfort and compatibility
+  * Improved Epic support, verified against a real Epic install
+  * Better performance, and better logging and error reporting throughout
+  * Whole codebase refactored. No behaviour change, much faster changes ahead
+
+--------------------------------------------------------------------------------
+ FIXED
+--------------------------------------------------------------------------------
+
+  * The gene machines and Gatherer's Gardens now place their text correctly
+  * Walking in a straight line while pointing elsewhere drifted your path by up
+    to 11 degrees, and collapsed to a pure sidestep near 90
+  * Loading screens ran at half framerate
+  * Health and plasmid HUD meters
+  * Cutscene black bars
+  * Screen shake and injected camera rotation during normal play
+  * The crosshair showing with nothing in your hands
+  * Quest arrow position and scale
+  * Rotational slew when entering a scripted event
+  * Inconsistent turn speed
+  * The pause and radial menus submitting both eyes, which juddered the world
+    behind them
+  * The desktop mirror submitting both eyes
+  * The grab point wandering mid-fight, and the weapon slipping out of your off
+    hand between shots
+  * A constant rumble in the left hand from the game's idle animation
+  * Multiple bugs in the controller binding configs
+  * An installer that could report success after failing
+  * The mod loader needed a Visual C++ redistributable that many machines do not
+    have. When it was missing, nothing loaded and no log was written to say why
+
+--------------------------------------------------------------------------------
+ KNOWN ISSUES
+--------------------------------------------------------------------------------
+
+  * Pre-rendered cutscenes that play during the game are not anchored to the
+    room yet, so they still follow your head
+  * Walking through water draws its effect as a square rather than filling your
+    view
+  * The quest arrow drifts with the weapon before settling back
+  * Your arms sit slightly low and forward in some scripted scenes
+  * The desktop mirror runs at about half the headset's framerate. That is how
+    the game submits frames to its own window, not a performance problem. For
+    recording, use SteamVR's display view
+  * dxgi.dll is also how ReShade, Special K and DXVK load, and only one thing
+    can own that filename, so they cannot be used together yet
+  * SteamVR performance can degrade after about 30 minutes with Virtual Desktop
+    on Meta headsets. This is a Meta driver issue rather than something the mod
+    can fix. VirtualDesktopSwitcher resolves it for some people:
+    https://github.com/webhead2oo9/VirtualDesktopSwitcher
+  * Most of the polish work happened in the early game. The systems are built to
+    be general, but I have not seen every feature in every part of the game
+  * Only Meta Touch controllers are tested. Index, Vive and WMR bindings are
+    built from each device's published layout, but I do not own that hardware.
+    Reports are very welcome either way
+
+
+--------------------------------------------------------------------------------
+ CREDITS
+--------------------------------------------------------------------------------
+
+Built on the Khronos OpenXR SDK and MinHook.
+
+A huge thank you to Eye-will, who playtested every new build and gave me
+consistently sharp, genuinely useful feedback. A lot of what got fixed this
+release got fixed because they took the time to describe exactly what they saw.
+
+And to the developer of the other BioShock VR project,
+github.com/mohamad-balouza/bioshock-vr. Their work is MIT licensed and they gave
+me explicit permission to use it however this mod needed, and several of the
+hardest parts here exist because of it:
+
+  * Disabling the game's flat 2D reticle through the engine's own console path,
+    which is what let a proper VR crosshair replace it
+  * The hand rig's bone map: which bones are the wrists, which five per side are
+    forearm, and which one the weapon hangs off. That is what makes it possible
+    to hide the arms without losing the gun
+  * Capturing the whole interface in one render target pass, which is how the
+    HUD gets lifted onto its own panel
+  * The animation-preserving skeletal drive, which is the idea behind freezing
+    the weapon hand. That is what killed weapon sway and made aiming calibratable
+  * Reading the barrel direction from the model's own bones rather than guessing
+    at it with a tuned constant
+  * Locating the engine function that decides where a shot starts and which way
+    it goes, and the technique for substituting our own values into it
+
+Their research is public, and it saved me weeks. Every system above came from
+there, and this list gets a new line every time another one does.

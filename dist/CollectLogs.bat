@@ -5,7 +5,7 @@ rem  printed as "[] Zipping failed." and told you nothing.
 setlocal
 title BioshockVR - Collect Logs
 
-set "BUILD=2026-08-12-a"
+set "BUILD=2026-08-13-a"
 
 REM ============================================================================
 REM  CollectLogs.bat        LIVES IN THE logs\ FOLDER
@@ -23,9 +23,19 @@ REM ============================================================================
 
 cd /d "%~dp0"
 
-for /f "tokens=2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do set "DT=%%A"
-set "STAMP=%DT:~0,4%-%DT:~4,2%%DT:~6,2%-%DT:~8,2%%DT:~10,2%"
-if "%DT%"=="" set "STAMP=report"
+REM  Clear anything a previous run left here BEFORE gathering. A copy whose
+REM  source has since disappeared -- a VirtualStore folder that got cleaned up,
+REM  a log from an install that was removed -- would otherwise ride along in this
+REM  bundle looking exactly as current as the rest of it.
+call :sweep
+
+REM  NO wmic. It is a Feature-on-Demand Microsoft is removing from Windows 11,
+REM  and where it is missing this fell back to naming every bundle "report" --
+REM  so two reports from the same person overwrote each other on the Desktop.
+REM  PowerShell formats the stamp directly, which is fewer moving parts than
+REM  slicing LocalDateTime by character offset ever was.
+for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MMdd-HHmm'" 2^>nul`) do set "STAMP=%%A"
+if not defined STAMP set "STAMP=report"
 
 set "ISSUE=ISSUE.txt"
 REM DESKTOP IS NOT ALWAYS %USERPROFILE%\Desktop. Under OneDrive Known Folder
@@ -235,13 +245,13 @@ if errorlevel 1 (
     echo        2. Right-click, "Send to", "Compressed (zipped) folder".
     echo        3. Send that zip.
     echo.
-    if exist "%~dp0BioshockVR.ini.copy" del "%~dp0BioshockVR.ini.copy" >nul 2>&1
+    REM  The gathered copies are deliberately LEFT here on failure -- they are
+    REM  what the manual zip above is meant to contain.
     pause
     exit /b 1
 )
 
-if exist "%~dp0ziperror.txt" del "%~dp0ziperror.txt" >nul 2>&1
-if exist "%~dp0BioshockVR.ini.copy" del "%~dp0BioshockVR.ini.copy" >nul 2>&1
+call :sweep
 
 echo.
 echo  ============================================================
@@ -256,4 +266,29 @@ echo.
 
 explorer /select,"%ZIP%"
 pause
+exit /b 0
+
+REM ============================================================================
+REM  SWEEP -- remove everything this script COPIED IN or GENERATED.
+REM
+REM  It used to delete only BioshockVR.ini.copy, so a second run re-zipped the
+REM  first run's LocalAppData log, VirtualStore config, game ini and performance
+REM  summary alongside the current ones. Stale evidence carrying a fresh
+REM  timestamp is worse than no evidence: it sends whoever reads the bundle after
+REM  a problem that was already fixed.
+REM
+REM  The real logs are NOT touched -- those belong to the mod, not to this
+REM  script, and the folder must look afterwards exactly as it did before.
+REM ============================================================================
+:sweep
+for %%D in (
+    "ISSUE.txt"
+    "PERFORMANCE.txt"
+    "ziperror.txt"
+    "BioshockVR.ini.copy"
+    "BioshockVR.localappdata.log"
+    "BioshockVR.virtualstore.ini"
+    "BioshockVR.virtualstore.log"
+    "Bioshock.game.ini.copy"
+) do if exist "%~dp0%%~D" del /f /q "%~dp0%%~D" >nul 2>&1
 exit /b 0

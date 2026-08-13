@@ -1,6 +1,6 @@
 @echo off
 rem ===========================================================================
-rem  BioShock Remastered VR -- Uninstall            BUILD 2026-08-01-a
+rem  BioShock Remastered VR -- Uninstall            BUILD 2026-08-13-a
 rem
 rem  Run this from the BioShock Remastered game folder, beside BioshockHD.exe.
 rem
@@ -13,7 +13,7 @@ rem ===========================================================================
 
 setlocal EnableExtensions DisableDelayedExpansion
 
-set "BUILD=2026-08-01-a"
+set "BUILD=2026-08-13-a"
 set "GAMEDIR=%~dp0"
 set "FAILED=0"
 set "RESTORED=0"
@@ -46,7 +46,10 @@ if exist "%GAMEDIR%BioshockVR.ini" (
 echo   What will happen:
 echo.
 echo     - every Bioshock.ini.vrbackup found is restored in place
-echo     - all BioShock VR DLLs, loader aliases, settings, scripts and logs go
+echo     - all BioShock VR DLLs, loader aliases, scripts and logs go
+echo     - your tuned BioshockVR.ini is KEPT, renamed to BioshockVR.ini.bak
+echo     - dxgi.dll and winmm.dll are shared with ReShade and Special K, so
+echo       you will be asked before either one is removed
 echo     - save games and original game files are not touched
 echo     - this uninstaller deletes itself last if everything succeeds
 echo.
@@ -100,18 +103,32 @@ call :kill "openxr_loader_original.dll"
 
 rem ---- current mod payload ---------------------------------------------------
 call :kill "BioshockVR.dll"
-call :kill "BioshockVR.ini"
 call :kill "openvr_api.dll"
-call :kill "dxgi.dll"
+
+rem ---- YOUR SETTINGS ARE KEPT ------------------------------------------------
+rem  BioshockVR.ini is the one file here that is YOURS. Per-weapon grip, rotation
+rem  and crosshair values are tuned by hand in the headset over hours and are
+rem  written back into it as you go -- deleting it throws that away, and a
+rem  reinstall would have restored it for free. Renamed, not removed.
+call :keep "BioshockVR.ini"
+
+rem ---- shared filenames: ASK FIRST -------------------------------------------
+rem  dxgi.dll and winmm.dll are how this mod is loaded, but they are also how
+rem  ReShade, Special K and DXVK are loaded -- one filename, one owner. If the
+rem  user installed one of those AFTER this mod, the file in this folder is
+rem  theirs and deleting it silently breaks a tool we never installed.
+call :asktokill "dxgi.dll"
+call :asktokill "winmm.dll"
 
 rem ---- known older loader routes from this project ---------------------------
-call :kill "winmm.dll"
 call :kill "FirstTimeSetup.bat"
 call :kill "SelectRuntime.bat"
 
 rem ---- installer and loose logs ---------------------------------------------
 call :kill "Setup.bat"
 call :kill "Setup_fixed.bat"
+call :kill "README.txt"
+call :kill "changelog.txt"
 call :kill "setup.log"
 call :kill "BioshockVR.log"
 call :kill "BioshockVR_loader.log"
@@ -155,6 +172,9 @@ exit /b 1
 
 :allclean
 echo   Done. BioShock VR files were removed and all found INI backups restored.
+echo.
+echo   Your tuned settings were kept as BioshockVR.ini.bak. Rename it back to
+echo   BioshockVR.ini if you reinstall, and every weapon stays calibrated.
 echo   -----------------------------------------
 echo.
 echo   This uninstaller will now delete itself.
@@ -216,6 +236,42 @@ if exist "%GAMEDIR%%~1" (
     exit /b 0
 )
 echo     removed  %~1
+exit /b 0
+
+:keep
+rem  %1 = filename relative to GAMEDIR. Renamed to .bak rather than deleted.
+rem
+rem  An existing .bak is overwritten deliberately: it is from an earlier
+rem  uninstall of the same mod, and the file being renamed now is the newer
+rem  tuning. Keeping the older one would preserve the wrong version.
+if not exist "%GAMEDIR%%~1" exit /b 0
+if exist "%GAMEDIR%%~1.bak" del /f /q "%GAMEDIR%%~1.bak" >nul 2>&1
+move /y "%GAMEDIR%%~1" "%GAMEDIR%%~1.bak" >nul 2>&1
+if exist "%GAMEDIR%%~1" (
+    call :say "    [x] in use   %GAMEDIR%%~1"
+    set "FAILED=1"
+    exit /b 0
+)
+echo     KEPT     %~1 renamed to %~1.bak - your tuning is safe
+exit /b 0
+
+:asktokill
+rem  %1 = filename relative to GAMEDIR, shared with other graphics mods.
+rem
+rem  Default is YES on Enter: the common case by far is that this file is ours.
+rem  The prompt exists for the minority who installed ReShade afterwards, and
+rem  for them a wrong answer is a broken tool with no clue why.
+if not exist "%GAMEDIR%%~1" exit /b 0
+echo.
+echo     %~1 is used by this mod, and by ReShade, Special K and DXVK.
+echo     If you installed one of those AFTER this mod, keep it.
+set "DELOK="
+set /p "DELOK=    Delete %~1? [Y/n]: "
+if /i "%DELOK%"=="n" (
+    call :say "    kept     %GAMEDIR%%~1  (at your request)"
+    exit /b 0
+)
+call :kill "%~1"
 exit /b 0
 
 :killdir
