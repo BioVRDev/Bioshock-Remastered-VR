@@ -67,3 +67,8 @@ research/
 # Local Codex <-> Claude collaboration notes. These are transient advisory
 # messages and must never become project history.
 coordination/
+
+# Submitted log bundles live in research/logs/, which the research/ rule above
+# already covers. They carry Windows usernames and machine details and must not
+# be committed. The KNOWLEDGE from them is tracked instead, in
+# docs/LOG-PLAYBOOK.md -- see the /debuglogs skill.

@@ -95,14 +95,31 @@ static bool FindGameIni(char* out, size_t outSz)
     // MEASURED from real user logs, most specific first. Epic writes
     // "Bioshock Epic HD" and Steam writes "BioshockHD"; BOTH appear with and
     // without an intervening "My Games" folder, so all four combinations are
-    // tried. The two original bare names stay last as a catch-all.
+    // tried.
+    //
+    // > ### THE BARE "Bioshock" NAMES ARE DELIBERATELY ABSENT
+    // > `%APPDATA%\Bioshock\` and `%APPDATA%\My Games\Bioshock\` belong to the
+    // > ORIGINAL 2007 BioShock, not to Remastered. `dist/Setup.bat` refuses to
+    // > touch them by name -- see its `DELIBERATELY NOT SEARCHED` banner:
+    // > *"Writing our resolution and FOV into them would break someone's classic
+    // > BioShock."*
+    // >
+    // > This list used to contain them anyway, and `SyncGameIni` runs at EVERY
+    // > launch -- so on a machine that owns the classic game but has not yet
+    // > launched Remastered, a mod for a different game rewrote the classic
+    // > game's resolution, FOV, sensitivity and fullscreen state. Permanently:
+    // > Setup never visited that path, so there is no `.vrbackup`, and
+    // > `Uninstall.bat`'s restore list does not name it either.
+    // >
+    // > **Two components disagreeing about a stated safety rule is the bug.**
+    // > If a Remastered install genuinely uses a bare `Bioshock` folder, the user
+    // > can point at it explicitly with `GameIniPath=` -- an opt-in, which is the
+    // > right shape for a path we cannot tell apart from someone else's game.
     const char* candidates[] = {
         "%s\\My Games\\Bioshock Epic HD\\Bioshock\\Bioshock.ini",
         "%s\\Bioshock Epic HD\\Bioshock\\Bioshock.ini",
         "%s\\My Games\\BioshockHD\\Bioshock\\Bioshock.ini",
         "%s\\BioshockHD\\Bioshock\\Bioshock.ini",
-        "%s\\My Games\\Bioshock\\Bioshock.ini",
-        "%s\\Bioshock\\Bioshock.ini",
         "%s\\BioShock Remastered\\Bioshock.ini",
     };
 

@@ -390,70 +390,211 @@ bool Input_XrCreate(XrInstance inst, XrSession sess)
     // controller -- and drives rig cluster left with leftHandOffset. Your right
     // hand moves the model's left hand using the left-tuned trim. Correct, and
     // nothing was re-tuned.
-    // ---- Touch bindings -------------------------------------------------
+    // ======================================================================
+    //  ONE PROFILE PER CONTROLLER FAMILY, EACH SUGGESTED INDEPENDENTLY
+    //
+    // THIS TABLE ONLY MATTERS ON THE STANDARD OPENXR LOADER, and as of the
+    // release that is the DEFAULT. The SteamVR shim discards suggested bindings
+    // outright ("noted; shim authors its own SteamVR bindings") and binds from
+    // its own manifests instead -- so for as long as the shim was the default,
+    // these tables were nearly decorative and only Touch was ever filled in.
+    //
+    // With the standard loader in front, anything not listed here falls to
+    // khr/simple_controller, which has no sticks, no grips and no triggers. That
+    // is a menu tier, not a play tier. Khronos' guidance is to ship a profile for
+    // every device you can and keep simple_controller as a last resort: a runtime
+    // ignores profiles it does not recognise, so listing extra ones is free.
+    //
+    // EACH PROFILE IS SUGGESTED IN ITS OWN CALL, and that is deliberate. One call
+    // carrying every profile fails as a unit -- a single unsupported path on one
+    // device would silently cost the bindings for all of them. Separate calls
+    // also let the log say exactly which families this build offered.
+    //
+    // The mappings are TRANSLATED FROM THE SHIM'S OWN MANIFESTS
+    // (OpenXRShim/src/shim_input.cpp), which are the already-reasoned SteamVR
+    // versions of the same intent. Same actions, same layout, OpenXR paths.
+    //
+    // LEFT-HANDED MODE DOES NOT TOUCH ANY OF THIS. The flip is applied to the
+    // action HANDLES further down, because that is the only form that works on
+    // both the shim and a real runtime. See the banner there.
+    // ======================================================================
+    struct ProfileTable
+    {
+        const char* profile;
+        const char* label;
+        const XrActionSuggestedBinding* rows;
+        uint32_t    count;
+    };
+
+    // ---- Touch: Quest, Quest 2/3, Rift. The only family with real coverage --
     // Note the asymmetry, it is not a mistake: Touch has ONE application menu
     // button and it is on the LEFT controller. The right controller's system
-    // button belongs to the runtime and cannot be bound. So START comes from
-    // the left menu button and BACK has no home -- see the mapping table in
-    // FillFromPad().
+    // button belongs to the runtime and cannot be bound.
+    const XrActionSuggestedBinding bTouch[] = {
+        { g_aMove,      P("/user/hand/left/input/thumbstick") },
+        { g_aTurn,      P("/user/hand/right/input/thumbstick") },
+        { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
+        { g_aTrigR,     P("/user/hand/right/input/trigger/value") },
+        { g_aGripL,     P("/user/hand/left/input/squeeze/value") },
+        { g_aGripR,     P("/user/hand/right/input/squeeze/value") },
+        { g_aA,         P("/user/hand/right/input/a/click") },
+        { g_aB,         P("/user/hand/right/input/b/click") },
+        { g_aX,         P("/user/hand/left/input/x/click") },
+        { g_aY,         P("/user/hand/left/input/y/click") },
+        { g_aMenu,      P("/user/hand/left/input/menu/click") },
+        { g_aThumbL,    P("/user/hand/left/input/thumbstick/click") },
+        { g_aThumbR,    P("/user/hand/right/input/thumbstick/click") },
+        { g_aRestR,     P("/user/hand/right/input/thumbrest/touch") },
+        { g_aRestL,     P("/user/hand/left/input/thumbrest/touch") },
+        { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
+        { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
+        { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
+        { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
+        { g_aHapticL,   P("/user/hand/left/output/haptic") },
+        { g_aHapticR,   P("/user/hand/right/output/haptic") },
+    };
+
+    // ---- Index / Beyond / Varjo / Somnium ---------------------------------
+    // Index has a and b on BOTH controllers, so the four face buttons map
+    // cleanly -- right a/b are A/B, left a/b are X/Y. There is no menu/click in
+    // this profile (system/click belongs to the runtime), so menu comes from the
+    // left trackpad, exactly as the shim does it.
+    //
+    // THE TRACKPAD BINDINGS ARE THE KNOWN HAZARD. You cannot press a trackpad
+    // without touching it, so rest_l and menu fire together -- which turns pause
+    // into BACK under DpadFlip=1 or ControllerDpadModifier=4. Setup now writes
+    // ControllerDpadModifier=2 for these headsets, which keeps the modifier off
+    // the trackpad entirely and makes the overlap harmless.
+    const XrActionSuggestedBinding bIndex[] = {
+        { g_aMove,      P("/user/hand/left/input/thumbstick") },
+        { g_aTurn,      P("/user/hand/right/input/thumbstick") },
+        { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
+        { g_aTrigR,     P("/user/hand/right/input/trigger/value") },
+        { g_aGripL,     P("/user/hand/left/input/squeeze/value") },
+        { g_aGripR,     P("/user/hand/right/input/squeeze/value") },
+        { g_aA,         P("/user/hand/right/input/a/click") },
+        { g_aB,         P("/user/hand/right/input/b/click") },
+        { g_aX,         P("/user/hand/left/input/a/click") },
+        { g_aY,         P("/user/hand/left/input/b/click") },
+        { g_aMenu,      P("/user/hand/left/input/trackpad/force") },
+        { g_aThumbL,    P("/user/hand/left/input/thumbstick/click") },
+        { g_aThumbR,    P("/user/hand/right/input/thumbstick/click") },
+        { g_aRestR,     P("/user/hand/right/input/trackpad/touch") },
+        { g_aRestL,     P("/user/hand/left/input/trackpad/touch") },
+        { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
+        { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
+        { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
+        { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
+        { g_aHapticL,   P("/user/hand/left/output/haptic") },
+        { g_aHapticR,   P("/user/hand/right/output/haptic") },
+    };
+
+    // ---- Vive wands -------------------------------------------------------
+    // The most constrained device we support, and the constraint is real: a wand
+    // has a trackpad, a trigger, a grip and a menu button. No sticks, no face
+    // buttons.
+    //
+    // GRIP COMES FROM squeeze/CLICK, NOT squeeze/value -- the wand has no analog
+    // squeeze at all. A boolean bound to a float action reads 0.0 or 1.0, which
+    // clears GripThreshold (0.80) cleanly. Without this the wand loses the
+    // plasmid radial, the weapon wheel AND the two-handed grip, which is most of
+    // the game's controls; the shim's own Vive manifest binds no grip at all and
+    // that is the single biggest gap in it.
+    //
+    // BOTH menu buttons are bound. Unlike Touch, a wand has one on each
+    // controller and the right one is otherwise wasted -- on the hardware with
+    // the fewest buttons, a free one matters. btn_b/x/y have nowhere to go, so
+    // hacking and the pause chord are unavailable here; the left menu button is
+    // pause, which is why it must not be spent on anything else.
+    const XrActionSuggestedBinding bVive[] = {
+        { g_aMove,      P("/user/hand/left/input/trackpad") },
+        { g_aTurn,      P("/user/hand/right/input/trackpad") },
+        { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
+        { g_aTrigR,     P("/user/hand/right/input/trigger/value") },
+        { g_aGripL,     P("/user/hand/left/input/squeeze/click") },
+        { g_aGripR,     P("/user/hand/right/input/squeeze/click") },
+        { g_aMenu,      P("/user/hand/left/input/menu/click") },
+        { g_aA,         P("/user/hand/right/input/menu/click") },
+        { g_aThumbL,    P("/user/hand/left/input/trackpad/click") },
+        { g_aThumbR,    P("/user/hand/right/input/trackpad/click") },
+        { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
+        { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
+        { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
+        { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
+        { g_aHapticL,   P("/user/hand/left/output/haptic") },
+        { g_aHapticR,   P("/user/hand/right/output/haptic") },
+    };
+
+    // ---- Windows Mixed Reality / Reverb -----------------------------------
+    // Sticks and a trackpad, a digital grip, and a menu button on each hand.
+    //
+    // GRIP IS squeeze/CLICK here too -- WMR has no analog squeeze, which is the
+    // P2 hazard recorded against the shim's WMR manifest (it binds a digital
+    // grip into a float thresholded at 0.80). Binding the boolean path directly
+    // is the correct expression of the same thing and clears the threshold.
+    //
+    // rest_l / rest_r ARE DELIBERATELY UNBOUND. The shim reaches them through
+    // trackpad touch, which puts the d-pad modifier on the same pad as the face
+    // buttons -- so pressing A or B also engages the modifier and stops you
+    // walking. Leaving them unbound makes ControllerDpadModifier 1 and 4 inert
+    // rather than harmful, and Setup writes mode 2 for these headsets.
+    const XrActionSuggestedBinding bWmr[] = {
+        { g_aMove,      P("/user/hand/left/input/thumbstick") },
+        { g_aTurn,      P("/user/hand/right/input/thumbstick") },
+        { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
+        { g_aTrigR,     P("/user/hand/right/input/trigger/value") },
+        { g_aGripL,     P("/user/hand/left/input/squeeze/click") },
+        { g_aGripR,     P("/user/hand/right/input/squeeze/click") },
+        { g_aMenu,      P("/user/hand/left/input/menu/click") },
+        { g_aA,         P("/user/hand/right/input/menu/click") },
+        { g_aB,         P("/user/hand/right/input/trackpad/click") },
+        { g_aX,         P("/user/hand/left/input/trackpad/click") },
+        { g_aThumbL,    P("/user/hand/left/input/thumbstick/click") },
+        { g_aThumbR,    P("/user/hand/right/input/thumbstick/click") },
+        { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
+        { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
+        { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
+        { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
+        { g_aHapticL,   P("/user/hand/left/output/haptic") },
+        { g_aHapticR,   P("/user/hand/right/output/haptic") },
+    };
+
+    // ---- The last resort, not a tier --------------------------------------
+    // No sticks, no grips, no triggers. If a session ends up here the player can
+    // reach a menu and nothing else, which is why the census below exists to say
+    // so out loud rather than letting it look like a working install.
+    const XrActionSuggestedBinding bSimple[] = {
+        { g_aA,         P("/user/hand/right/input/select/click") },
+        { g_aMenu,      P("/user/hand/left/input/menu/click") },
+        { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
+        { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
+        { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
+        { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
+        { g_aHapticL,   P("/user/hand/left/output/haptic") },
+        { g_aHapticR,   P("/user/hand/right/output/haptic") },
+    };
+
+    const ProfileTable kProfiles[] = {
+        { "/interaction_profiles/oculus/touch_controller",     "Touch (Quest/Rift)", bTouch,  (uint32_t)(sizeof(bTouch)  / sizeof(bTouch[0]))  },
+        { "/interaction_profiles/valve/index_controller",      "Index/knuckles",     bIndex,  (uint32_t)(sizeof(bIndex)  / sizeof(bIndex[0]))  },
+        { "/interaction_profiles/htc/vive_controller",         "Vive wand",          bVive,   (uint32_t)(sizeof(bVive)   / sizeof(bVive[0]))   },
+        { "/interaction_profiles/microsoft/motion_controller", "WMR/Reverb",         bWmr,    (uint32_t)(sizeof(bWmr)    / sizeof(bWmr[0]))    },
+        { "/interaction_profiles/khr/simple_controller",       "simple (fallback)",  bSimple, (uint32_t)(sizeof(bSimple) / sizeof(bSimple[0])) },
+    };
+
+    for (const ProfileTable& pt : kProfiles)
     {
-        XrActionSuggestedBinding b[] = {
-            // PLAIN, AND LEFT-HANDED MODE DOES NOT TOUCH THIS TABLE. See the
-            // banner above SwapHandsForLeftHanded(): the flip is applied to the
-            // ACTION HANDLES after this, because the SteamVR shim discards
-            // suggested bindings entirely and a table-based flip is inert there.
-            { g_aMove,      P("/user/hand/left/input/thumbstick") },
-            { g_aTurn,      P("/user/hand/right/input/thumbstick") },
-            { g_aTrigL,     P("/user/hand/left/input/trigger/value") },
-            { g_aTrigR,     P("/user/hand/right/input/trigger/value") },
-            { g_aGripL,     P("/user/hand/left/input/squeeze/value") },
-            { g_aGripR,     P("/user/hand/right/input/squeeze/value") },
-            { g_aA,         P("/user/hand/right/input/a/click") },
-            { g_aB,         P("/user/hand/right/input/b/click") },
-            { g_aX,         P("/user/hand/left/input/x/click") },
-            { g_aY,         P("/user/hand/left/input/y/click") },
-            { g_aMenu,      P("/user/hand/left/input/menu/click") },
-            { g_aThumbL,    P("/user/hand/left/input/thumbstick/click") },
-            { g_aThumbR,    P("/user/hand/right/input/thumbstick/click") },
-            { g_aRestR,     P("/user/hand/right/input/thumbrest/touch") },
-            { g_aRestL,     P("/user/hand/left/input/thumbrest/touch") },
-            { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
-            { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
-            { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
-            { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
-            { g_aHapticL,   P("/user/hand/left/output/haptic") },
-            { g_aHapticR,   P("/user/hand/right/output/haptic") },
-        };
-
         XrInteractionProfileSuggestedBinding sb = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-        sb.interactionProfile = P("/interaction_profiles/oculus/touch_controller");
-        sb.countSuggestedBindings = (uint32_t)(sizeof(b) / sizeof(b[0]));
-        sb.suggestedBindings = b;
+        sb.interactionProfile = P(pt.profile);
+        sb.countSuggestedBindings = pt.count;
+        sb.suggestedBindings = pt.rows;
 
-        r = xrSuggestInteractionProfileBindings(g_inst, &sb);
-        if (XR_FAILED(r)) Log(">>> INPUT: !!! suggest(touch) failed (%d)", (int)r);
-        else              Log(">>> INPUT: touch_controller bindings suggested");
-    }
-
-    // Fallback so a runtime that does not advertise the Touch profile still
-    // gives us something. Simple controller has no sticks, so this is a
-    // "menus at least work" tier, not a play tier.
-    {
-        XrActionSuggestedBinding b[] = {
-            { g_aA,         P("/user/hand/right/input/select/click") },
-            { g_aMenu,      P("/user/hand/left/input/menu/click") },
-            { g_aAimPoseL,  P("/user/hand/left/input/aim/pose") },
-            { g_aAimPoseR,  P("/user/hand/right/input/aim/pose") },
-            { g_aGripPoseL, P("/user/hand/left/input/grip/pose") },
-            { g_aGripPoseR, P("/user/hand/right/input/grip/pose") },
-            { g_aHapticL,   P("/user/hand/left/output/haptic") },
-            { g_aHapticR,   P("/user/hand/right/output/haptic") },
-        };
-        XrInteractionProfileSuggestedBinding sb = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-        sb.interactionProfile = P("/interaction_profiles/khr/simple_controller");
-        sb.countSuggestedBindings = (uint32_t)(sizeof(b) / sizeof(b[0]));
-        sb.suggestedBindings = b;
-        xrSuggestInteractionProfileBindings(g_inst, &sb);   // best effort
+        const XrResult sr = xrSuggestInteractionProfileBindings(g_inst, &sb);
+        if (XR_SUCCEEDED(sr))
+            Log(">>> INPUT: suggested %u bindings for %s", pt.count, pt.label);
+        else
+            Log(">>> INPUT: %s NOT offered by this runtime (%d) -- normal unless "
+                "that is your headset", pt.label, (int)sr);
     }
 
     // ---- M6-S3 TIER 0: THE FLIP, AND WHY IT IS NOT IN THE TABLE ABOVE ----
@@ -737,6 +878,144 @@ void Input_XrSync(XrTime displayTime, XrSpace baseSpace)
         HandPose hz[2] = {};      // untracked: consumers must fall back to head
         PublishHands(hz);
         return;
+    }
+
+    // ======================================================================
+    //  ONE-SHOT: WHAT DID THE RUNTIME ACTUALLY BIND?
+    //
+    // THE FAILURE THIS EXISTS FOR. An action with no binding is not an error
+    // anywhere in the stack. xrGetActionState* returns XR_SUCCESS with
+    // isActive == false, GetFloat/GetBool/GetVec2 each collapse that to zero,
+    // and the pad publishes perfectly neutral. Every health signal the project
+    // documents then reads green -- `INPUT: action set ATTACHED`,
+    // `OpenXR side READY`, `POLL: synth high, realpad 0` -- while the player's
+    // controller does absolutely nothing.
+    //
+    // That is the worst shape a bug can have: the user says "it is broken" and
+    // the log says "it is fine", and there is no third thing to consult.
+    //
+    // The insight is not new here -- the thumb_l block below already says
+    // "GetBool collapses three different failures into one 'false'". This is
+    // that observation applied to every action instead of one.
+    //
+    // xrGetCurrentInteractionProfile IS RESOLVED AT RUNTIME, never imported.
+    // The shim does not export it, and a static import of a symbol the shim
+    // lacks stops the game loading entirely -- measured twice in this project,
+    // most recently with xrApplyHapticFeedback. A null here costs one log line;
+    // a missing static import costs the whole session.
+    {
+        static bool censusDone = false;
+        if (!censusDone)
+        {
+            censusDone = true;
+
+            typedef XrResult(XRAPI_PTR * PFN_GetProfile)(
+                XrSession, XrPath, XrInteractionProfileState*);
+            PFN_GetProfile pfnProfile = nullptr;
+            if (xrGetInstanceProcAddr(g_inst, "xrGetCurrentInteractionProfile",
+                    (PFN_xrVoidFunction*)&pfnProfile) != XR_SUCCESS)
+                pfnProfile = nullptr;
+
+            for (int h = 0; h < 2; ++h)
+            {
+                const char* side = h ? "right" : "left";
+                if (!pfnProfile)
+                {
+                    Log(">>> INPUT: bound profile (%s) = unknown -- this runtime "
+                        "does not offer xrGetCurrentInteractionProfile", side);
+                    continue;
+                }
+                XrInteractionProfileState ps = { XR_TYPE_INTERACTION_PROFILE_STATE };
+                const XrResult pr = pfnProfile(g_sess,
+                    P(h ? "/user/hand/right" : "/user/hand/left"), &ps);
+                if (XR_FAILED(pr) || ps.interactionProfile == XR_NULL_PATH)
+                {
+                    Log(">>> INPUT: bound profile (%s) = NONE. That controller is "
+                        "not bound to anything and will do nothing.", side);
+                    continue;
+                }
+                // xrPathToString IS ALSO RESOLVED AT RUNTIME, and the reason is
+                // that the import check caught it as a static one before this
+                // shipped: the shim does not export it either. Naming the
+                // profile is a nicety; failing to load the game is not.
+                typedef XrResult(XRAPI_PTR * PFN_PathToString)(
+                    XrInstance, XrPath, uint32_t, uint32_t*, char*);
+                static PFN_PathToString pfnP2S = nullptr;
+                static bool p2sLooked = false;
+                if (!p2sLooked)
+                {
+                    p2sLooked = true;
+                    if (xrGetInstanceProcAddr(g_inst, "xrPathToString",
+                            (PFN_xrVoidFunction*)&pfnP2S) != XR_SUCCESS)
+                        pfnP2S = nullptr;
+                }
+
+                char name[XR_MAX_PATH_LENGTH] = {};
+                uint32_t n = 0;
+                if (pfnP2S && XR_SUCCEEDED(pfnP2S(g_inst, ps.interactionProfile,
+                        sizeof(name), &n, name)))
+                    Log(">>> INPUT: bound profile (%s) = %s", side, name);
+                else
+                    Log(">>> INPUT: bound profile (%s) = set, but this runtime "
+                        "will not name it", side);
+            }
+
+            // The census. `no` on a control your hardware HAS means the binding
+            // did not resolve -- that is the line to look for, and it is the
+            // difference between "the mod is broken" and one grep.
+            struct Census { const char* name; XrAction act; int kind; };
+            const Census cs[] = {
+                { "move",      g_aMove,   2 }, { "turn",      g_aTurn,   2 },
+                { "trigger_l", g_aTrigL,  1 }, { "trigger_r", g_aTrigR,  1 },
+                { "grip_l",    g_aGripL,  1 }, { "grip_r",    g_aGripR,  1 },
+                { "btn_a",     g_aA,      0 }, { "btn_b",     g_aB,      0 },
+                { "btn_x",     g_aX,      0 }, { "btn_y",     g_aY,      0 },
+                { "menu",      g_aMenu,   0 }, { "thumb_l",   g_aThumbL, 0 },
+                { "thumb_r",   g_aThumbR, 0 }, { "rest_l",    g_aRestL,  0 },
+                { "rest_r",    g_aRestR,  0 },
+            };
+
+            char line[512] = {};
+            size_t used = 0;
+            int bound = 0, total = 0;
+            for (const Census& c : cs)
+            {
+                XrActionStateGetInfo gi = { XR_TYPE_ACTION_STATE_GET_INFO };
+                gi.action = c.act;
+                bool active = false;
+                if (c.kind == 0)
+                {
+                    XrActionStateBoolean st = { XR_TYPE_ACTION_STATE_BOOLEAN };
+                    active = XR_SUCCEEDED(xrGetActionStateBoolean(g_sess, &gi, &st))
+                        && st.isActive;
+                }
+                else if (c.kind == 1)
+                {
+                    XrActionStateFloat st = { XR_TYPE_ACTION_STATE_FLOAT };
+                    active = XR_SUCCEEDED(xrGetActionStateFloat(g_sess, &gi, &st))
+                        && st.isActive;
+                }
+                else
+                {
+                    XrActionStateVector2f st = { XR_TYPE_ACTION_STATE_VECTOR2F };
+                    active = XR_SUCCEEDED(xrGetActionStateVector2f(g_sess, &gi, &st))
+                        && st.isActive;
+                }
+                ++total;
+                if (active) ++bound;
+                const int w = _snprintf_s(line + used, sizeof(line) - used, _TRUNCATE,
+                    "%s%s=%s", used ? " " : "", c.name, active ? "yes" : "NO");
+                if (w > 0) used += (size_t)w;
+            }
+            Log(">>> INPUT: bindings resolved %d of %d --", bound, total);
+            Log(">>> INPUT:   %s", line);
+            if (bound == 0)
+                Log("!!! INPUT: NOTHING is bound. The controllers will do nothing, "
+                    "however healthy the rest of this log looks.");
+            else if (bound < total)
+                Log(">>> INPUT: anything reading NO above is unbound on this "
+                    "controller -- expected on hardware that lacks the control.");
+        }
     }
 
     PadState s = {};
