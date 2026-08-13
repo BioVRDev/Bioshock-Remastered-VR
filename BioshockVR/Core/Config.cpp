@@ -304,6 +304,7 @@ void Config_Load(const char* iniPath)
             g_cfg.gripSlot[s][a] = g_cfg.handsGrip[a];
             g_cfg.rotSlot[s][a] = g_cfg.handsRot[a];
             g_cfg.cursorSlot[s][a] = 0.0f;
+            g_cfg.muzzleSlot[s][a] = 0.0f;
         }
         char key[32];
         _snprintf_s(key, sizeof(key), _TRUNCATE, "GripOffset%d", s);
@@ -312,6 +313,8 @@ void Config_Load(const char* iniPath)
         CfgVec3(key, g_cfg.rotSlot[s]);
         _snprintf_s(key, sizeof(key), _TRUNCATE, "CursorOffset%d", s);
         CfgVec3(key, g_cfg.cursorSlot[s]);
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "MuzzleOffset%d", s);
+        CfgVec3(key, g_cfg.muzzleSlot[s]);
         _snprintf_s(key, sizeof(key), _TRUNCATE, "IdleAnimMode%d", s);
         g_cfg.idleModeSlot[s] = CfgIntRange(key, g_cfg.idleAnimMode, 0, 3);
 
@@ -373,6 +376,18 @@ void Config_Load(const char* iniPath)
     g_cfg.engVtRva = CfgHex("EngineVtableRva", g_cfg.engVtRva);
     g_cfg.engExecRva = CfgHex("EngineExecRva", g_cfg.engExecRva);
     g_cfg.engExecThis = CfgHex("EngineExecThis", g_cfg.engExecThis);
+
+    // ---- the fire seam ---------------------------------------------------
+    // Default 0: nothing is hooked unless this is set. The three offsets are
+    // escape hatches, same reasoning as ArmHideHandsVt -- a wrong value on
+    // another storefront must be fixable without a rebuild.
+    g_cfg.fireSeam = CfgIntRange("FireSeam", 0, 0, 2);
+    g_cfg.fireOriginSub = CfgIntRange("FireOriginSub", 1, 0, 1);
+    g_cfg.fireAimSub = CfgIntRange("FireAimSub", 0, 0, 1);
+    g_cfg.fireSeamVtOff = CfgHex("FireSeamVtOffset", g_cfg.fireSeamVtOff);
+    g_cfg.fireSeamRetImm = CfgHex("FireSeamRetImm", g_cfg.fireSeamRetImm);
+    g_cfg.weaponOwnerOff = CfgHex("WeaponOwnerOffset", g_cfg.weaponOwnerOff);
+    g_cfg.fireSeamWatchMs = CfgIntRange("FireSeamWatchMs", 250, 16, 5000);
 
     // controller
     g_cfg.controller = CfgBool("EnableController", true);
@@ -725,10 +740,11 @@ void Config_Load(const char* iniPath)
     CfgEcho("AimClampDeg", "%.0f", g_cfg.aimClampDeg);
     CfgEcho("PlasmidAimPitch", "%.0f deg", g_cfg.plasmidAimPitch);
     for (int s = 0; s < 9; ++s)
-        Log("  slot %d  pos %6.1f,%6.1f,%6.1f   rot %5.1f,%5.1f,%5.1f   cur %5.1f,%5.1f,%5.1f   idle %d  hide %d", s,
+        Log("  slot %d  pos %6.1f,%6.1f,%6.1f   rot %5.1f,%5.1f,%5.1f   cur %5.1f,%5.1f,%5.1f   muz %5.1f,%5.1f,%5.1f   idle %d  hide %d", s,
             g_cfg.gripSlot[s][0], g_cfg.gripSlot[s][1], g_cfg.gripSlot[s][2],
             g_cfg.rotSlot[s][0], g_cfg.rotSlot[s][1], g_cfg.rotSlot[s][2],
             g_cfg.cursorSlot[s][0], g_cfg.cursorSlot[s][1], g_cfg.cursorSlot[s][2],
+            g_cfg.muzzleSlot[s][0], g_cfg.muzzleSlot[s][1], g_cfg.muzzleSlot[s][2],
             g_cfg.idleModeSlot[s], g_cfg.hideArmsSlot[s]);
 
     CfgEcho("AimSmoothing", "%.2f", g_cfg.aimSmooth);
@@ -739,6 +755,14 @@ void Config_Load(const char* iniPath)
         (int)g_cfg.disableReticle, g_cfg.engPtrRva, g_cfg.engExecRva);
     CfgEcho("Crosshair", "%d  %.1f mm dot at %.2f m  fromShot=%d", (int)g_cfg.crosshair,
         g_cfg.xhSize * 1000.f, g_cfg.xhDist, g_cfg.xhFromShot);
+    CfgEcho("FireSeam", "%d  %s   origin=%s aim=%s   vt +0x%X ret 0x%X owner +0x%X",
+        g_cfg.fireSeam,
+        (g_cfg.fireSeam == 0) ? "(off -- nothing hooked)"
+        : (g_cfg.fireSeam == 1) ? "(observe -- hooked, writes nothing)"
+        : "(SUBSTITUTING on the firing path)",
+        g_cfg.fireOriginSub ? "muzzle" : "engine",
+        g_cfg.fireAimSub ? "controller" : "engine",
+        g_cfg.fireSeamVtOff, g_cfg.fireSeamRetImm, g_cfg.weaponOwnerOff);
 
     Log("[controller]");
     CfgEcho("EnableController", "%d  mode=%s", (int)g_cfg.controller,

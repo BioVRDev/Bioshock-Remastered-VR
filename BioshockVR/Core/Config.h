@@ -136,6 +136,15 @@ struct VrConfig
     float cursorRot[3] = { 0.f, 0.f, 0.f };     // CursorOffset p,y,r deg. LIVE
     float cursorSlot[9][3] = {};                // per-weapon, from the ini
 
+    // ---- THE SHOT'S ORIGIN ----------------------------------------------
+    // Where the muzzle sits relative to the tracked hand, per weapon, in cm
+    // along the gun's own axes. CursorOffset rotates the aim RAY and cannot
+    // move the shot's ORIGIN -- these can. Game/FireSeam.h says why that is the
+    // whole bug. 0,0,0 is the hand itself, which is already far better than the
+    // pawn's body, so an untuned weapon is improved rather than broken.
+    float muzzleOff[3] = { 0.f, 0.f, 0.f };     // MuzzleOffset f,r,u cm. LIVE
+    float muzzleSlot[9][3] = {};                // per-weapon, from the ini
+
     // ---- M6-S4: PER-PLASMID TUNING --------------------------------------
     // Every plasmid shares weapon slot 8, so tuning Electrobolt moves
     // Telekinesis with it. These give each its own numbers, keyed by the
@@ -190,6 +199,23 @@ struct VrConfig
     int   engVtRva = 0x00E0DFF4;    // its expected vtable, for verification
     int   engExecRva = 0x004C5970;  // UGameEngine::Exec
     int   engExecThis = 0x40;       // FExec subobject offset
+
+    // ---- THE FIRE SEAM: AWeapon::GetPerfectFireStart ---------------------
+    // The only detour this mod places on the firing path, and the only feature
+    // whose failure mode is a crash rather than a wrong number. Game/FireSeam.h
+    // carries the reasoning; every one of these is here so a bad value can be
+    // fixed without a rebuild.
+    //
+    //   0  nothing is hooked at all
+    //   1  hooked, logs the engine's own origin and rotation, WRITES NOTHING
+    //   2  substitutes, per the two switches below
+    int   fireSeam = 0;
+    int   fireOriginSub = 1;      // the shot starts at the muzzle, not the pawn
+    int   fireAimSub = 0;         // ...and follows the CONTROLLER, in any mode
+    int   fireSeamVtOff = 0x304;  // weapon vtable slot. Never a hardcoded rva
+    int   fireSeamRetImm = 0xC;   // its callee cleanup == 3 stack args
+    int   weaponOwnerOff = 0x454; // [weapon+N] is the pawn holding it
+    int   fireSeamWatchMs = 250;  // watch-line rate limit. NOT the stale window
 
     // HUD quad ------------------------------------------------------------------
     bool  hudRedirect = true;    // capture the interface off the eye texture

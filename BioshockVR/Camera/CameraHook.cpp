@@ -21,6 +21,7 @@
 #include "Game/EngineExec.h"
 #include "Input/InputHook.h"
 #include "Hands/HandsProbe.h"
+#include "Game/FireSeam.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -2694,25 +2695,57 @@ static void DriveHands(const FVector& camLoc, const float headPos[3])
     double wy = camLoc.y + (relFwd * sn + relRight * cs);
     double wz = camLoc.z + relUp;
 
+    // The gun's own axes, from the orientation that will ACTUALLY be rendered --
+    // `want`, now that we no longer ask for a roll the game refuses to keep.
+    // HOISTED out of the grip block below because the muzzle publish needs the
+    // same basis, and two copies of this trig is two chances to disagree about
+    // which way the gun points.
+    const double gp = UnitsToRad(want.pitch);
+    const double gy = UnitsToRad(want.yaw);
+    const double gr = UnitsToRad(want.roll);
+
+    const double CP = cos(gp), SP = sin(gp);
+    const double CY = cos(gy), SY = sin(gy);
+    const double CR = cos(gr), SR = sin(gr);
+
+    const double Fx = CP * CY, Fy = CP * SY, Fz = SP;
+    const double Rx = SR * SP * CY - CR * SY, Ry = SR * SP * SY + CR * CY, Rz = -SR * CP;
+    const double Ux = -(CR * SP * CY + SR * SY), Uy = CY * SR - CR * SP * SY, Uz = CR * CP;
+
+    // ---- WHERE THE SHOT STARTS -------------------------------------------
+    // PUBLISHED HERE, BEFORE the grip subtraction, and that ordering is the
+    // whole point: wx/wy/wz is still the TRACKED HAND's world point at this
+    // line. After the subtraction it is the actor origin, which sits at the eye
+    // -- the very thing whose distance from the gun this feature exists to fix.
+    //
+    // MuzzleOffset is per weapon along the gun's own axes, so a barrel length
+    // tuned once follows the gun through every angle. 0,0,0 is the hand itself,
+    // which is already far closer to the muzzle than the pawn's body is.
+    //
+    // GAME THREAD -> the fire-seam detour, which is also the game thread. The
+    // stamp inside FireSeam is what makes a stale publish refuse rather than
+    // aim from last frame's pose. Everything that gates DriveHands -- the
+    // cutscene check, ViewHeldForUi, ScriptedQol, sixDofHands -- gates this too
+    // by being above it, so the seam inherits the whole gameplay condition
+    // without a second predicate to keep in sync.
+    if (g_cfg.fireSeam)
+    {
+        const double mX = g_cfg.muzzleOff[0];
+        const double mY = g_cfg.muzzleOff[1];
+        const double mZ = g_cfg.muzzleOff[2];
+
+        const double muzzle[3] = {
+            wx + (Fx * mX + Rx * mY + Ux * mZ),
+            wy + (Fy * mX + Ry * mY + Uy * mZ),
+            wz + (Fz * mX + Rz * mY + Uz * mZ) };
+        FireSeam_PublishOrigin(muzzle);
+    }
+
     // The Hands actor origin sits at the EYE (PlayerViewOffset is 0,0,0), with
     // the arm authored extending forward and down from there. Subtract where the
-    // hand sits in mesh space, rotated by the orientation that will ACTUALLY be
-    // rendered -- which is `want`, now that we no longer ask for a roll the game
-    // refuses to keep.
+    // hand sits in mesh space, rotated by the orientation above.
     if (g_cfg.handsGrip[0] || g_cfg.handsGrip[1] || g_cfg.handsGrip[2])
     {
-        const double gp = UnitsToRad(want.pitch);
-        const double gy = UnitsToRad(want.yaw);
-        const double gr = UnitsToRad(want.roll);
-
-        const double CP = cos(gp), SP = sin(gp);
-        const double CY = cos(gy), SY = sin(gy);
-        const double CR = cos(gr), SR = sin(gr);
-
-        const double Fx = CP * CY, Fy = CP * SY, Fz = SP;
-        const double Rx = SR * SP * CY - CR * SY, Ry = SR * SP * SY + CR * CY, Rz = -SR * CP;
-        const double Ux = -(CR * SP * CY + SR * SY), Uy = CY * SR - CR * SP * SY, Uz = CR * CP;
-
         const double gX = g_cfg.handsGrip[0];
         const double gY = g_cfg.handsGrip[1];
         const double gZ = g_cfg.handsGrip[2];
@@ -4410,6 +4443,28 @@ static void __fastcall hkCalcView(void* pThis, void* edx,
                 // against the view we just composed. Both final, both from the
                 // same frame.
                 PublishShotDir(finalRot, want);
+
+                // ---- AND THE FIRE SEAM, IF IT IS ALLOWED THE DIRECTION ----
+                // Deliberately the CONTROLLER composition rather than `want`.
+                // In the modes where the head owns the aim field, `want` carries
+                // the head and the shot goes where you LOOK -- publishing the
+                // controller here is what lets FireAimSub make the shot follow
+                // the GUN in every movement mode, which is the enabler for true
+                // aim-down-sight. Falls back to `want` when there is no valid
+                // hand pose, and then substituting it is a no-op by
+                // construction: it is the value the engine was going to read.
+                if (g_cfg.fireSeam && g_cfg.fireAimSub)
+                {
+                    FRotator gunAim = want;
+                    if (g_aimHandValid)
+                    {
+                        gunAim = ComposeHeadLocal(g_aimBase,
+                            g_aimHandYaw, g_aimHandPitch,
+                            g_cfg.headAimMode >= 2);
+                        gunAim.roll = g_aimBase.roll;
+                    }
+                    FireSeam_PublishAim(gunAim.pitch, gunAim.yaw, gunAim.roll);
+                }
 
                 // And so does locomotion, for exactly the same reason. `want` is
                 // the post-composition yaw the walk direction will be measured

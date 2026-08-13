@@ -150,6 +150,7 @@
     <ClCompile Include="Game\EngineBridge.cpp" />
     <ClCompile Include="Game\EngineExec.cpp" />
     <ClCompile Include="Game\ExecQueue.cpp" />
+    <ClCompile Include="Game\FireSeam.cpp" />
     <ClCompile Include="Game\GameIni.cpp" />
     <ClCompile Include="Game\GameState.cpp" />
     <ClCompile Include="Hands\HandsProbe.cpp" />
@@ -167,6 +168,7 @@
     <ClInclude Include="Game\EngineBridge.h" />
     <ClInclude Include="Game\EngineExec.h" />
     <ClInclude Include="Game\ExecQueue.h" />
+    <ClInclude Include="Game\FireSeam.h" />
     <ClInclude Include="Game\GameIni.h" />
     <ClInclude Include="Game\GameState.h" />
     <ClInclude Include="Hands\HandsProbe.h" />

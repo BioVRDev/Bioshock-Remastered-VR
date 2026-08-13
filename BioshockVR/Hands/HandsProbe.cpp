@@ -33,6 +33,7 @@
 #include "Hands/HandsProbe.h"
 #include "Hands/ArmHide.h"
 #include "Input/Swing.h"
+#include "Game/FireSeam.h"
 
 #include <windows.h>
 #include <intrin.h>
@@ -297,6 +298,8 @@ static void PollGripKeys()
     //   2 CURSOR    8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- the aim ray
     //   3 FREE POS  8/2 fwd   6/4 right  0/5 up     (cm)   -- M6-S1
     //   4 FREE ROT  8/2 pitch 6/4 yaw    0/5 roll   (deg)  -- M6-S1
+    //   5 MUZZLE    8/2 fwd   6/4 right  0/5 up     (cm)   -- where the shot
+    //                                                         STARTS, per weapon
     //
     // The two free-hand modes edit whichever hand is currently FREE -- the left
     // one with a weapon, the right one with a plasmid -- and save to
@@ -315,22 +318,25 @@ static void PollGripKeys()
         ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0);
     if (modeDown && !prevMode)
     {
-        g_editMode = (g_editMode + 1) % 5;
+        g_editMode = (g_editMode + 1) % 6;
         Log(">>> GRIP: numpad now edits %s%s",
             (g_editMode == 0) ? "GUN POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
             : (g_editMode == 1) ? "GUN ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
             : (g_editMode == 2) ? "CURSOR (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
             : (g_editMode == 3) ? "FREE HAND POSITION (8/2 fwd, 6/4 right, 0/5 up, cm)"
-            : "FREE HAND ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)",
-            (g_editMode >= 3) ? (g_abilityMode ? "  -- the RIGHT hand"
-                                              : "  -- the LEFT hand") : "");
+            : (g_editMode == 4) ? "FREE HAND ROTATION (8/2 pitch, 6/4 yaw, 0/5 roll, deg)"
+            : "MUZZLE ORIGIN (8/2 fwd, 6/4 right, 0/5 up, cm) -- where the SHOT starts",
+            (g_editMode == 3 || g_editMode == 4)
+                ? (g_abilityMode ? "  -- the RIGHT hand" : "  -- the LEFT hand")
+                : "");
     }
     prevMode = modeDown;
 
     // Which modes move something in centimetres rather than degrees. Was
     // "mode 0", and stayed correct only while position was the single first
     // mode -- adding LEFT HAND POSITION at the end broke that assumption.
-    const bool posMode = (g_editMode == 0) || (g_editMode == 3);
+    const bool posMode = (g_editMode == 0) || (g_editMode == 3) ||
+        (g_editMode == 5);
 
     const bool stepDown = (GetAsyncKeyState(VK_NUMPAD7) & 0x8000) != 0;
     if (stepDown && !prevStep)
@@ -362,7 +368,8 @@ static void PollGripKeys()
         : (g_editMode == 1) ? g_cfg.handsRot
         : (g_editMode == 2) ? g_cfg.cursorRot
         : (g_editMode == 3) ? (freeIsRight ? g_cfg.rightHandOffset : g_cfg.leftHandOffset)
-        : (freeIsRight ? g_cfg.rightHandRot : g_cfg.leftHandRot);
+        : (g_editMode == 4) ? (freeIsRight ? g_cfg.rightHandRot : g_cfg.leftHandRot)
+        : g_cfg.muzzleOff;
     const float amt = posMode ? step : rotStep;
 
     bool changed = false;
@@ -385,7 +392,8 @@ static void PollGripKeys()
             : (g_editMode == 1) ? "RotOffset"
             : (g_editMode == 2) ? "CursorOffset"
             : (g_editMode == 3) ? (freeIsRight ? "RightHandOffset" : "LeftHandOffset")
-            : (freeIsRight ? "RightHandRot" : "LeftHandRot");
+            : (g_editMode == 4) ? (freeIsRight ? "RightHandRot" : "LeftHandRot")
+            : "MuzzleOffset";
         const float* val = tgt;
         const char* units = posMode ? "(fwd, right, up cm)"
             : "(pitch, yaw, roll deg)";
@@ -393,7 +401,11 @@ static void PollGripKeys()
         // THE LEFT HAND IS NOT PER-WEAPON. One hand, one value, and it must not
         // pick up a slot suffix -- LeftHandOffset1 is a key nothing reads, and
         // an ini key nothing reads looks exactly like one that works.
-        if (g_editMode >= 3)
+        //
+        // MODE 5 IS NOT ONE OF THESE. A muzzle belongs to the weapon, so it
+        // falls through to the per-slot branch below with GripOffset and
+        // CursorOffset.
+        if (g_editMode == 3 || g_editMode == 4)
         {
             Cfg_WriteVec3(what, val);
             Log(">>> GRIP: %s=%.2f,%.2f,%.2f   %s   [SAVED]",
@@ -404,7 +416,7 @@ static void PollGripKeys()
         // move Telekinesis. Only when the plasmid is actually identified --
         // otherwise fall through to the slot key below, which is today's
         // behaviour and is still correct.
-        else if (g_wepSlot == 8 && g_plasId >= 0)
+        else if (g_wepSlot == 8 && g_plasId >= 0 && g_editMode <= 2)
         {
             const char* pw = (g_editMode == 0) ? "PlasmidGrip"
                 : (g_editMode == 1) ? "PlasmidRot" : "PlasmidCursor";
@@ -1682,48 +1694,30 @@ static const char* kWepName[9] = {
     "MachineGun", "ChemicalThrower", "ResearchCamera", "Plasmid"
 };
 
-// ---- CYCLE 0: AWeapon::GetPerfectFireStart, LOCATE ONLY ------------------
-// M4-S3 ASKS WHAT THE FIRING TRACE READS -- Controller.Rotation, or the weapon's
-// own socket. Every attempt so far has tried to INFER it. This asks: the game
-// has a virtual that returns the shot origin and rotation, and a second source
-// puts it at vtable slot +0x304 with "live-confirmed firing, origin substitution
-// proven".
+// ---- AWeapon::GetPerfectFireStart, LOCATED THEN HOOKED -------------------
+// M4-S3 asked what the firing trace reads -- Controller.Rotation, or the
+// weapon's own socket. It is now answered by ASKING rather than inferring: the
+// game has a virtual that hands back the shot's origin and rotation, and the
+// held weapon's vtable is where we find it.
 //
 // A VTABLE SLOT NEEDS NO HARDCODED RVA, which is the whole reason this is worth
 // doing and the reason it survives a storefront change. We already hold the
 // weapon pointer; slot 0x304/4 = 193 of its vtable is a pointer we can read.
 //
-// LOCATE ONLY. NOTHING IS CALLED. Calling a misidentified virtual crashes rather
-// than logs, and a __thiscall returning a struct by hidden pointer is exactly
-// the shape that "unbalanced the stack" in the reference project. The prologue
-// bytes are logged so the address can be sanity-checked against the four
-// accessors EngineBridge already validates the same way.
+// THIS USED TO BE LOCATE-ONLY, and the caution was right at the time -- a
+// __thiscall whose argument count we had not measured is exactly the shape that
+// "unbalanced the stack" in the reference project. FireSeam now measures the
+// function's own `ret imm` before hooking it, and refuses if it disagrees. All
+// the risk assessment moved into that file; this is just the one place in the
+// mod that holds a weapon pointer.
+//
+// CALLED EVERY FRAME A WEAPON IS HELD, deliberately: the install latches, but
+// the DISTINCT-TARGET CENSUS must keep looking. Each weapon class has its own
+// vtable, and a subclass overriding this implementation would be invisible to a
+// probe that stopped at the first gun.
 static void ProbeFireStartSlot(const void* hold)
 {
-    static bool done = false;
-    if (done || !hold || !g_cfg.plasmidProbe) return;
-
-    if (!Readable(hold, 4)) return;
-    void* const vt = *(void* const*)hold;
-    if (!vt || !Readable((const uint8_t*)vt + 0x304, 4)) return;
-
-    done = true;
-
-    void* const fn = *(void* const*)((const uint8_t*)vt + 0x304);
-    if (!fn || !Readable(fn, 8))
-    {
-        Log(">>> FIRESTART: weapon vtable 0x%08X slot +0x304 = 0x%08X -- not "
-            "readable code. The slot number is a second-source claim, not ours.",
-            (unsigned)(uintptr_t)vt, (unsigned)(uintptr_t)fn);
-        return;
-    }
-
-    const uint8_t* b = (const uint8_t*)fn;
-    Log(">>> FIRESTART: GetPerfectFireStart? vtable 0x%08X +0x304 -> 0x%08X  "
-        "prologue %02X %02X %02X %02X %02X %02X %02X %02X  (LOCATE ONLY, "
-        "never called)",
-        (unsigned)(uintptr_t)vt, (unsigned)(uintptr_t)fn,
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+    FireSeam_TryInstall(hold);
 }
 
 // One grip offset per slot, all seeded from HandsGripOffset. The numpad keys
@@ -1732,6 +1726,7 @@ static void ProbeFireStartSlot(const void* hold)
 // both values print on every switch ready to paste into the ini.
 static float g_gripBySlot[9][3] = {};
 static float g_rotBySlot[9][3] = {};
+static float g_muzzleBySlot[9][3] = {};
 static bool  g_gripInit = false;
 
 // ---- M6-S4: WHICH PLASMID IS IN YOUR HAND -------------------------------
@@ -1781,8 +1776,9 @@ static int ResolveWeaponSlot(const void* hands)
     const void* hold = *(void* const*)((const uint8_t*)hands + g_cfg.gunPtrOff);
     if (!hold) return 8;                       // plasmid / ability mode
 
-    // The weapon pointer is in hand here and nowhere else, and the probe is a
-    // one-shot that latches on its first success.
+    // The weapon pointer is in hand here and nowhere else. The install latches;
+    // the distinct-target census does not, because a subclass that overrides
+    // GetPerfectFireStart only shows up when that weapon is drawn.
     ProbeFireStartSlot(hold);
 
     int k = -1;
@@ -1872,6 +1868,7 @@ static void UpdateWeaponGrip(const void* hands)
                 g_gripBySlot[i][a] = g_cfg.gripSlot[i][a];
                 g_rotBySlot[i][a] = g_cfg.rotSlot[i][a];
                 g_cursorBySlot[i][a] = g_cfg.cursorSlot[i][a];
+                g_muzzleBySlot[i][a] = g_cfg.muzzleSlot[i][a];
             }
         g_gripInit = true;
     }
@@ -1909,6 +1906,7 @@ static void UpdateWeaponGrip(const void* hands)
                 g_gripBySlot[g_wepSlot][a] = g_cfg.handsGrip[a];
                 g_rotBySlot[g_wepSlot][a] = g_cfg.handsRot[a];
                 g_cursorBySlot[g_wepSlot][a] = g_cfg.cursorRot[a];
+                g_muzzleBySlot[g_wepSlot][a] = g_cfg.muzzleOff[a];
             }
             Log(">>> GRIP: saved  slot %d %-16s GripOffset%d=%.1f,%.1f,%.1f  RotOffset%d=%.0f,%.0f,%.0f",
                 g_wepSlot, kWepName[g_wepSlot],
@@ -1927,6 +1925,10 @@ static void UpdateWeaponGrip(const void* hands)
             g_cfg.handsGrip[a] = g_cfg.plasmidGrip[plas][a];
             g_cfg.handsRot[a] = g_cfg.plasmidRot[plas][a];
             g_cfg.cursorRot[a] = g_cfg.plasmidCursor[plas][a];
+            // No per-plasmid muzzle: the plasmid cast goes through
+            // UAttackAbility::GetPerfectFireStart, which this build does not
+            // hook. Slot 8's value carries so the field is never stale.
+            g_cfg.muzzleOff[a] = g_muzzleBySlot[8][a];
         }
         Log(">>> GRIP: LIVE   plasmid %d          pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
             plas,
@@ -1940,11 +1942,13 @@ static void UpdateWeaponGrip(const void* hands)
             g_cfg.handsGrip[a] = g_gripBySlot[slot][a];
             g_cfg.handsRot[a] = g_rotBySlot[slot][a];
             g_cfg.cursorRot[a] = g_cursorBySlot[slot][a];
+            g_cfg.muzzleOff[a] = g_muzzleBySlot[slot][a];
         }
-        Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f",
+        Log(">>> GRIP: LIVE   slot %d %-16s pos %.1f,%.1f,%.1f  rot %.0f,%.0f,%.0f  muzzle %.1f,%.1f,%.1f",
             slot, kWepName[slot],
             g_cfg.handsGrip[0], g_cfg.handsGrip[1], g_cfg.handsGrip[2],
-            g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2]);
+            g_cfg.handsRot[0], g_cfg.handsRot[1], g_cfg.handsRot[2],
+            g_cfg.muzzleOff[0], g_cfg.muzzleOff[1], g_cfg.muzzleOff[2]);
     }
 
     ApplyIdleAnim(hands, slot);
@@ -2152,6 +2156,12 @@ void HandsProbe_Reset()
     // actor may already be freed and its address handed to something else.
     ArmHide_Reset();
     Swing_Reset();
+
+    // The fire seam's snapshot points at a pawn that no longer exists, and its
+    // per-weapon census belongs to the old world. The HOOK is not dropped: the
+    // function address belongs to the module, not to the level.
+    FireSeam_LogCensus();
+    FireSeam_Reset();
 
     g_locOff = 0;
     g_pawn = nullptr;
