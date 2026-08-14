@@ -23,7 +23,7 @@ rem ===========================================================================
 
 setlocal enabledelayedexpansion
 
-set "BUILD=2026-08-13-a"
+set "BUILD=2026-08-13-c"
 set "LDR_LIVE=openxr_loader.dll"
 set "LDR_SHIM=openxr_loader_steam.dll"
 set "LDR_STD=openxr_loader_standard.dll"
@@ -130,12 +130,20 @@ set "RESY=2850"
 set "FOV=100"
 set "ANISO=16"
 set "GIP="
+rem  DPADCUR and DPADFLIP are read only so the controls summary at the end can
+rem  state what is actually configured rather than what Setup happens to write.
+rem  Setup writes the modifier for some headsets and leaves it alone for the
+rem  rest, so without reading it the summary would be guessing for most users.
+set "DPADCUR=1"
+set "DPADFLIP=0"
 for /f "usebackq eol=; tokens=1,* delims==" %%A in ("%MODINI%") do (
     if /i "%%A"=="ResolutionX"    set "RESX=%%B"
     if /i "%%A"=="ResolutionY"    set "RESY=%%B"
     if /i "%%A"=="GameFovDegrees" set "FOV=%%B"
     if /i "%%A"=="Anisotropy"     set "ANISO=%%B"
     if /i "%%A"=="GameIniPath"    set "GIP=%%B"
+    if /i "%%A"=="ControllerDpadModifier" set "DPADCUR=%%B"
+    if /i "%%A"=="ControllerDpadFlip"     set "DPADFLIP=%%B"
 )
 for /f "tokens=1 delims=." %%X in ("%FOV%") do set "FOV=%%X"
 
@@ -300,14 +308,15 @@ echo   -----------------------------------------
 echo    Which headset do you have?
 echo   -----------------------------------------
 echo.
-echo     1  Meta Quest 3 / 3S           9  Bigscreen Beyond 1 / 2
-echo     2  Meta Quest Pro             10  Pimax Crystal / Light
-echo     3  Meta Quest 2               11  Pimax 5K / 8K
-echo     4  Meta Quest 1               12  Reverb G2 / other WMR
-echo     5  Meta Rift S / Rift CV1     13  Varjo Aero / XR-3
-echo     6  Valve Index                14  Pico 4 / 4 Ultra
-echo     7  HTC Vive / Vive Pro        15  Somnium VR1
-echo     8  Vive Pro 2 / XR Elite      16  Something else
+echo     1  Meta Quest 3 / 3S          10  Pimax Crystal / Light
+echo     2  Meta Quest Pro             11  Pimax 5K / 8K
+echo     3  Meta Quest 2               12  Reverb G2 / other WMR
+echo     4  Meta Quest 1               13  Varjo Aero / XR-3
+echo     5  Meta Rift S / Rift CV1     14  Pico 4 / 4 Ultra
+echo     6  Valve Index                15  Somnium VR1
+echo     7  HTC Vive / Vive Pro        16  PSVR2
+echo     8  Vive Pro 2 / XR Elite      17  Something else
+echo     9  Bigscreen Beyond 1 / 2
 echo.
 set "HMD="
 set /p "HMD=  Headset number: "
@@ -328,7 +337,8 @@ if "%HMD%"=="12" set "HMDNAME=Reverb G2 / WMR"
 if "%HMD%"=="13" set "HMDNAME=Varjo"
 if "%HMD%"=="14" set "HMDNAME=Pico 4"
 if "%HMD%"=="15" set "HMDNAME=Somnium VR1"
-if "%HMD%"=="16" (
+if "%HMD%"=="16" set "HMDNAME=PSVR2"
+if "%HMD%"=="17" (
     set "HMDNAME="
     set /p "HMDNAME=  Type the headset name: "
     if not defined HMDNAME set "HMDNAME=unspecified (other)"
@@ -338,12 +348,49 @@ rem ---- the one setting the answer decides ----------------------------------
 rem  6 Index, 9 Beyond, 13 Varjo, 15 Somnium -- trackpad controllers, where the
 rem  default modifier lands on the thumb's resting place and stops you walking.
 rem  5 Rift S / CV1 -- the CV1 has no thumbrest sensor, so mode 1 never fires.
+rem  16 PSVR2 -- REPORTED, not measured: a PSVR2 user reached the map only with
+rem  mode 2, which reads as mode 1's thumbrest touch not binding through the
+rem  shim. One report, so it is a better default than the current one rather
+rem  than a proven fact; the ini comment says how to change it back.
+rem
+rem  7, 8 Vive and 12 WMR -- READ OUT OF THE MOD'S OWN BINDING TABLES, not
+rem  guessed. Neither profile binds rest_l or rest_r at all (WMR leaves them out
+rem  deliberately, to keep the modifier off the trackpad the face buttons live
+rem  on), so the DEFAULT modifier is inert on both and those users have no map
+rem  and no context help whatsoever. Mode 2 is the only one their hardware can
+rem  reach.
 set "DPADFIX="
 if "%HMD%"=="5"  set "DPADFIX=2"
 if "%HMD%"=="6"  set "DPADFIX=2"
+if "%HMD%"=="7"  set "DPADFIX=2"
+if "%HMD%"=="8"  set "DPADFIX=2"
 if "%HMD%"=="9"  set "DPADFIX=2"
+if "%HMD%"=="12" set "DPADFIX=2"
 if "%HMD%"=="13" set "DPADFIX=2"
 if "%HMD%"=="15" set "DPADFIX=2"
+if "%HMD%"=="16" set "DPADFIX=2"
+
+rem ---- WMR gets a different button layout, and only WMR ---------------------
+rem  The chain is: physical button -> the mod's A/B/X/Y action -> an XInput
+rem  button -> a game function, where A is Use, B is Med hypo, X is Hack/Reload
+rem  and Y is Jump. The shipped ControllerLayout=0 sends action Y to Jump, and
+rem  THE WMR PROFILE BINDS NO Y AT ALL, so WMR players have no jump button.
+rem
+rem  Layout 1 rotates the same four physical buttons onto Jump, Hack, Use and
+rem  Med hypo. WMR then gets Jump, Hack and Use and loses only the hypo, which
+rem  is reachable from the radial anyway. Trading the hypo for jump is the easy
+rem  call when jump gates progression.
+set "LAYOUTFIX="
+if "%HMD%"=="12" set "LAYOUTFIX=1"
+if defined LAYOUTFIX (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$src='using System;using System.Runtime.InteropServices;namespace W32{public class Ini{[DllImport(\"kernel32\",CharSet=CharSet.Unicode)]public static extern bool WritePrivateProfileString(string a,string b,string c,string d);}}'; Add-Type -TypeDefinition $src -ErrorAction SilentlyContinue; [void][W32.Ini]::WritePrivateProfileString('VR','ControllerLayout','%LAYOUTFIX%','%MODINI%')" 2>nul
+    echo.
+    echo   Controls:    set ControllerLayout=%LAYOUTFIX% so you have a jump button.
+    echo                Your controllers bind no Y, and Y is jump on the default
+    echo                layout. This trades the med hypo button for jump; the
+    echo                hypo is still on the radial.
+    call :log "headset fix: ControllerLayout=%LAYOUTFIX% for !HMDNAME! (no Y bound)"
+)
 
 if defined DPADFIX (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "$src='using System;using System.Runtime.InteropServices;namespace W32{public class Ini{[DllImport(\"kernel32\",CharSet=CharSet.Unicode)]public static extern bool WritePrivateProfileString(string a,string b,string c,string d);}}'; Add-Type -TypeDefinition $src -ErrorAction SilentlyContinue; [void][W32.Ini]::WritePrivateProfileString('VR','ControllerDpadModifier','%DPADFIX%','%MODINI%')" 2>nul
@@ -360,6 +407,68 @@ if "%HMD%"=="12" (
     echo                plasmid wheel does not open, that is the known cause --
     echo                say so in a bug report and include your logs.
     call :log "headset note: WMR digital grip caveat shown"
+)
+
+rem  Vive wands are the most constrained device the mod supports, and it is not
+rem  close. The profile binds ONE face action, Use, on the right menu button;
+rem  Med hypo, Hack/Reload and Jump have no button to go to. Jump could come
+rem  from the trackpad click, but that click is the only workable d-pad
+rem  modifier and the mod resolves the conflict in the modifier's favour. There
+rem  is no configuration that fixes this, so say so instead of implying one.
+if "%HMD%"=="7"  set "VIVEWARN=1"
+if "%HMD%"=="8"  set "VIVEWARN=1"
+if defined VIVEWARN (
+    echo.
+    echo   Note:        Vive wands have no A/B/X/Y buttons, so only USE is bound
+    echo                to a button. Med hypo, hack/reload and jump have nowhere
+    echo                to go on this controller. Everything else works. If your
+    echo                headset came with Index controllers instead, pick 6.
+    call :log "headset note: Vive wand missing-action warning shown"
+)
+
+rem  Index-family analog grips read high from a resting hand. The ini documents
+rem  0.90 as the remedy but words it as conditional, and it is: it depends on
+rem  hand size and how you hold them. Said, not written.
+if "%HMD%"=="6"  set "GRIPNOTE=1"
+if "%HMD%"=="9"  set "GRIPNOTE=1"
+if "%HMD%"=="13" set "GRIPNOTE=1"
+if "%HMD%"=="15" set "GRIPNOTE=1"
+if defined GRIPNOTE (
+    echo.
+    echo   Note:        Index-style grips can read as held by a resting hand,
+    echo                which eats your face buttons. If that happens, set
+    echo                GripThreshold=0.90 in BioshockVR.ini.
+    call :log "headset note: Index grip threshold hint shown"
+)
+
+rem  There is no Pico interaction profile in the mod. Pico's runtime usually
+rem  advertises the Touch profile and everything works; if it does not, the
+rem  session falls back to the simple controller, which reaches menus and
+rem  nothing else. The log names whichever one actually matched, so point at it
+rem  rather than guessing here.
+if "%HMD%"=="14" (
+    echo.
+    echo   Note:        Pico is not a profile the mod ships bindings for, so it
+    echo                relies on your runtime reporting Touch compatibility.
+    echo                If the sticks and buttons do nothing in game, send your
+    echo                log: the line ">>> INPUT: bound profile" names what
+    echo                actually matched.
+    call :log "headset note: Pico profile caveat shown"
+)
+
+rem  PSVR2 puts Options on the RIGHT controller, unlike Touch. Without the chord
+rem  the modifier and the pause button are both right-handed and the map takes
+rem  two hands on one controller. The chord is on the LEFT controller's two face
+rem  buttons, so it frees the right thumb. Choosing SteamVR below already turns
+rem  it on -- this only says so, because a control you do not know about is the
+rem  same as one that does not exist.
+if "%HMD%"=="16" (
+    echo.
+    echo   Note:        On PSVR2, pause is both face buttons on the LEFT
+    echo                controller pressed together. SteamVR decides which
+    echo                physical buttons those are, and its own controller
+    echo                binding screen can move them if it picked badly.
+    call :log "headset note: PSVR2 left-hand pause chord explained"
 )
 call :log "--- headset ---"
 call :log "user reported: !HMDNAME!"
@@ -378,10 +487,28 @@ rem ===========================================================================
 set "XRRUNTIME="
 for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Khronos\OpenXR\1" /v ActiveRuntime 2^>nul ^| findstr /i "ActiveRuntime"') do set "XRRUNTIME=%%B"
 
+rem ---- THESE TESTS MUST USE ! AND NOT %, AND IT IS NOT A STYLE CHOICE -------
+rem
+rem  REPORTED 1.0.3, and it stopped Setup dead: "set was unexpected at this
+rem  time", window closes, no runtime prompt, no log line. It happened to every
+rem  user whose ONLY runtime is SteamVR -- Index, Vive, PSVR2 -- which is
+rem  precisely the group that needs the bundled shim and could least afford the
+rem  installer to die before offering it.
+rem
+rem  cmd expands every %VAR% on a line BEFORE it executes any of that line, so
+rem  `if defined XRRUNTIME` guards the execution and does nothing whatsoever
+rem  about the expansion beside it. With no 32-bit runtime registered the
+rem  variable does not exist, the %XRRUNTIME:steamxr=% substitution cannot be
+rem  resolved, and cmd reports the next token it can see -- `set`.
+rem
+rem  !VAR! is resolved at EXECUTION time, after the guard has been evaluated, so
+rem  an undefined variable is simply empty and the comparison is ""=="".
+rem  Delayed expansion is already on (line 24) and !RTNAME! below already relies
+rem  on it. Do not "tidy" these back into % form.
 set "HAS32=1"
 if not defined XRRUNTIME set "HAS32=0"
-if defined XRRUNTIME if not exist "%XRRUNTIME%" set "HAS32=0"
-if defined XRRUNTIME if not "%XRRUNTIME:steamxr=%"=="%XRRUNTIME%" set "HAS32=0"
+if defined XRRUNTIME if not exist "!XRRUNTIME!" set "HAS32=0"
+if defined XRRUNTIME if not "!XRRUNTIME:steamxr=!"=="!XRRUNTIME!" set "HAS32=0"
 
 set "RTNAME=none"
 if "%HAS32%"=="1" (
@@ -392,10 +519,14 @@ if "%HAS32%"=="1" (
     rem  prompt -- executed more than once. The substitution test below is
     rem  case-insensitive, needs no child process, and is the same idiom the
     rem  steamxr check above already uses.
-    if not "%XRRUNTIME:virtualdesktop=%"=="%XRRUNTIME%" set "RTNAME=VDXR"
-    if not "%XRRUNTIME:oculus=%"=="%XRRUNTIME%"         set "RTNAME=Oculus OpenXR"
-    if not "%XRRUNTIME:pimax=%"=="%XRRUNTIME%"          set "RTNAME=Pimax-OpenXR"
-    if not "%XRRUNTIME:mixedreality=%"=="%XRRUNTIME%"   set "RTNAME=WMR OpenXR"
+    rem  ! not %, for the reason spelled out above the HAS32 tests. Inside a
+    rem  parenthesised block the hazard is worse, not better: the WHOLE block is
+    rem  parsed in one go, so these four expand before the `if` above them has
+    rem  decided anything at all.
+    if not "!XRRUNTIME:virtualdesktop=!"=="!XRRUNTIME!" set "RTNAME=VDXR"
+    if not "!XRRUNTIME:oculus=!"=="!XRRUNTIME!"         set "RTNAME=Oculus OpenXR"
+    if not "!XRRUNTIME:pimax=!"=="!XRRUNTIME!"          set "RTNAME=Pimax-OpenXR"
+    if not "!XRRUNTIME:mixedreality=!"=="!XRRUNTIME!"   set "RTNAME=WMR OpenXR"
 )
 
 call :log "--- openxr ---"
@@ -461,24 +592,112 @@ if "%MODE%"=="STD" if "%HAS32%"=="0" (
     call :log "WARNING: native chosen with no usable 32-bit runtime"
 )
 
-rem ---- pause chord, which depends on the runtime -----------------------------
+rem ---- pause chord: the RUNTIME asks for it, the HEADSET can refuse ---------
 rem  Hold X+Y to pause. On the SHIM the menu button is not reliably delivered,
 rem  so the chord is how you reach the pause menu at all. On native OpenXR the
 rem  menu button works and the chord only costs you two buttons that can fire it
-rem  by accident -- so it is off there.
+rem  by accident, so it is off there.
+rem
+rem  BUT IT IS A HARDWARE CAPABILITY BEFORE IT IS A RUNTIME PREFERENCE, and this
+rem  used to be decided on the runtime alone. Read out of the mod's binding
+rem  tables: the Vive wand profile binds NO face buttons at all, and the WMR
+rem  profile binds X but no Y. There is no chord to press on either. Turning it
+rem  on for them was inert, and worse, the controls summary would have told them
+rem  to press two buttons their controllers do not have. Both profiles bind a
+rem  left menu button, so pause stays there and works.
 rem
 rem  WRITTEN BOTH WAYS, not just when switching on: someone who runs this again
 rem  and changes runtime must get the matching value, and a one-way write would
 rem  leave the old one in place.
 set "CHORD=0"
 if "%MODE%"=="SHIM" set "CHORD=1"
+set "NOCHORD="
+if "%HMD%"=="7"  set "NOCHORD=1"
+if "%HMD%"=="8"  set "NOCHORD=1"
+if "%HMD%"=="12" set "NOCHORD=1"
+if defined NOCHORD set "CHORD=0"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$src='using System;using System.Runtime.InteropServices;namespace W32{public class Ini{[DllImport(\"kernel32\",CharSet=CharSet.Unicode)]public static extern bool WritePrivateProfileString(string a,string b,string c,string d);}}'; Add-Type -TypeDefinition $src -ErrorAction SilentlyContinue; [void][W32.Ini]::WritePrivateProfileString('VR','ControllerPauseChord','%CHORD%','%MODINI%')" 2>nul
 if "%CHORD%"=="1" (
     echo   Controls:    hold X+Y to pause, enabled for SteamVR.
 ) else (
-    echo   Controls:    pause is the menu button; the X+Y chord is off.
+    if defined NOCHORD (
+        echo   Controls:    pause is the menu button. Your controllers have no
+        echo                second face button, so the X+Y chord is off.
+    ) else (
+        echo   Controls:    pause is the menu button; the X+Y chord is off.
+    )
 )
-call :log "pause chord: ControllerPauseChord=%CHORD% for MODE=%MODE%"
+call :log "pause chord: ControllerPauseChord=%CHORD% for MODE=%MODE% hmd=%HMD%"
+
+
+rem ===========================================================================
+rem  HOW DO YOU WANT TO PLAY? This one is acted on, and it is only ini keys.
+rem
+rem  Everything the mod ships assumes tracked controllers, and two of those
+rem  defaults actively fight anything else: EnableHeadAim=1 rewrites your
+rem  heading every frame, so a mouse or a pad stick is overwritten as fast as
+rem  you move it, and AimSource=1 draws the crosshair from controllers that are
+rem  sitting on a desk while the bullet goes somewhere else entirely.
+rem
+rem  ALL THREE MODES WRITE EVERY KEY, including motion controllers. If this only
+rem  wrote keys for the two new modes, anyone who tried gamepad and wanted to go
+rem  back would have no way to undo it.
+rem
+rem  Head tracking, stereo, the HUD panel and the anchored screens are untouched
+rem  in every mode. EnableController governs controller INPUT only.
+rem ===========================================================================
+echo.
+echo   -----------------------------------------
+echo    How do you want to play?
+echo   -----------------------------------------
+echo.
+echo     1  VR motion controllers    the full mod         [recommended]
+echo     2  Gamepad                  Xbox pad, seated
+echo     3  Mouse and keyboard       seated
+echo.
+echo     Head tracking and stereo work in all three.
+echo     Press Enter to take the recommended option.
+echo.
+set "PLAY="
+set /p "PLAY=  Play style [1]: "
+if not defined PLAY set "PLAY=1"
+
+set "PLAYNAME=VR motion controllers"
+set "P_HEADAIM=1" & set "P_AIMSRC=1" & set "P_MOVE=2" & set "P_6DOF=1"
+set "P_WHD=1"     & set "P_OFFHAND=2" & set "P_TWOHAND=1" & set "P_SWING=1"
+set "P_CTLMODE=1" & set "P_CTLON=1"
+
+if "%PLAY%"=="2" (
+    set "PLAYNAME=Gamepad"
+    set "P_HEADAIM=0" & set "P_AIMSRC=0" & set "P_MOVE=0" & set "P_6DOF=0"
+    set "P_WHD=0"     & set "P_OFFHAND=0" & set "P_TWOHAND=0" & set "P_SWING=0"
+    rem  MERGE, not off. A real pad in slot 0 wins outright and the VR
+    rem  controllers still work if it is unplugged, which is exactly what the
+    rem  merge path was written for.
+    set "P_CTLMODE=0" & set "P_CTLON=1"
+)
+if "%PLAY%"=="3" (
+    set "PLAYNAME=Mouse and keyboard"
+    set "P_HEADAIM=0" & set "P_AIMSRC=0" & set "P_MOVE=0" & set "P_6DOF=0"
+    set "P_WHD=0"     & set "P_OFFHAND=0" & set "P_TWOHAND=0" & set "P_SWING=0"
+    rem  Nothing to defer to, so the VR input side is switched off outright.
+    set "P_CTLMODE=1" & set "P_CTLON=0"
+)
+
+rem  ONE PowerShell launch for all ten, not ten launches. Starting PowerShell
+rem  costs the best part of a second and the user is watching an empty console
+rem  while it happens. Same array idiom :writeone already uses for the game ini.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d='[DllImport(\"kernel32\")] public static extern bool WritePrivateProfileString(string a, string b, string c, string d);'; Add-Type -MemberDefinition $d -Name Ini -Namespace W32 | Out-Null; $f='%MODINI%'; $set=@(@('EnableHeadAim','!P_HEADAIM!'),@('AimSource','!P_AIMSRC!'),@('MovementMode','!P_MOVE!'),@('Enable6DofHands','!P_6DOF!'),@('WeaponHandDrive','!P_WHD!'),@('OffHandTracked','!P_OFFHAND!'),@('TwoHandGrip','!P_TWOHAND!'),@('SwingEnabled','!P_SWING!'),@('ControllerMode','!P_CTLMODE!'),@('EnableController','!P_CTLON!')); foreach($k in $set){ [void][W32.Ini]::WritePrivateProfileString('VR',$k[0],$k[1],$f) }; [void][W32.Ini]::WritePrivateProfileString($null,$null,$null,$f)" 2>nul
+
+echo.
+echo   Play style:  !PLAYNAME!
+if not "%PLAY%"=="1" (
+    echo                Aiming is handed back to the game, and the tracked-hand
+    echo                features are off. Run Setup again and pick 1 to undo it.
+)
+call :log "--- play style ---"
+call :log "chosen: !PLAYNAME! (PLAY=%PLAY%)"
+call :log "wrote: HeadAim=!P_HEADAIM! AimSource=!P_AIMSRC! MovementMode=!P_MOVE! 6Dof=!P_6DOF! WHD=!P_WHD! OffHand=!P_OFFHAND! TwoHand=!P_TWOHAND! Swing=!P_SWING! CtlMode=!P_CTLMODE! CtlOn=!P_CTLON!"
 
 rem ---- install the loader ----------------------------------------------------
 rem  These are RENAMES, not copies. Exactly two loader files should exist:
@@ -730,7 +949,9 @@ if "%WRITEOK%"=="0" (
 echo   Done. Launch the game with your headset on.
 echo   Above you should see %RESX%, StartupFullscreen=False, and
 echo   LevelOfAnisotropy=%ANISO% on the D3D lines.
-echo.
+
+call :showcontrols
+
 echo   Setup was recorded in logs\setup.log
 echo   If anything goes wrong, run logs\CollectLogs.bat and send the zip.
 call :log "--- setup finished ok ---"
@@ -763,6 +984,98 @@ exit /b 1
 echo.
 pause
 endlocal
+exit /b 0
+
+:showcontrols
+rem ---------------------------------------------------------------------------
+rem  THE TWO CONTROLS NOBODY CAN GUESS, stated for the configuration this run
+rem  actually produced.
+rem
+rem  Both depend on answers given minutes apart: the pause control comes from the
+rem  RUNTIME choice, because the menu button does not reliably bind on the shim,
+rem  and the modifier comes from the HEADSET choice, because the default lands on
+rem  a resting thumb for trackpad controllers. Nobody can derive the combination
+rem  from either answer alone, and a user reported reaching the map only after
+rem  being told the sequence.
+rem
+rem  Reads DPADCUR from the ini rather than assuming the default, so this stays
+rem  right for someone who tuned it by hand and then re-ran Setup.
+rem ---------------------------------------------------------------------------
+set "MODNOW=%DPADCUR%"
+if defined DPADFIX set "MODNOW=%DPADFIX%"
+
+set "MODNAME=right thumbrest (rest your thumb on it)"
+if "%MODNOW%"=="0" set "MODNAME=OFF, no modifier is bound"
+if "%MODNOW%"=="2" set "MODNAME=right stick click (R3)"
+if "%MODNOW%"=="3" set "MODNAME=left grip, WHICH DOES NOTHING, see below"
+if "%MODNOW%"=="4" set "MODNAME=left thumbrest (rest your thumb on it)"
+if "%MODNOW%"=="1" if not "%DPADFLIP%"=="0" set "MODNAME=left thumbrest (rest your thumb on it)"
+
+rem  NAME THE BUTTONS THE USER ACTUALLY HAS, on the hand they are actually on.
+rem
+rem  Checked against each device's OpenXR profile and the vendor documentation,
+rem  because two of these are not what anyone would assume:
+rem
+rem    Touch     ONE menu button, on the LEFT controller. The right controller's
+rem              Meta button belongs to the system and cannot be bound.
+rem    Index     THE OPENXR PROFILE HAS NO MENU PATH AT ALL. It exposes system
+rem              (runtime owned) and the trackpad, nothing else, so the mod binds
+rem              a FIRM PRESS ON THE LEFT TRACKPAD. An Index player hunting for a
+rem              menu button will never find one, which is worth saying outright.
+rem    Vive      a menu button on each controller, above the trackpad. Left one.
+rem    WMR       a menu button on each controller. Left one.
+rem    PSVR2     left controller carries Triangle and Square, right carries
+rem              Circle, Cross and Options. So the chord is Triangle + Square.
+set "MENUNAME=the Menu button on the LEFT controller"
+if "%HMD%"=="6"  set "MENUNAME=a firm press on the LEFT trackpad (Index has no menu button)"
+if "%HMD%"=="9"  set "MENUNAME=a firm press on the LEFT trackpad (Index has no menu button)"
+if "%HMD%"=="13" set "MENUNAME=a firm press on the LEFT trackpad (Index has no menu button)"
+if "%HMD%"=="15" set "MENUNAME=a firm press on the LEFT trackpad (Index has no menu button)"
+if "%HMD%"=="7"  set "MENUNAME=the Menu button on the LEFT controller, above the trackpad"
+if "%HMD%"=="8"  set "MENUNAME=the Menu button on the LEFT controller, above the trackpad"
+if "%HMD%"=="16" set "MENUNAME=the Options button (SteamVR decides; it is on the RIGHT controller)"
+
+set "PAUSENAME=%MENUNAME%"
+if "%CHORD%"=="1" (
+    set "PAUSENAME=X and Y together on the LEFT controller"
+    if "%HMD%"=="6"  set "PAUSENAME=A and B together on the LEFT controller"
+    if "%HMD%"=="9"  set "PAUSENAME=A and B together on the LEFT controller"
+    if "%HMD%"=="13" set "PAUSENAME=A and B together on the LEFT controller"
+    if "%HMD%"=="15" set "PAUSENAME=A and B together on the LEFT controller"
+    if "%HMD%"=="16" set "PAUSENAME=Triangle and Square together on the LEFT controller"
+    if "%HMD%"=="17" set "PAUSENAME=both face buttons on the LEFT controller"
+)
+
+echo.
+echo   -----------------------------------------
+echo    Your controls
+echo   -----------------------------------------
+echo.
+echo     Pause            %PAUSENAME%
+echo.
+echo     Modifier         %MODNAME%
+echo                      Hold it and the left stick stops moving you and
+echo                      becomes a D-pad for the HUD. It is also what turns
+echo                      Pause into the two entries below. Weapons and
+echo                      plasmids are on the grip radial, not the D-pad.
+echo.
+echo     Map              hold the Modifier, then Pause, for half a second
+echo     Alt Menu Button  hold the Modifier and tap Pause
+echo.
+if "%MODNOW%"=="3" (
+    echo     WARNING: ControllerDpadModifier=3 cannot work. The grip is claimed
+    echo              by the radial before the modifier is read, so the map is
+    echo              unreachable. Use 1, 2 or 4.
+    echo.
+)
+if "%MODNOW%"=="0" (
+    echo     WARNING: with no modifier there is no map and no alt menu button.
+    echo              Set ControllerDpadModifier to 1, 2 or 4.
+    echo.
+)
+echo     Change any of it in BioshockVR.ini under Controllers.
+echo.
+call :log "controls: pause=%PAUSENAME%  modifier=%MODNOW% (%MODNAME%)  chord=%CHORD%  flip=%DPADFLIP%"
 exit /b 0
 
 :writescripts
