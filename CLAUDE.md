@@ -148,6 +148,14 @@ pause. The rescue is the reproducible trigger for the HUD square.
 
 ## How to work here
 
+- **Every `.bat` must be CRLF, and check it after editing one.** `cmd` tracks its
+  position in a batch file by BYTE OFFSET, so LF-only endings make it resume at
+  the wrong place: it re-runs whole sections, skips others, and reads prompts
+  into the wrong variables. Symptom seen 2026-08-13: a `setup.log` with the run
+  banner missing entirely but the tail repeated six times, and `hmd=` empty on
+  lines that run long after the headset question. The Edit tool writes LF, so a
+  `.bat` that has been edited is guilty until measured:
+  `(Get-Content f.bat -Raw) -match "[^\r]\n"` finds it.
 - **NO DASHES IN ANYTHING A USER READS.** No em dash, no en dash, and no ` -- `
   standing in for one. That covers everything in `dist/`, release notes, the
   READMEs, changelogs and Discord posts. Rewrite the sentence instead: a comma, a
