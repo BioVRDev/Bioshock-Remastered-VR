@@ -164,6 +164,46 @@ buttons, so pressing A or B would also stop you walking. Unbound makes modes 1
 and 4 inert rather than harmful, and `Setup.bat` writes mode 2 for the headsets
 that need it.
 
+## What each device can actually reach — read this before writing a control default
+
+Compiled 2026-08-13 from the five tables plus each device's OpenXR profile.
+**Three settings were being written for hardware that cannot honour them**, and
+all three came from assuming a device had a control rather than checking.
+
+| | Face buttons bound | Menu comes from | Thumbrest | Grip |
+|---|---|---|---|---|
+| Touch | A/B right, X/Y left | `left menu/click` | both, `thumbrest/touch` | analog |
+| Index family | right a/b → A/B, **left a/b → X/Y** | **`left trackpad/force`** | via `trackpad/touch` | analog |
+| Vive wand | **none** (right menu becomes A) | `left menu/click` | **unbound** | digital |
+| WMR | A, B, X, **no Y** | `left menu/click` | **unbound** | digital |
+| simple | select only | left | none | none |
+
+The consequences, each of which was a live misconfiguration:
+
+- **The X+Y pause chord cannot exist on Vive wands or WMR.** It was written for
+  every SteamVR user. `ControllerPauseChord` is now gated on the headset answer.
+- **The default d-pad modifier is inert on Vive and WMR**, so those users had
+  **no map and no alt menu button at all** until mode 2 was written for them.
+- **WMR has no jump button** under the shipped layout, because jump is action Y
+  and WMR binds no Y. `ControllerLayout=1` rotates the same four physical buttons
+  onto Jump, Hack and Use and costs only the med hypo, which is on the radial.
+- **Vive wands bind one face action, Use.** Med hypo, hack/reload and jump have
+  nowhere to go. The trackpad click that could carry jump is the only workable
+  modifier, and `Config.cpp` resolves that conflict in the modifier's favour. No
+  setting recovers them; Setup says so instead.
+
+**Two button names are not what anyone assumes.** Touch has exactly one menu
+button and it is on the **left** (the right one is the system button and cannot
+be bound). And **the OpenXR Index profile exposes no menu path whatsoever** —
+only `system` (runtime-owned) and the trackpad — which is why menu is a firm
+press on the left trackpad there. An Index player hunting for a menu button will
+never find one, so the installer names it explicitly.
+
+> **`ControllerDpadModifier=3` can never fire.** `case 3: mod = gripLOn;` and two
+> lines later `if (gripLOn || gripROn) mod = false;`, the guard that hands the
+> sticks to the radial. The mode selects an input the next line always discards.
+> Still offered in the ini; repair or remove it.
+
 ## Every `xr*` call must be exported by the shim
 
 `BioshockVR.dll` statically imports `openxr_loader.dll`, which on the SteamVR path
