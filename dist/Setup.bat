@@ -23,7 +23,7 @@ rem ===========================================================================
 
 setlocal enabledelayedexpansion
 
-set "BUILD=2026-08-13-c"
+set "BUILD=2026-08-13-d"
 set "LDR_LIVE=openxr_loader.dll"
 set "LDR_SHIM=openxr_loader_steam.dll"
 set "LDR_STD=openxr_loader_standard.dll"
@@ -628,76 +628,6 @@ if "%CHORD%"=="1" (
     )
 )
 call :log "pause chord: ControllerPauseChord=%CHORD% for MODE=%MODE% hmd=%HMD%"
-
-
-rem ===========================================================================
-rem  HOW DO YOU WANT TO PLAY? This one is acted on, and it is only ini keys.
-rem
-rem  Everything the mod ships assumes tracked controllers, and two of those
-rem  defaults actively fight anything else: EnableHeadAim=1 rewrites your
-rem  heading every frame, so a mouse or a pad stick is overwritten as fast as
-rem  you move it, and AimSource=1 draws the crosshair from controllers that are
-rem  sitting on a desk while the bullet goes somewhere else entirely.
-rem
-rem  ALL THREE MODES WRITE EVERY KEY, including motion controllers. If this only
-rem  wrote keys for the two new modes, anyone who tried gamepad and wanted to go
-rem  back would have no way to undo it.
-rem
-rem  Head tracking, stereo, the HUD panel and the anchored screens are untouched
-rem  in every mode. EnableController governs controller INPUT only.
-rem ===========================================================================
-echo.
-echo   -----------------------------------------
-echo    How do you want to play?
-echo   -----------------------------------------
-echo.
-echo     1  VR motion controllers    the full mod         [recommended]
-echo     2  Gamepad                  Xbox pad, seated
-echo     3  Mouse and keyboard       seated
-echo.
-echo     Head tracking and stereo work in all three.
-echo     Press Enter to take the recommended option.
-echo.
-set "PLAY="
-set /p "PLAY=  Play style [1]: "
-if not defined PLAY set "PLAY=1"
-
-set "PLAYNAME=VR motion controllers"
-set "P_HEADAIM=1" & set "P_AIMSRC=1" & set "P_MOVE=2" & set "P_6DOF=1"
-set "P_WHD=1"     & set "P_OFFHAND=2" & set "P_TWOHAND=1" & set "P_SWING=1"
-set "P_CTLMODE=1" & set "P_CTLON=1"
-
-if "%PLAY%"=="2" (
-    set "PLAYNAME=Gamepad"
-    set "P_HEADAIM=0" & set "P_AIMSRC=0" & set "P_MOVE=0" & set "P_6DOF=0"
-    set "P_WHD=0"     & set "P_OFFHAND=0" & set "P_TWOHAND=0" & set "P_SWING=0"
-    rem  MERGE, not off. A real pad in slot 0 wins outright and the VR
-    rem  controllers still work if it is unplugged, which is exactly what the
-    rem  merge path was written for.
-    set "P_CTLMODE=0" & set "P_CTLON=1"
-)
-if "%PLAY%"=="3" (
-    set "PLAYNAME=Mouse and keyboard"
-    set "P_HEADAIM=0" & set "P_AIMSRC=0" & set "P_MOVE=0" & set "P_6DOF=0"
-    set "P_WHD=0"     & set "P_OFFHAND=0" & set "P_TWOHAND=0" & set "P_SWING=0"
-    rem  Nothing to defer to, so the VR input side is switched off outright.
-    set "P_CTLMODE=1" & set "P_CTLON=0"
-)
-
-rem  ONE PowerShell launch for all ten, not ten launches. Starting PowerShell
-rem  costs the best part of a second and the user is watching an empty console
-rem  while it happens. Same array idiom :writeone already uses for the game ini.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$d='[DllImport(\"kernel32\")] public static extern bool WritePrivateProfileString(string a, string b, string c, string d);'; Add-Type -MemberDefinition $d -Name Ini -Namespace W32 | Out-Null; $f='%MODINI%'; $set=@(@('EnableHeadAim','!P_HEADAIM!'),@('AimSource','!P_AIMSRC!'),@('MovementMode','!P_MOVE!'),@('Enable6DofHands','!P_6DOF!'),@('WeaponHandDrive','!P_WHD!'),@('OffHandTracked','!P_OFFHAND!'),@('TwoHandGrip','!P_TWOHAND!'),@('SwingEnabled','!P_SWING!'),@('ControllerMode','!P_CTLMODE!'),@('EnableController','!P_CTLON!')); foreach($k in $set){ [void][W32.Ini]::WritePrivateProfileString('VR',$k[0],$k[1],$f) }; [void][W32.Ini]::WritePrivateProfileString($null,$null,$null,$f)" 2>nul
-
-echo.
-echo   Play style:  !PLAYNAME!
-if not "%PLAY%"=="1" (
-    echo                Aiming is handed back to the game, and the tracked-hand
-    echo                features are off. Run Setup again and pick 1 to undo it.
-)
-call :log "--- play style ---"
-call :log "chosen: !PLAYNAME! (PLAY=%PLAY%)"
-call :log "wrote: HeadAim=!P_HEADAIM! AimSource=!P_AIMSRC! MovementMode=!P_MOVE! 6Dof=!P_6DOF! WHD=!P_WHD! OffHand=!P_OFFHAND! TwoHand=!P_TWOHAND! Swing=!P_SWING! CtlMode=!P_CTLMODE! CtlOn=!P_CTLON!"
 
 rem ---- install the loader ----------------------------------------------------
 rem  These are RENAMES, not copies. Exactly two loader files should exist:

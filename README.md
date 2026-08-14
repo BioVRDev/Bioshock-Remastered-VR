@@ -258,12 +258,12 @@ resolves it for some people.
 
 ---
 
-## Playing with a mouse and keyboard, or a gamepad
+## Playing with a mouse and keyboard
 
-**`Setup.bat` asks this now.** "How do you want to play?" offers motion
-controllers, a gamepad, or mouse and keyboard, and writes every key below. Run it
-again and pick motion controllers to go back. What follows is what it changes, if
-you would rather do it by hand.
+**Rough, and honestly so.** This works well enough that someone playing with a
+mouse got their aim back, but it is not a finished mode and a gamepad is rougher
+still. `Setup.bat` does not offer it as a choice yet, on purpose. Treat this as
+notes rather than a supported configuration.
 
 Everything ships assuming you are holding tracked controllers, and two of those
 defaults fight a mouse. Head tracking, stereo and the HUD panel all keep working;
@@ -275,9 +275,6 @@ you are only telling the mod to stop aiming for you.
 | `AimSource` | `0` | The one people miss. The crosshair is keyed to this rather than to head aim, so at `1` the dot comes from your controllers, sitting on your desk, while the bullet goes where the mouse points. That is why shots look random |
 | `MovementMode` | `0` | Nothing rotates the movement stick |
 
-For a **gamepad** the values are the same, except `ControllerMode=0` instead of
-`1`, which lets a real pad in slot 0 win outright while leaving the VR
-controllers working if you unplug it, and `EnableController` stays `1`.
 
 Those keys already exist in the file. Change them in place; the first copy of a
 key is the one that is read, so a copy pasted at the bottom is ignored.

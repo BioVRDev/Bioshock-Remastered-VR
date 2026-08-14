@@ -131,10 +131,10 @@ issues.
  PLAYING WITH A MOUSE AND KEYBOARD
 --------------------------------------------------------------------------------
 
-SETUP.BAT DOES THIS FOR YOU. It asks "How do you want to play?" and offers motion
-controllers, a gamepad, or mouse and keyboard. Run it again and pick motion
-controllers to go back. The rest of this section is what it changes, in case you
-would rather do it by hand.
+ROUGH, AND HONESTLY SO. This works well enough that someone playing with a mouse
+got their aim back, but it is not a finished mode and a gamepad is rougher still.
+Setup does not offer it as a choice yet, on purpose. Treat this as notes rather
+than a supported configuration.
 
 Everything ships assuming you are holding tracked controllers, and two of those
 defaults fight a mouse. Head tracking, stereo and the HUD panel keep working;
