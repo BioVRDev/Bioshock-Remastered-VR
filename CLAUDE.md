@@ -148,6 +148,13 @@ pause. The rescue is the reproducible trigger for the HUD square.
 
 ## How to work here
 
+- **NO DASHES IN ANYTHING A USER READS.** No em dash, no en dash, and no ` -- `
+  standing in for one. That covers everything in `dist/`, release notes, the
+  READMEs, changelogs and Discord posts. Rewrite the sentence instead: a comma, a
+  colon, brackets, or two sentences. **The source tree is exempt** and keeps its
+  ` -- ` house style; `docs/` follows the source.
+  Applies to material written or edited from 2026-08-13 on, so existing comments
+  in `BioshockVR.ini` are not a cleanup task.
 - **Claude edits the files.** Do the work with the Edit/Write tools — never hand
   the user a diff or a "paste this into Visual Studio" instruction. They do not
   apply edits by hand any more. Claude edits, builds, deploys and reads the log;

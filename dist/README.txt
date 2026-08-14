@@ -128,6 +128,44 @@ issues.
 
 
 --------------------------------------------------------------------------------
+ PLAYING WITH A MOUSE AND KEYBOARD
+--------------------------------------------------------------------------------
+
+SETUP.BAT DOES THIS FOR YOU. It asks "How do you want to play?" and offers motion
+controllers, a gamepad, or mouse and keyboard. Run it again and pick motion
+controllers to go back. The rest of this section is what it changes, in case you
+would rather do it by hand.
+
+Everything ships assuming you are holding tracked controllers, and two of those
+defaults fight a mouse. Head tracking, stereo and the HUD panel keep working;
+you are only telling the mod to stop aiming for you. Change these in
+BioshockVR.ini, with the game closed:
+
+  EnableHeadAim=0    The important one. At 1 the mod writes your heading every
+                     frame, so it overwrites the mouse as fast as you move it.
+                     At 0 it never touches the heading, the mouse owns it, and
+                     head tracking is added on top of the game's own camera.
+
+  AimSource=0        The one people miss. The crosshair is keyed to this rather
+                     than to head aim, so at 1 the dot is drawn from your
+                     controllers, sitting on your desk, while the bullet goes
+                     where the mouse points. That is why shots look random. At 0
+                     the dot sits in the centre of your view.
+
+  MovementMode=0     Nothing rotates the movement stick.
+
+The keys already exist in the file. Find and change them rather than pasting
+copies at the bottom, because the first copy of a key is the one that is read.
+
+If the dot still does not land on the bullet hole, turn it off and let the game
+draw its own reticle, which is always at the true aim point:
+EnableCrosshair=0 and DisableReticle=0.
+
+These serve tracked hands only, so switching them off is tidier but optional:
+Enable6DofHands, WeaponHandDrive, OffHandTracked, TwoHandGrip, SwingEnabled.
+
+
+--------------------------------------------------------------------------------
  PERFORMANCE
 --------------------------------------------------------------------------------
 

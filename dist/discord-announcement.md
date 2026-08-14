@@ -1,4 +1,4 @@
-# BioShock Remastered VR — 1.0.3 is out
+# BioShock Remastered VR 1.0.3 is out
 
 **The hands release.** Both of your hands are in the game now, weapons finally
 hold still enough to aim down, and the scripted moments put you where they were
@@ -74,7 +74,7 @@ matching loader, and fixes the game's resolution and FOV. The game won't start
 in VR until you do.
 
 Full changelog and known issues are in the download. If something breaks, run
-`logs\CollectLogs.bat` and send me the zip — it grabs everything I need.
+`logs\CollectLogs.bat` and send me the zip, it grabs everything I need.
 
 ---
 

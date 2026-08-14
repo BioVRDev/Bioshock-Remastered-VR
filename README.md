@@ -40,7 +40,7 @@ Cutscene Black Bar Removal: https://www.nexusmods.com/bioshock/mods/81?tab=descr
 
 `Setup.bat` renames whichever loader you choose onto the name the mod actually
 loads, `openxr_loader.dll`, so **that file appears after setup rather than in the
-download — and the game will not start in VR until you run it.** `Setup.bat` also
+download, and the game will not start in VR until you run it.** `Setup.bat` also
 writes its own copies of `Uninstall.bat` and `logs\CollectLogs.bat`, so a package
 missing either one still ends up complete.
 
@@ -63,7 +63,7 @@ before the game ever starts, which breaks that loop for good:
 
 It finds `Bioshock.ini` on its own, backs it up first, and changes fourteen
 values across eleven settings in place, using the same Windows API the game
-itself uses — it does not rewrite the file. If anything looks wrong afterwards it
+itself uses, and it does not rewrite the file. If anything looks wrong afterwards it
 restores the backup automatically.
 
 It also asks which headset you have and which runtime to use, and writes two mod
@@ -79,17 +79,17 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 ## Requirements
 
 - BioShock Remastered on PC. **Steam and Epic are both supported and both
-  tested** — Epic installs under `Build\FinalEpic` and `Setup.bat` finds it
+  tested.** Epic installs under `Build\FinalEpic` and `Setup.bat` finds it
 - Any OpenXR headset. Quest and Pico work through the standard loader (Link,
-  Air Link, or Virtual Desktop). **Lighthouse headsets — Index, Vive, Bigscreen
-  Beyond, Varjo — work through a bundled SteamVR shim**, because SteamVR's own
+  Air Link, or Virtual Desktop). **Lighthouse headsets (Index, Vive, Bigscreen
+  Beyond, Varjo) work through a bundled SteamVR shim**, because SteamVR's own
   OpenXR runtime does not support 32-bit games and BioShock Remastered is
   32-bit. `Setup.bat` picks the right one for you; start SteamVR before the game
   if you choose that path.
 - **Only Meta Touch controllers are tested.** Index, Vive wand and WMR/Reverb
   bindings exist and are built from each device's published layout, but I do not
   own that hardware, so they are best-effort. The log names the controller
-  profile it matched and how many buttons bound — worth sending either way if you
+  profile it matched and how many buttons bound, so it is worth sending either way if you
   have one
 - Windows 10 or 11
 
@@ -107,7 +107,7 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 
 **Head and camera**
 - Full head tracking, rotation and position
-- Pitch decoupled from the game camera — the horizon stays level
+- Pitch decoupled from the game camera, so the horizon stays level
 - Walking head bob removed at the source
 - Adjustable height and IPD
 
@@ -119,7 +119,7 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
   which bent your path by up to 11 degrees whenever the mod redirected the stick
   and snapped you to a pure sidestep near 90; that is undone before the value
   reaches the game
-- Turn speed is capped so the same push always turns you at the same rate — the
+- Turn speed is capped so the same push always turns you at the same rate. The
   game's own response curve is nearly vertical at the top of the stick, which is
   the whole of "sometimes slow, sometimes fast"
 - Snap turn, with an adjustable step
@@ -129,7 +129,7 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 - The weapon holds still. The game animates the arm the gun hangs off, which made
   it drift and breathe in your hand and made a calibrated crosshair impossible;
   that idle animation is frozen while you hold it
-- Two-handed grip — reach across with your free hand and take hold of the barrel
+- Two-handed grip: reach across with your free hand and take hold of the barrel
 - The hand that is not holding your weapon appears and follows its own
   controller, on the weapons that hide it
 - Haptics on firing and on the actions that earn them
@@ -150,7 +150,7 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 - The map, the manual, the upgrade machine, the Gene Bank and the whole
   plasmid/tonic flow stay put in the room instead of riding your head, including
   when you click from one page of a machine screen through to the next
-- Individual screens can be moved between four routes by name — `AnchorMovies`,
+- Individual screens can be moved between four routes by name. `AnchorMovies`,
   `FollowMovies`, `SceneMovies` and `PanelMovies` in the ini decide whether a
   screen stays put in the room, follows your head, is left exactly where the game
   drew it, or is split with the interface flat and the world still in stereo. The
@@ -160,7 +160,7 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 
 **Cutscenes and scripted scenes**
 - Pre-rendered cutscenes play on a screen anchored in the room. You can look
-  around it and the camera no longer follows your head — a large comfort
+  around it and the camera no longer follows your head, which is a large comfort
   improvement in the opening sequence
 - Scripted sequences land you where they intend and face you the way they
   intended, whichever way you were looking or pointing when they started. Neither
@@ -170,11 +170,11 @@ Run it again any time you change `ResolutionX`, `ResolutionY` or
 - Your arms and hands appear only while the scene is actually animating them
 
 **Controls**
-- Touch, Index, Vive wand and WMR controllers mapped to a virtual gamepad — see
+- Touch, Index, Vive wand and WMR controllers mapped to a virtual gamepad. See
   *Requirements* for which of those are actually tested
 - Right stick click jumps; zoom is unbound because it breaks the weapon
   calibration
-- D-pad modifier on the right thumbrest, with the button configurable — it lands
+- D-pad modifier on the right thumbrest, with the button configurable. It lands
   where a thumb rests on trackpad headsets and the Rift CV1, and `Setup.bat` moves
   it for you when you say which headset you have
 - Hold X+Y to pause, for runtimes where the menu button does not come through
@@ -209,7 +209,7 @@ Tuned: **wrench, pistol, shotgun, machine gun, crossbow, grenade launcher,
 chemical thrower**, and every plasmid individually.
 
 Not yet tuned: **the research camera**. It falls back to a generic offset and
-will sit wrong in your hand. Perfectly usable — it just wants five minutes with
+will sit wrong in your hand. Perfectly usable; it just wants five minutes with
 the numpad. If you tune it, the values land in your ini, and a pull request or a
 paste in the issues is very welcome.
 
@@ -223,20 +223,20 @@ They can't currently be used together.
 
 **Two features are build-specific.** The reticle removal and the arm hiding use
 fixed addresses into the game executable. On a different build they detect the
-mismatch and safely do nothing — the log says so. Set `DisableReticle=0` and
+mismatch and safely do nothing, and the log says so. Set `DisableReticle=0` and
 `HideArmSleeves=0` to silence it. Everything else finds its targets by scanning
 and works on any build.
 
 **Grip offsets are tuned for 2750x2850 at FOV 100.** They don't carry across
-resolutions by any reliable formula — this was measured and the scaling law was
+resolutions by any reliable formula. This was measured and the scaling law was
 ruled out. Change either and expect to re-tune.
 
 **Walking through water draws its effect as a square** rather than covering your
 whole view.
 
 **Pre-rendered cutscenes that play during the game are not anchored to the room
-yet**, so they still follow your head. Scripted sequences themselves — where they
-walk you, which way they turn you — are handled.
+yet**, so they still follow your head. Scripted sequences themselves, where they
+walk you and which way they turn you, are handled.
 
 **The quest arrow drifts with the weapon** before settling back to where it
 should be.
@@ -248,8 +248,8 @@ the game submits frames to its own window, not a performance problem. For
 recording, use SteamVR's display view instead.
 
 **`dxgi.dll` and `winmm.dll` are shared filenames.** `Uninstall.bat` asks before
-removing either, and keeps your tuned `BioshockVR.ini` as `BioshockVR.ini.bak` —
-rename it back on a reinstall and every weapon stays calibrated.
+removing either, and keeps your tuned `BioshockVR.ini` as `BioshockVR.ini.bak`.
+Rename it back on a reinstall and every weapon stays calibrated.
 
 **SteamVR performance can degrade after about 30 minutes** with Virtual Desktop
 on Meta headsets. This is a Meta driver issue rather than something the mod can
@@ -258,12 +258,48 @@ resolves it for some people.
 
 ---
 
+## Playing with a mouse and keyboard, or a gamepad
+
+**`Setup.bat` asks this now.** "How do you want to play?" offers motion
+controllers, a gamepad, or mouse and keyboard, and writes every key below. Run it
+again and pick motion controllers to go back. What follows is what it changes, if
+you would rather do it by hand.
+
+Everything ships assuming you are holding tracked controllers, and two of those
+defaults fight a mouse. Head tracking, stereo and the HUD panel all keep working;
+you are only telling the mod to stop aiming for you.
+
+| Key | Set to | Why |
+|---|---|---|
+| `EnableHeadAim` | `0` | The important one. At `1` the mod writes your heading every frame and overwrites the mouse as fast as you move it. At `0` it never touches the heading, so the mouse owns it and head tracking is added on top of the game's own camera |
+| `AimSource` | `0` | The one people miss. The crosshair is keyed to this rather than to head aim, so at `1` the dot comes from your controllers, sitting on your desk, while the bullet goes where the mouse points. That is why shots look random |
+| `MovementMode` | `0` | Nothing rotates the movement stick |
+
+For a **gamepad** the values are the same, except `ControllerMode=0` instead of
+`1`, which lets a real pad in slot 0 win outright while leaving the VR
+controllers working if you unplug it, and `EnableController` stays `1`.
+
+Those keys already exist in the file. Change them in place; the first copy of a
+key is the one that is read, so a copy pasted at the bottom is ignored.
+
+If the dot still does not land on the bullet hole, turn it off and let the game
+draw its own reticle, which is always at the true aim point: `EnableCrosshair=0`
+and `DisableReticle=0`.
+
+`Enable6DofHands`, `WeaponHandDrive`, `OffHandTracked`, `TwoHandGrip` and
+`SwingEnabled` exist only to serve tracked hands. Switching them off is tidier
+but not required.
+
+**None of this changes controller play.** The shipped defaults are untouched.
+
+---
+
 ## Performance
 
-`ResolutionX` and `ResolutionY` in `BioshockVR.ini` are the main dial — lower
-them and re-run `Setup.bat`. FOV below 100 looks nearly identical in the
-headset but runs noticeably better, because the game stops rendering side content
-that never reaches the display.
+`ResolutionX` and `ResolutionY` in `BioshockVR.ini` are the main dial: lower them
+and re-run `Setup.bat`. FOV below 100 looks nearly identical in the headset but
+runs noticeably better, because the game stops rendering side content that never
+reaches the display.
 
 ---
 
@@ -271,7 +307,7 @@ that never reaches the display.
 
 **Run `logs\CollectLogs.bat`** and attach the zip it makes. It gathers every log
 plus the config files, including the copies Windows can silently redirect your
-settings into — which is the cause of most "I changed it and nothing happened"
+settings into, which is the cause of most "I changed it and nothing happened"
 reports.
 
 If you would rather attach one file, it is **`logs\BioshockVR.log`**, in a `logs`
@@ -285,7 +321,7 @@ Quick self-checks:
 
 | Symptom | Cause |
 |---|---|
-| Nothing happens at all | Is there a `logs\BioshockVR_loader.log`? If not, `dxgi.dll` isn't loading — check all files are in the same folder. If there is, it names the reason, including which file is missing |
+| Nothing happens at all | Is there a `logs\BioshockVR_loader.log`? If not, `dxgi.dll` isn't loading, so check all files are in the same folder. If there is, it names the reason, including which file is missing |
 | Wrong resolution, or fullscreen | Run `Setup.bat` with the game closed |
 | `could not find Bioshock.ini` | Launch the game once so it creates one, quit, run setup again |
 | World too big or too small | `EyeSeparation` is half your IPD in cm |
@@ -295,7 +331,7 @@ Quick self-checks:
 
 ## Building from source
 
-- Visual Studio 2022, **Win32 / x86** — the game is 32-bit and the mod must match.
+- Visual Studio 2022, **Win32 / x86**. The game is 32-bit and the mod must match.
   `Release | Win32` is the only configuration that produces working output for
   any of the three
 - Three projects: `BioshockVR` (the mod), `dxgiproxy` (the loader, builds as
@@ -307,7 +343,7 @@ Build all three, then next to `BioshockHD.exe` put `BioshockVR.dll`, `dxgi.dll`,
 32-bit `openxr_loader_standard.dll`, and `openvr_api.dll` from Valve's OpenVR
 SDK. Then run `Setup.bat`, which puts the loader you pick in place.
 
-**Copying only the mod and the proxy gives you a package that cannot load** — the
+**Copying only the mod and the proxy gives you a package that cannot load.** The
 mod statically imports `openxr_loader.dll`, so with no loader present Windows
 refuses to load it, and the proxy reports it as a missing file.
 
